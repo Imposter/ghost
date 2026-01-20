@@ -2,7 +2,6 @@ package ice_test
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -65,7 +64,11 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 	// Peer A: Gather and send candidates
 	go func() {
 		defer wg.Done()
-		candChan := agentA.GatherCandidates(ctx)
+		candChan, err := agentA.GatherCandidates(ctx)
+		if err != nil {
+			t.Logf("Error gathering candidates for A: %v", err)
+			return
+		}
 		for cand := range candChan {
 			t.Logf("Peer A gathered: type=%s, address=%s:%d", cand.Type, cand.Address, cand.Port)
 			signaling.SendCandidateFromA(toTestCandidate(cand))
@@ -76,7 +79,11 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 	// Peer B: Gather and send candidates
 	go func() {
 		defer wg.Done()
-		candChan := agentB.GatherCandidates(ctx)
+		candChan, err := agentB.GatherCandidates(ctx)
+		if err != nil {
+			t.Logf("Error gathering candidates for B: %v", err)
+			return
+		}
 		for cand := range candChan {
 			t.Logf("Peer B gathered: type=%s, address=%s:%d", cand.Type, cand.Address, cand.Port)
 			signaling.SendCandidateFromB(toTestCandidate(cand))
@@ -254,14 +261,22 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for cand := range agentA.GatherCandidates(ctx) {
+		candChan, err := agentA.GatherCandidates(ctx)
+		if err != nil {
+			return
+		}
+		for cand := range candChan {
 			signaling.SendCandidateFromA(toTestCandidate(cand))
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		for cand := range agentB.GatherCandidates(ctx) {
+		candChan, err := agentB.GatherCandidates(ctx)
+		if err != nil {
+			return
+		}
+		for cand := range candChan {
 			signaling.SendCandidateFromB(toTestCandidate(cand))
 		}
 	}()
@@ -270,16 +285,16 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 
 	// Exchange
 	for _, cand := range signaling.GetCandidatesForA() {
-		agentA.AddRemoteCandidate(ctx, fromTestCandidate(cand))
+		agentA.AddRemoteCandidate(fromTestCandidate(cand))
 	}
 	for _, cand := range signaling.GetCandidatesForB() {
-		agentB.AddRemoteCandidate(ctx, fromTestCandidate(cand))
+		agentB.AddRemoteCandidate(fromTestCandidate(cand))
 	}
 
 	remoteCreds, _ := signaling.GetCredentialsForA(ctx)
-	agentA.SetRemoteCredentials(ctx, remoteCreds.Ufrag, remoteCreds.Pwd)
+	agentA.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
 	remoteCreds, _ = signaling.GetCredentialsForB(ctx)
-	agentB.SetRemoteCredentials(ctx, remoteCreds.Ufrag, remoteCreds.Pwd)
+	agentB.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
 
 	// Connect
 	wg.Add(2)
@@ -426,10 +441,10 @@ func BenchmarkICEConnection(b *testing.B) {
 		agentA, _ := ice.NewAgent(config, logger)
 		agentB, _ := ice.NewAgent(config, logger)
 
-		credsA := agentA.LocalCredentials()
-		credsB := agentB.LocalCredentials()
-		signaling.SendCredentialsFromA(credsA.Ufrag, credsA.Pwd)
-		signaling.SendCredentialsFromB(credsB.Ufrag, credsB.Pwd)
+		ufragA, pwdA := agentA.LocalCredentials()
+		ufragB, pwdB := agentB.LocalCredentials()
+		signaling.SendCredentialsFromA(ufragA, pwdA)
+		signaling.SendCredentialsFromB(ufragB, pwdB)
 
 		ctx := context.Background()
 
@@ -437,29 +452,31 @@ func BenchmarkICEConnection(b *testing.B) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for cand := range agentA.GatherCandidates(ctx) {
+			candChan, _ := agentA.GatherCandidates(ctx)
+			for cand := range candChan {
 				signaling.SendCandidateFromA(toTestCandidate(cand))
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			for cand := range agentB.GatherCandidates(ctx) {
+			candChan, _ := agentB.GatherCandidates(ctx)
+			for cand := range candChan {
 				signaling.SendCandidateFromB(toTestCandidate(cand))
 			}
 		}()
 		wg.Wait()
 
 		for _, cand := range signaling.GetCandidatesForA() {
-			agentA.AddRemoteCandidate(ctx, fromTestCandidate(cand))
+			agentA.AddRemoteCandidate(fromTestCandidate(cand))
 		}
 		for _, cand := range signaling.GetCandidatesForB() {
-			agentB.AddRemoteCandidate(ctx, fromTestCandidate(cand))
+			agentB.AddRemoteCandidate(fromTestCandidate(cand))
 		}
 
 		remoteCreds, _ := signaling.GetCredentialsForA(ctx)
-		agentA.SetRemoteCredentials(ctx, remoteCreds.Ufrag, remoteCreds.Pwd)
+		agentA.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
 		remoteCreds, _ = signaling.GetCredentialsForB(ctx)
-		agentB.SetRemoteCredentials(ctx, remoteCreds.Ufrag, remoteCreds.Pwd)
+		agentB.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
 
 		b.StartTimer()
 
@@ -499,7 +516,7 @@ func toTestCandidate(c *ice.Candidate) *testutil.Candidate {
 		Port:       c.Port,
 		Priority:   c.Priority,
 		Foundation: c.Foundation,
-		Component:  c.Component,
+		Component:  1, // Default component ID
 	}
 }
 
@@ -511,6 +528,5 @@ func fromTestCandidate(c *testutil.Candidate) *ice.Candidate {
 		Port:       c.Port,
 		Priority:   c.Priority,
 		Foundation: c.Foundation,
-		Component:  c.Component,
 	}
 }
