@@ -52,24 +52,48 @@ func (r *Router) Route(req *http.Request) (target string, rewrittenReq *http.Req
 
 ### 4.3 HTTP Handler (`pkg/proxy/handler.go`)
 
-Handles incoming HTTP requests and proxies them.
+Handles incoming HTTP requests and proxies them, including WebSocket upgrades.
 
 ```go
 type ProxyHandler struct {
     router    *Router
     transport *http.Transport
     logger    *slog.Logger
+    // WebsocketUpgrader not needed for raw TCP proxying of WS
+    // but useful if we need to inspect frames. 
+    // Usually standard reverse proxy logic handles 'Upgrade' header 
+    // by hijacking the connection.
 }
 
-func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
+func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    if isWebSocketUpgrade(r) {
+        h.handleWebSocket(w, r)
+        return
+    }
+    // ... standard HTTP handling
+}
+
+func (h *ProxyHandler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+    // 1. Determine target
+    // 2. Dial target via Tunnel (TCP)
+    // 3. Hijack client connection
+    // 4. Write Upgrade response to client
+    // 5. Bidirectional Copy (io.Copy)
+}
 ```
 
 **Request flow:**
 1. Parse incoming request
-2. Determine target via router
-3. Create outgoing request to tunnel
-4. Forward request body
-5. Copy response headers and body back
+2. Check for `Upgrade: websocket` header
+3. Determine target via router
+4. **If WebSocket:**
+   - Hijack client connection
+   - Dial target via tunnel
+   - Pipe raw streams (TCP)
+5. **If HTTP:**
+   - Create outgoing request to tunnel
+   - Forward request body
+   - Copy response headers and body back
 
 ### 4.4 Middleware (`pkg/proxy/middleware.go`)
 

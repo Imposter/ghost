@@ -1,8 +1,24 @@
 # Phase 1: Core Infrastructure
 
+**Status**: 60% Complete - Core components implemented, integration pending  
+**Last Updated**: January 20, 2026
+
 ## Overview
 
 This phase establishes the foundational components: Pion/ICE integration for NAT punchthrough and WireGuard integration for encrypted tunneling. The critical piece is the `ICEBind` adapter that bridges these two technologies.
+
+### ✅ What's Complete
+- ICE agent wrapper with STUN/TURN support
+- ICEBind adapter (critical component)
+- WireGuard configuration and key management
+- Cross-platform TUN device abstraction
+- 22 unit tests passing
+
+### ⏳ What's Remaining
+- WireGuard device wrapper
+- Integration tests
+- Documentation (CLAUDE.md files)
+- Demo application
 
 ---
 
@@ -61,6 +77,8 @@ func (b *ICEBind) ParseEndpoint(s string) (conn.Endpoint, error)
 
 ### 1.3 WireGuard Device Wrapper (`internal/wireguard/device.go`)
 
+**Status**: ⏳ Pending (Stage 7)
+
 Wraps wireguard-go's device with configuration helpers.
 
 ```go
@@ -80,15 +98,29 @@ func (d *Device) Close() error
 
 ### 1.4 TUN Device Abstraction (`internal/wireguard/tun.go`)
 
-Platform-specific TUN device creation.
+**Status**: ✅ Complete - Simplified implementation
+
+Platform-agnostic TUN device creation. **wireguard-go handles platform differences internally**, so we only need to set default names per platform.
 
 ```go
-// CreateTUN creates a TUN device (platform-specific)
+// CreateTUN creates a TUN device for desktop platforms
+// Works identically on Linux, Windows, and macOS
 func CreateTUN(name string, mtu int) (tun.Device, error)
 
-// CreateTUNFromFD creates a TUN from an existing file descriptor (mobile)
+// CreateTUNFromFD creates a TUN from an existing file descriptor
+// Used for Android in Phase 5 (VpnService provides the fd)
+// iOS uses a different approach (NEPacketTunnelProvider packet flow)
 func CreateTUNFromFD(fd int) (tun.Device, error)
 ```
+
+**Platform-specific files** (simplified to constants only):
+- `tun_linux.go`: Default name `"ghost%d"` (kernel replaces %d)
+- `tun_windows.go`: Default name `"Ghost"` (WinTun handles it)
+- `tun_darwin.go`: Default name `"utun"` (macOS convention)
+
+**Mobile Platform Notes**:
+- **Android**: VpnService creates TUN fd → Pass to `CreateTUNFromFD(fd)`
+- **iOS**: NEPacketTunnelProvider uses packet flow API (no fd) → Custom handlers needed
 
 ---
 
@@ -149,39 +181,87 @@ type WireGuardConfig struct {
 
 ---
 
-## Files to Create
+## Files Status
 
-| File | Purpose |
-|------|---------|
-| `internal/ice/agent.go` | ICE agent wrapper |
-| `internal/ice/bind.go` | ICEBind adapter (conn.Bind) |
-| `internal/ice/gatherer.go` | Candidate gathering logic |
-| `internal/ice/config.go` | ICE configuration |
-| `internal/wireguard/device.go` | WireGuard device wrapper |
-| `internal/wireguard/config.go` | WireGuard configuration |
-| `internal/wireguard/keys.go` | Key generation utilities |
-| `internal/wireguard/tun.go` | TUN device abstraction |
-| `internal/wireguard/tun_linux.go` | Linux TUN implementation |
-| `internal/wireguard/tun_darwin.go` | macOS TUN implementation |
-| `internal/wireguard/tun_windows.go` | Windows TUN implementation |
+| File | Status | Purpose |
+|------|--------|---------|
+| `internal/ice/agent.go` | ✅ Complete | ICE agent wrapper |
+| `internal/ice/bind.go` | ✅ Complete | ICEBind adapter (conn.Bind) ⭐ CRITICAL |
+| `internal/ice/config.go` | ✅ Complete | ICE configuration with validation |
+| `internal/ice/types.go` | ✅ Complete | Candidate, Endpoint types |
+| `internal/ice/errors.go` | ✅ Complete | Domain-specific errors |
+| `internal/wireguard/device.go` | ⏳ Pending | WireGuard device wrapper |
+| `internal/wireguard/config.go` | ✅ Complete | WireGuard configuration |
+| `internal/wireguard/keys.go` | ✅ Complete | Key generation utilities |
+| `internal/wireguard/errors.go` | ✅ Complete | Domain-specific errors |
+| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction |
+| `internal/wireguard/tun_linux.go` | ✅ Simplified | Linux default name constant |
+| `internal/wireguard/tun_darwin.go` | ✅ Simplified | macOS default name constant |
+| `internal/wireguard/tun_windows.go` | ✅ Simplified | Windows default name constant |
+
+**Test Coverage**: 22 unit tests passing (config & keys validated)
 
 ---
 
 ## Testing Strategy
 
+### ✅ Completed
+- Unit tests for ICEConfig validation (10 tests)
+- Unit tests for WireGuardConfig validation (12 tests)
+- Unit tests for key generation and validation (10 tests)
+- All tests passing
+
+### ⏳ Pending
 - Unit tests for ICEBind (mock net.Conn)
+- Unit tests for ICE agent
 - Integration tests with local STUN server
 - Test candidate gathering on different network types
-- Test WireGuard handshake over mocked ICE connection
-- Platform-specific TUN tests
+- End-to-end test: Two peers over ICE with WireGuard encryption
 
 ---
 
-## CLAUDE.md for this folder
+## Next Steps
 
-After implementation, create `internal/ice/CLAUDE.md` and `internal/wireguard/CLAUDE.md` with:
+1. **Stage 7**: Create WireGuard device wrapper (`device.go`)
+2. **Stage 8**: Write unit tests for agent and bind
+3. **Stage 9**: Create integration test (2-peer connection)
+4. **Stage 10**: Document components (CLAUDE.md files)
+5. **Stage 11**: Build demo application
+
+---
+
+## Known Simplifications
+
+### TUN Device Implementation
+- Desktop platforms (Linux/Windows/macOS) all use `tun.CreateTUN()` identically
+- Platform-specific files reduced to default name constants only
+- wireguard-go handles all OS-specific logic internally
+- Mobile platforms require different approaches (Phase 5):
+  - **Android**: OS creates TUN fd via VpnService API → Pass to Go
+  - **iOS**: OS provides packet flow API → Custom bridging needed
+
+### ICEBind Design
+- BatchSize = 1 (simplifies initial implementation)
+- Single endpoint per bind (ICE is point-to-point)
+- Direct reads from net.Conn (no additional buffering)
+- SetMark is no-op (not applicable for ICE connections)
+
+---
+
+## CLAUDE.md Documentation
+
+After Stage 7 completion, create component documentation:
+
+**`internal/ice/CLAUDE.md`**:
 - Component overview
-- Key interfaces
-- Common operations
+- Key interfaces (Agent, ICEBind)
+- Common operations (gather, connect, bind)
 - Testing commands
-- Known issues/limitations
+- Known limitations
+
+**`internal/wireguard/CLAUDE.md`**:
+- Component overview
+- Key interfaces (Device, TUN)
+- Platform differences
+- Testing commands
+- Mobile considerations

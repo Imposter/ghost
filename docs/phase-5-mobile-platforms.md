@@ -1,250 +1,164 @@
-# Phase 5: Mobile Platforms
+﻿# Phase 5: Mobile Platforms (User-Space Tunneling)
 
 ## Overview
 
-This phase implements platform-specific integrations for Android (VpnService) and iOS (Network Extension), including power management and secure key storage.
+This phase implements consumer-facing mobile applications using **React Native with Expo**. 
+
+Unlike Phase 1-3 which focuses on a system-level network interface (TUN/TAP), the mobile implementation operates entirely in **user space**. It does **not** use the OS-level VPN APIs (`VpnService` on Android or `NetworkExtension` on iOS). 
+
+Instead, it embeds the Ghost Core node as a library, which starts a local SOCKS5 or HTTP CONNECT proxy server. The mobile application (and any embedded WebView) routes traffic explicitly through this local proxy.
 
 ---
 
-## Android Integration
+## Architecture
 
-### 5.1 VPN Service Bridge (`internal/platform/android/vpnservice.go`)
-
-Go code that bridges to Android's VpnService.
-
-```go
-// +build android
-
-// StartTunnel is called from Kotlin when VpnService starts
-//export StartTunnel
-func StartTunnel(fd int, configJSON string) error
-
-// StopTunnel is called when VpnService stops
-//export StopTunnel
-func StopTunnel() error
-
-// GetStatus returns current tunnel status as JSON
-//export GetStatus
-func GetStatus() string
+```mermaid
+graph TD
+    UI[React Native UI] -->|Calls| NativeModule[Ghost Native Module]
+    NativeModule -->|JNI/Cgo| GoLib[Go Shared Lib]
+    
+    subgraph "Go Runtime (User Space)"
+        GoLib -->|Starts| LocalProxy[Listen :8080]
+        LocalProxy -->|Routes| WG[WireGuard Userspace]
+        WG -->|UDP| Internet
+    end
+    
+    UI -->|HTTP Requests| LocalProxy
 ```
 
-### 5.2 Kotlin VPN Service (`GhostVpnService.kt`)
+## 5.1 Go Mobile Bindings (`cmd/ghost-mobile/`)
 
-Android VpnService implementation (reference).
+We use `gomobile bind` to export the control API. The Go runtime manages the lifecycle of the tunnel and the local proxy server.
 
+### Go Exports (`mobile.go`)
+```go
+package mobile
+
+import "C"
+
+// Config passes initial settings including signaling server, keys, and listening ports.
+// {
+//   "privateKey": "...",
+//   "listenPort": 8080,
+//   "signalingUrl": "..."
+// }
+func StartNode(configJSON string) error
+
+// StopNode shuts down the tunnel and closes the local proxy listener.
+func StopNode() error
+
+// GetState returns JSON status (connected peers, bytes transferred).
+func GetState() string
+```
+
+### Internal Implementation
+- **No TUN Device**: The `wireguard-go` device involves a "netstack" or virtual implementation that doesn't attach to a kernel interface.
+- **Proxy Listener**: The HTTP/WebSocket Proxy from Phase 4 is initialized with a `net.Listener` on localhost (e.g., 127.0.0.1:0 to pick a free port, returning it to the caller).
+- **Transport**: The Proxy uses `tunnel.DialContext` effectively bridging the local TCP listener to the remote WireGuard peer.
+
+---
+
+## 5.2 React Native Native Modules (Expo)
+
+We create a lightweight Native Module to bridge the Go functions to JavaScript. Since we are not using `VpnService`, we don't need complex Config Plugins for entitlements. Standard Expo Development Builds are sufficient to link the `.aar` / `.xcframework`.
+
+### Android Module (`GhostModule.kt`)
 ```kotlin
-class GhostVpnService : VpnService() {
+class GhostModule(reactContext: ReactApplicationContext) : Module() {
+    // Defines the JS API
+    override fun definition() = ModuleDefinition {
+        Name("Ghost")
 
-    external fun startTunnel(fd: Int, config: String): String?
-    external fun stopTunnel(): String?
+        Function("start") { config: String ->
+            // Call into Go shared library
+            try {
+                Mobile.startNode(config)
+                return@Function true
+            } catch (e: Exception) {
+                throw e
+            }
+        }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 1. Start foreground notification (required Android 8+)
-        // 2. Build VPN interface with Builder
-        // 3. Call protect() on tunnel sockets
-        // 4. Call startTunnel() with file descriptor
+        Function("stop") {
+            Mobile.stopNode()
+        }
+        
+        Function("getState") {
+            return@Function Mobile.getState()
+        }
     }
 }
 ```
 
-**Key considerations:**
-- **Foreground Service**: Required for background execution
-- **Socket Protection**: Must call `protect()` on tunnel socket
-- **Always-On VPN**: Support system-managed VPN
-- **Per-App VPN**: Support app-specific routing
-
-### 5.3 Android Keystore Integration
-
-```kotlin
-object SecureStorage {
-    private const val KEYSTORE_ALIAS = "ghost_keys"
-
-    fun storePrivateKey(key: ByteArray) {
-        // Store in Android Keystore (hardware-backed when available)
-    }
-
-    fun getPrivateKey(): ByteArray? {
-        // Retrieve from Keystore
-    }
-}
-```
-
----
-
-## iOS Integration
-
-### 5.4 Network Extension Bridge (`internal/platform/ios/tunnel.go`)
-
-Go code for iOS Network Extension.
-
-```go
-// +build ios
-
-//export CreateTunnel
-func CreateTunnel(configJSON *C.char) unsafe.Pointer
-
-//export StartTunnel
-func StartTunnel(handlePtr unsafe.Pointer, tunFd C.int) C.int
-
-//export StopTunnel
-func StopTunnel(handlePtr unsafe.Pointer)
-
-//export SetCallbacks
-func SetCallbacks(stateCallback, errorCallback)
-```
-
-### 5.5 Swift Packet Tunnel Provider (`PacketTunnelProvider.swift`)
-
-iOS Network Extension implementation (reference).
-
+### iOS Module (`GhostModule.swift`)
 ```swift
-class PacketTunnelProvider: NEPacketTunnelProvider {
+public class GhostModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("Ghost")
 
-    override func startTunnel(options: [String : NSObject]?,
-                              completionHandler: @escaping (Error?) -> Void) {
-        // 1. Configure tunnel settings
-        // 2. Call setTunnelNetworkSettings
-        // 3. Get tunnel file descriptor
-        // 4. Call Go StartTunnel
+    Function("start") { (config: String) in
+      var error: NSError?
+      MobileStartNode(config, &error)
+      if let error = error {
+        throw error
+      }
     }
 
-    override func stopTunnel(with reason: NEProviderStopReason,
-                             completionHandler: @escaping () -> Void) {
-        // Call Go StopTunnel
+    Function("stop") {
+      MobileStopNode(nil)
     }
-}
-```
-
-**Key considerations:**
-- **Memory Limits**: 15MB limit for Network Extension
-- **Separate Process**: Extension runs in separate process
-- **System Lifecycle**: iOS manages extension lifecycle
-- **No Background Tasks**: Cannot prevent termination
-
-### 5.6 iOS Keychain Integration
-
-```swift
-struct SecureStorage {
-    static func storeKey(_ key: Data, identifier: String) throws {
-        // Store in iOS Keychain (Secure Enclave when available)
+    
+    Function("getState") {
+      return MobileGetState()
     }
-
-    static func getKey(identifier: String) throws -> Data? {
-        // Retrieve from Keychain
-    }
+  }
 }
 ```
 
 ---
 
-## Power Management
+## 5.3 Application Logic & Usage
 
-### 5.7 Power Manager (`internal/platform/power.go`)
+### Connection Flow
+1. **User Login**: Authenticate with coordination server (REST/WebSocket).
+2. **Peer Discovery**: Receive list of peers and their public keys.
+3. **Start Node**: Call `Ghost.start(config)`.
+   - Go Runtime starts WireGuard engine.
+   - Go Runtime starts HTTP Proxy on `127.0.0.1:0` (random port).
+   - Go Runtime reports the actual port back (via state event or return value).
+4. **App Usage**:
+   - To access a service on Peer A (`10.0.0.5`), the app sends a request to:
+     `http://127.0.0.1:{LOCAL_PORT}/mesh/10.0.0.5/api/resource`
+     (Assuming the Phase 4 proxy supports path-based routing).
 
-Platform-agnostic power state handling.
-
-```go
-type PowerManager interface {
-    OnBatteryLow()
-    OnScreenOff()
-    OnScreenOn()
-    AdjustKeepalive(state PowerState) time.Duration
-}
-
-type PowerState string
-
-const (
-    PowerStateNormal     PowerState = "normal"
-    PowerStateLowBattery PowerState = "low_battery"
-    PowerStateCharging   PowerState = "charging"
-    PowerStateScreenOff  PowerState = "screen_off"
-)
-```
-
-**Keepalive adjustments:**
-
-| State | WireGuard Keepalive |
-|-------|---------------------|
-| Normal | 25s |
-| Low Battery | 60s |
-| Charging | 15s |
-| Screen Off | 45s |
+### Background Execution
+Since we are not a VPN Service, the OS may suspend the app when backgrounded.
+- **Android**: Use a Foreground Service (Data Sync type) if we need to keep the tunnel alive for notifications or background syncing.
+- **iOS**: Limited background execution. The tunnel will likely pause when the app is backgrounded unless using specific background modes (User enters 'Background Fetch' or 'Audio' hacks, though not recommended for App Store compliance). **Expectation:** The tunnel is primarily active while the app is in foreground.
 
 ---
 
-## Mobile Build Configuration
+## 5.4 Build Workflow
 
-### gomobile Setup
-
-```bash
-# Install gomobile
-go install golang.org/x/mobile/cmd/gomobile@latest
-gomobile init
-
-# Build Android AAR
-gomobile bind -target=android -o ghost.aar ./cmd/ghost-mobile
-
-# Build iOS Framework
-gomobile bind -target=ios -o Ghost.xcframework ./cmd/ghost-mobile
-```
-
-### Build Script (`scripts/build-mobile.sh`)
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Android
-echo "Building Android..."
-gomobile bind -target=android \
-    -androidapi 21 \
-    -o build/ghost.aar \
-    ./cmd/ghost-mobile
-
-# iOS
-echo "Building iOS..."
-gomobile bind -target=ios \
-    -o build/Ghost.xcframework \
-    ./cmd/ghost-mobile
-```
+### Steps
+1. **Compile Go Mobile Lib**:
+   ```bash
+   # Android
+   gomobile bind -target=android -o android/libs/ghost.aar ./cmd/ghost-mobile
+   
+   # iOS
+   gomobile bind -target=ios -o ios/Ghost.xcframework ./cmd/ghost-mobile
+   ```
+2. **Configure Expo**:
+   Link the binaries in `app.json` or `expo-build-properties` if necessary, or simply place them where the native modules can find them.
+3. **Dev Build**:
+   ```bash
+   npx expo run:android
+   npx expo run:ios
+   ```
 
 ---
 
-## Files to Create
-
-| File | Purpose |
-|------|---------|
-| `cmd/ghost-mobile/main.go` | Mobile library entry point |
-| `internal/platform/android/vpnservice.go` | Android VPN bridge |
-| `internal/platform/android/tunnel.go` | Android tunnel management |
-| `internal/platform/ios/tunnel.go` | iOS Network Extension bridge |
-| `internal/platform/ios/extension.go` | Extension lifecycle |
-| `internal/platform/power.go` | Power management interface |
-| `internal/platform/power_android.go` | Android power management |
-| `internal/platform/power_ios.go` | iOS power management |
-| `scripts/build-mobile.sh` | Mobile build script |
-
----
-
-## Platform Comparison
-
-| Feature | Android | iOS |
-|---------|---------|-----|
-| VPN API | VpnService | NEPacketTunnelProvider |
-| Background | Foreground Service | Extension process |
-| Memory | ~50-100MB | 15MB limit |
-| Key Storage | Android Keystore | iOS Keychain |
-| Socket Protection | protect() method | Automatic |
-| Lifecycle | App controls | System controls |
-
----
-
-## Testing Strategy
-
-- Unit tests for Go bindings
-- Android instrumented tests
-- iOS XCTest for extension
-- Test VPN configuration
-- Test key storage
-- Test power state handling
-- Test reconnection on network change
+## Dependencies
+- `golang.org/x/mobile`
+- `expo-modules-core`
