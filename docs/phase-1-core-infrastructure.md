@@ -77,24 +77,43 @@ func (b *ICEBind) ParseEndpoint(s string) (conn.Endpoint, error)
 
 ### 1.3 WireGuard Device Wrapper (`internal/wireguard/device.go`)
 
-**Status**: ⏳ Pending (Stage 7)
+**Status**: ✅ Complete
 
-Wraps wireguard-go's device with configuration helpers.
+Wraps wireguard-go's device with lifecycle management and peer configuration.
 
 ```go
 type Device struct {
-    device    *device.Device
-    tun       tun.Device
-    bind      conn.Bind
-    logger    *slog.Logger
+    device *device.Device
+    tun    tun.Device
+    bind   conn.Bind
+    config *WireGuardConfig
+    logger *slog.Logger
+    
+    peers  map[string]*PeerConfig
+    isUp   bool
+    closed bool
 }
 
-func NewDevice(tunDevice tun.Device, bind conn.Bind, config *WireGuardConfig) (*Device, error)
-func (d *Device) Configure(privateKey, peerPublicKey []byte, allowedIPs []string) error
+// Core methods implemented:
+func NewDevice(tunDevice tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Device, error)
+func (d *Device) Configure(privateKey []byte) error
+func (d *Device) AddPeer(peerConfig *PeerConfig) error
+func (d *Device) RemovePeer(publicKey []byte) error
+func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error
 func (d *Device) Up() error
 func (d *Device) Down() error
 func (d *Device) Close() error
+func (d *Device) GetPeers() []*PeerConfig
+func (d *Device) GetStatus() (string, error)
 ```
+
+**Key features**:
+- Thread-safe operations with mutexes
+- IPC-based configuration (WireGuard standard)
+- Dynamic peer management
+- Endpoint updates (for NAT rebinding)
+- Proper resource cleanup
+- Structured logging
 
 ### 1.4 TUN Device Abstraction (`internal/wireguard/tun.go`)
 
@@ -185,21 +204,29 @@ type WireGuardConfig struct {
 
 | File | Status | Purpose |
 |------|--------|---------|
-| `internal/ice/agent.go` | ✅ Complete | ICE agent wrapper |
-| `internal/ice/bind.go` | ✅ Complete | ICEBind adapter (conn.Bind) ⭐ CRITICAL |
-| `internal/ice/config.go` | ✅ Complete | ICE configuration with validation |
-| `internal/ice/types.go` | ✅ Complete | Candidate, Endpoint types |
-| `internal/ice/errors.go` | ✅ Complete | Domain-specific errors |
-| `internal/wireguard/device.go` | ⏳ Pending | WireGuard device wrapper |
-| `internal/wireguard/config.go` | ✅ Complete | WireGuard configuration |
-| `internal/wireguard/keys.go` | ✅ Complete | Key generation utilities |
-| `internal/wireguard/errors.go` | ✅ Complete | Domain-specific errors |
-| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction |
-| `internal/wireguard/tun_linux.go` | ✅ Simplified | Linux default name constant |
-| `internal/wireguard/tun_darwin.go` | ✅ Simplified | macOS default name constant |
-| `internal/wireguard/tun_windows.go` | ✅ Simplified | Windows default name constant |
+| `internal/ice/agent.go` | ✅ Complete | ICE agent wrapper (370 lines) |
+| `internal/ice/bind.go` | ✅ Complete | ICEBind adapter (conn.Bind) ⭐ CRITICAL (245 lines) |
+| `internal/ice/config.go` | ✅ Complete | ICE configuration with validation (155 lines) |
+| `internal/ice/types.go` | ✅ Complete | Candidate, Endpoint types (110 lines) |
+| `internal/ice/errors.go` | ✅ Complete | Domain-specific errors (25 lines) |
+| `internal/wireguard/device.go` | ✅ Complete | WireGuard device wrapper (370 lines) |
+| `internal/wireguard/config.go` | ✅ Complete | WireGuard configuration (130 lines) |
+| `internal/wireguard/keys.go` | ✅ Complete | Key generation utilities (110 lines) |
+| `internal/wireguard/errors.go` | ✅ Complete | Domain-specific errors (25 lines) |
+| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction (45 lines) |
+| `internal/wireguard/tun_linux.go` | ✅ Simplified | Linux default name constant (3 lines) |
+| `internal/wireguard/tun_darwin.go` | ✅ Simplified | macOS default name constant (3 lines) |
+| `internal/wireguard/tun_windows.go` | ✅ Simplified | Windows default name constant (3 lines) |
 
-**Test Coverage**: 22 unit tests passing (config & keys validated)
+**Test Files**:
+| File | Tests | Status |
+|------|-------|--------|
+| `internal/ice/config_test.go` | 10 tests | ✅ All passing |
+| `internal/wireguard/config_test.go` | 12 tests | ✅ All passing |
+| `internal/wireguard/keys_test.go` | 10 tests | ✅ All passing |
+| `internal/wireguard/device_test.go` | Infrastructure | ✅ Ready for integration tests |
+
+**Total Code**: ~1,600 lines of production code + ~900 lines of tests
 
 ---
 
@@ -222,11 +249,31 @@ type WireGuardConfig struct {
 
 ## Next Steps
 
-1. **Stage 7**: Create WireGuard device wrapper (`device.go`)
-2. **Stage 8**: Write unit tests for agent and bind
-3. **Stage 9**: Create integration test (2-peer connection)
-4. **Stage 10**: Document components (CLAUDE.md files)
-5. **Stage 11**: Build demo application
+### ✅ Stage 7 Complete
+WireGuard device wrapper implemented with full lifecycle management.
+
+### Stage 8: Integration Testing (Next)
+1. **Mock signaling** - Simple in-memory candidate exchange for testing
+2. **Test utilities** - Helpers for creating test peers
+3. **End-to-end test** - Two peers connecting via ICE + WireGuard
+4. **Packet transmission test** - Verify encrypted data flow
+
+### Stage 9: Error Handling Enhancement
+- Add more context to errors
+- Implement retry logic where appropriate
+- Better timeout handling
+
+### Stage 10: Documentation
+- Create `internal/ice/CLAUDE.md`
+- Create `internal/wireguard/CLAUDE.md`
+- Update main README.md
+- Add architecture diagrams
+
+### Stage 11: Demo Application
+- Build `cmd/phase1-demo/main.go`
+- Show complete connection flow
+- CLI configuration
+- Status reporting
 
 ---
 
