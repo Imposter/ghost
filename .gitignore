@@ -22,6 +22,7 @@ go.work
 # IDE
 .vscode/
 .idea/
+!.idea/runConfigurations/
 *.swp
 *.swo
 *~
