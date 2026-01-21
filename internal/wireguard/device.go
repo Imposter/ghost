@@ -218,7 +218,9 @@ func (d *Device) Up() error {
 	}
 
 	// Bring up the device
-	d.device.Up()
+	if err := d.device.Up(); err != nil {
+		return fmt.Errorf("failed to bring device up: %w", err)
+	}
 	d.isUp = true
 
 	d.logger.Info("Device is up")
@@ -239,7 +241,9 @@ func (d *Device) Down() error {
 	}
 
 	// Bring down the device
-	d.device.Down()
+	if err := d.device.Down(); err != nil {
+		return fmt.Errorf("failed to bring device down: %w", err)
+	}
 	d.isUp = false
 
 	d.logger.Info("Device is down")

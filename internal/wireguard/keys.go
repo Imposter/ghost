@@ -11,7 +11,14 @@ import (
 
 const (
 	// KeySize is the size of WireGuard keys in bytes.
+	// Both private and public keys are 32 bytes for Curve25519.
 	KeySize = 32
+
+	// Curve25519 key clamping constants per RFC 7748.
+	// These ensure the private key is a valid scalar for the curve.
+	curve25519ClampLow  = 248 // Clear low 3 bits: key[0] &= 248
+	curve25519ClampHigh = 127 // Clear high bit: key[31] &= 127
+	curve25519SetBit    = 64  // Set bit 6: key[31] |= 64
 )
 
 // GeneratePrivateKey generates a new WireGuard private key.
@@ -21,10 +28,11 @@ func GeneratePrivateKey() ([]byte, error) {
 		return nil, fmt.Errorf("failed to generate random key: %w", err)
 	}
 
-	// Clamp the key as per Curve25519 requirements
-	key[0] &= 248
-	key[31] &= 127
-	key[31] |= 64
+	// Clamp the key as per Curve25519 requirements (RFC 7748)
+	// This ensures the scalar is in the correct range for the curve
+	key[0] &= curve25519ClampLow   // Clear low 3 bits
+	key[31] &= curve25519ClampHigh // Clear high bit
+	key[31] |= curve25519SetBit    // Set bit 6
 
 	return key, nil
 }

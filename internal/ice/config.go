@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+// Default timeout and interval values for ICE operations.
+const (
+	// DefaultGatherTimeout is the default maximum time to wait for candidate gathering.
+	// 10 seconds is typically sufficient for gathering host, srflx, and relay candidates.
+	DefaultGatherTimeout = 10 * time.Second
+
+	// DefaultConnectionTimeout is the default maximum time to wait for ICE connection establishment.
+	// 30 seconds allows for multiple connectivity check rounds per RFC 8445.
+	DefaultConnectionTimeout = 30 * time.Second
+
+	// DefaultKeepaliveInterval is the default interval between keepalive packets.
+	// 15 seconds keeps NAT bindings alive while being bandwidth-efficient.
+	DefaultKeepaliveInterval = 15 * time.Second
+
+	// DefaultSTUNPort is the standard STUN server port (RFC 5389).
+	DefaultSTUNPort = 19302
+
+	// DefaultTURNPort is the standard TURN server port (RFC 5766).
+	DefaultTURNPort = 3478
+)
+
 // CandidateType represents the type of ICE candidate.
 type CandidateType string
 
@@ -66,9 +87,9 @@ func DefaultICEConfig() *ICEConfig {
 	return &ICEConfig{
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		TURNServers:       []TURNServer{},
-		GatherTimeout:     10 * time.Second,
-		ConnectionTimeout: 30 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
+		GatherTimeout:     DefaultGatherTimeout,
+		ConnectionTimeout: DefaultConnectionTimeout,
+		KeepaliveInterval: DefaultKeepaliveInterval,
 		InterfaceFilter:   []string{},
 		CandidateTypes: []CandidateType{
 			CandidateTypeHost,

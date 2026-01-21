@@ -75,8 +75,10 @@ for _, remoteCand := range remoteCandidates {
     agent.AddRemoteCandidate(remoteCand)
 }
 
-// 5. Connect
-conn, err := agent.Connect(ctx)
+// 5. Connect (specify controlling/controlled role)
+// Agent A (initiator) is controlling, Agent B (responder) is controlled
+controlling := true  // or false depending on role
+conn, err := agent.Connect(ctx, controlling)
 
 // 6. Use connection or wrap with ICEBind
 bind := ice.NewICEBind(conn, logger)
@@ -114,7 +116,8 @@ type Bind interface {
 **Usage:**
 ```go
 // After ICE connection established
-conn, _ := iceAgent.Connect(ctx)
+// Agent A is controlling, Agent B is controlled
+conn, _ := iceAgent.Connect(ctx, true)  // true = controlling role
 
 // Wrap for WireGuard
 bind := ice.NewICEBind(conn, logger)
@@ -236,8 +239,10 @@ for _, remoteCand := range receivedCandidates {
 // Set remote credentials
 agent.SetRemoteCredentials(remoteUfrag, remotePwd)
 
-// Connect
-conn, err := agent.Connect(ctx)
+// Connect (specify if this agent is controlling)
+// Typically: initiator = controlling, responder = controlled
+controlling := true  // This agent initiates connection
+conn, err := agent.Connect(ctx, controlling)
 if err != nil {
     return err
 }
@@ -249,8 +254,8 @@ if err != nil {
 ### Use with WireGuard
 
 ```go
-// After ICE connection
-conn, _ := agent.Connect(ctx)
+// After ICE connection (controlling = true for initiator)
+conn, _ := agent.Connect(ctx, true)
 
 // Create bind
 bind := ice.NewICEBind(conn, logger)

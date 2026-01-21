@@ -11,6 +11,18 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
+// Network buffer size constants.
+const (
+	// ReceiveChannelBufferSize is the channel buffer for received packets.
+	// 32 provides sufficient buffering for typical WireGuard traffic patterns
+	// without excessive memory usage.
+	ReceiveChannelBufferSize = 32
+
+	// MaxUDPPacketSize is the maximum size of a UDP packet.
+	// This is the theoretical maximum for IPv4/IPv6 UDP (64KB - headers).
+	MaxUDPPacketSize = 65535
+)
+
 // ICEBind implements WireGuard's conn.Bind interface using an ICE connection.
 // This is the critical adapter that bridges ICE and WireGuard.
 //
@@ -47,7 +59,7 @@ func NewICEBind(conn net.Conn, logger *slog.Logger) *ICEBind {
 		conn:     conn,
 		endpoint: endpoint,
 		logger:   logger,
-		recvChan: make(chan []byte, 32), // Buffer for received packets
+		recvChan: make(chan []byte, ReceiveChannelBufferSize),
 		stopChan: make(chan struct{}),
 	}
 }
@@ -122,7 +134,7 @@ func (b *ICEBind) makeReceiveFunc() conn.ReceiveFunc {
 func (b *ICEBind) receiveLoop() {
 	defer b.logger.Info("Receive loop stopped")
 
-	buffer := make([]byte, 65535) // Max UDP packet size
+	buffer := make([]byte, MaxUDPPacketSize)
 
 	for {
 		n, err := b.conn.Read(buffer)

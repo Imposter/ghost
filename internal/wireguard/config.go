@@ -7,6 +7,32 @@ import (
 	"time"
 )
 
+// Default WireGuard configuration values.
+const (
+	// DefaultMTU is the default maximum transmission unit.
+	// 1280 bytes is the minimum IPv6 MTU and works safely across most networks
+	// including those with tunneling overhead.
+	DefaultMTU = 1280
+
+	// MinMTU is the minimum allowed MTU value.
+	// 576 is the minimum practical MTU for IP networks.
+	MinMTU = 576
+
+	// MaxMTU is the maximum allowed MTU value.
+	// Limited by IP packet size constraints.
+	MaxMTU = 65535
+
+	// DefaultPersistentKeepalive is the default keepalive interval.
+	// 25 seconds keeps NAT bindings alive while being bandwidth-efficient.
+	DefaultPersistentKeepalive = 25 * time.Second
+
+	// MinPort is the minimum valid port number (1-65535).
+	MinPort = 1
+
+	// MaxPort is the maximum valid port number (1-65535).
+	MaxPort = 65535
+)
+
 // WireGuardConfig holds WireGuard-specific settings.
 type WireGuardConfig struct {
 	// PrivateKey is the WireGuard private key (32 bytes).
@@ -45,9 +71,9 @@ type PeerConfig struct {
 // DefaultWireGuardConfig returns a configuration with sensible defaults.
 func DefaultWireGuardConfig() *WireGuardConfig {
 	return &WireGuardConfig{
-		ListenPort:          0,    // Auto-assign
-		MTU:                 1280, // Safe default
-		PersistentKeepalive: 25 * time.Second,
+		ListenPort:          0,          // Auto-assign
+		MTU:                 DefaultMTU, // Safe default
+		PersistentKeepalive: DefaultPersistentKeepalive,
 	}
 }
 
@@ -61,7 +87,7 @@ func (c *WireGuardConfig) Validate() error {
 		return fmt.Errorf("private key must be 32 bytes, got %d", len(c.PrivateKey))
 	}
 
-	if c.ListenPort < 0 || c.ListenPort > 65535 {
+	if c.ListenPort < 0 || c.ListenPort > MaxPort {
 		return fmt.Errorf("invalid listen port: %d", c.ListenPort)
 	}
 
@@ -69,12 +95,12 @@ func (c *WireGuardConfig) Validate() error {
 		return fmt.Errorf("MTU must be positive, got %d", c.MTU)
 	}
 
-	if c.MTU < 576 {
-		return fmt.Errorf("MTU too small (minimum 576), got %d", c.MTU)
+	if c.MTU < MinMTU {
+		return fmt.Errorf("MTU too small (minimum %d), got %d", MinMTU, c.MTU)
 	}
 
-	if c.MTU > 65535 {
-		return fmt.Errorf("MTU too large (maximum 65535), got %d", c.MTU)
+	if c.MTU > MaxMTU {
+		return fmt.Errorf("MTU too large (maximum %d), got %d", MaxMTU, c.MTU)
 	}
 
 	if c.PersistentKeepalive < 0 {

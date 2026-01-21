@@ -133,7 +133,7 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		connA, errA = agentA.Connect(ctx)
+		connA, errA = agentA.Connect(ctx, true) // Agent A is controlling
 		if errA == nil {
 			t.Log("Peer A connected successfully")
 		}
@@ -141,7 +141,7 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		connB, errB = agentB.Connect(ctx)
+		connB, errB = agentB.Connect(ctx, false) // Agent B is controlled
 		if errB == nil {
 			t.Log("Peer B connected successfully")
 		}
@@ -299,19 +299,22 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 	// Connect
 	wg.Add(2)
 	var connA, connB net.Conn
+	var errA, errB error
 
 	go func() {
 		defer wg.Done()
-		connA, _ = agentA.Connect(ctx)
+		connA, errA = agentA.Connect(ctx, true) // Agent A is controlling
 	}()
 
 	go func() {
 		defer wg.Done()
-		connB, _ = agentB.Connect(ctx)
+		connB, errB = agentB.Connect(ctx, false) // Agent B is controlled
 	}()
 
 	wg.Wait()
 
+	require.NoError(t, errA, "agent A should connect")
+	require.NoError(t, errB, "agent B should connect")
 	require.NotNil(t, connA, "should have connection A")
 	require.NotNil(t, connB, "should have connection B")
 
@@ -350,8 +353,16 @@ func TestICEBind_WithMockConnection(t *testing.T) {
 
 	// Create a pipe to simulate a connection
 	connA, connB := net.Pipe()
-	defer connA.Close()
-	defer connB.Close()
+	defer func() {
+		if err := connA.Close(); err != nil {
+			t.Logf("Failed to close connA: %v", err)
+		}
+	}()
+	defer func() {
+		if err := connB.Close(); err != nil {
+			t.Logf("Failed to close connB: %v", err)
+		}
+	}()
 
 	// Create ICEBind with connA
 	bind := ice.NewICEBind(connA, logger)
@@ -384,7 +395,11 @@ func TestICEBind_Close(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
 	connA, connB := net.Pipe()
-	defer connB.Close()
+	defer func() {
+		if err := connB.Close(); err != nil {
+			t.Logf("Failed to close connB: %v", err)
+		}
+	}()
 
 	bind := ice.NewICEBind(connA, logger)
 
@@ -430,6 +445,7 @@ func BenchmarkICEConnection(b *testing.B) {
 		STUNServers:       []string{},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	b.ResetTimer()
@@ -438,8 +454,14 @@ func BenchmarkICEConnection(b *testing.B) {
 		b.StopTimer()
 
 		signaling := testutil.NewMockSignalingChannel(logger)
-		agentA, _ := ice.NewAgent(config, logger)
-		agentB, _ := ice.NewAgent(config, logger)
+		agentA, errA := ice.NewAgent(config, logger)
+		if errA != nil {
+			b.Fatalf("Failed to create agent A: %v", errA)
+		}
+		agentB, errB := ice.NewAgent(config, logger)
+		if errB != nil {
+			b.Fatalf("Failed to create agent B: %v", errB)
+		}
 
 		ufragA, pwdA := agentA.LocalCredentials()
 		ufragB, pwdB := agentB.LocalCredentials()
@@ -452,14 +474,22 @@ func BenchmarkICEConnection(b *testing.B) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			candChan, _ := agentA.GatherCandidates(ctx)
+			candChan, err := agentA.GatherCandidates(ctx)
+			if err != nil {
+				b.Logf("Failed to gather candidates for agent A: %v", err)
+				return
+			}
 			for cand := range candChan {
 				signaling.SendCandidateFromA(toTestCandidate(cand))
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			candChan, _ := agentB.GatherCandidates(ctx)
+			candChan, err := agentB.GatherCandidates(ctx)
+			if err != nil {
+				b.Logf("Failed to gather candidates for agent B: %v", err)
+				return
+			}
 			for cand := range candChan {
 				signaling.SendCandidateFromB(toTestCandidate(cand))
 			}
@@ -467,16 +497,33 @@ func BenchmarkICEConnection(b *testing.B) {
 		wg.Wait()
 
 		for _, cand := range signaling.GetCandidatesForA() {
-			agentA.AddRemoteCandidate(fromTestCandidate(cand))
+			if err := agentA.AddRemoteCandidate(fromTestCandidate(cand)); err != nil {
+				b.Logf("Failed to add candidate to agent A: %v", err)
+			}
 		}
 		for _, cand := range signaling.GetCandidatesForB() {
-			agentB.AddRemoteCandidate(fromTestCandidate(cand))
+			if err := agentB.AddRemoteCandidate(fromTestCandidate(cand)); err != nil {
+				b.Logf("Failed to add candidate to agent B: %v", err)
+			}
 		}
 
-		remoteCreds, _ := signaling.GetCredentialsForA(ctx)
-		agentA.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
-		remoteCreds, _ = signaling.GetCredentialsForB(ctx)
-		agentB.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd)
+		remoteCreds, err := signaling.GetCredentialsForA(ctx)
+		if err != nil {
+			b.Logf("Failed to get credentials for A: %v", err)
+		} else {
+			if err := agentA.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd); err != nil {
+				b.Logf("Failed to set remote credentials for A: %v", err)
+			}
+		}
+
+		remoteCreds, err = signaling.GetCredentialsForB(ctx)
+		if err != nil {
+			b.Logf("Failed to get credentials for B: %v", err)
+		} else {
+			if err := agentB.SetRemoteCredentials(remoteCreds.Ufrag, remoteCreds.Pwd); err != nil {
+				b.Logf("Failed to set remote credentials for B: %v", err)
+			}
+		}
 
 		b.StartTimer()
 
@@ -485,24 +532,41 @@ func BenchmarkICEConnection(b *testing.B) {
 		var connA, connB net.Conn
 		go func() {
 			defer wg.Done()
-			connA, _ = agentA.Connect(ctx)
+			connA, errA = agentA.Connect(ctx, true)
 		}()
 		go func() {
 			defer wg.Done()
-			connB, _ = agentB.Connect(ctx)
+			connB, errB = agentB.Connect(ctx, false)
 		}()
 		wg.Wait()
 
 		b.StopTimer()
 
+		// Check for errors (but don't fail benchmark if occasional timeout)
+		if errA != nil {
+			b.Logf("Agent A connection error: %v", errA)
+		}
+		if errB != nil {
+			b.Logf("Agent B connection error: %v", errB)
+		}
+
 		if connA != nil {
-			connA.Close()
+			if err := connA.Close(); err != nil {
+				b.Logf("Failed to close connA: %v", err)
+			}
 		}
 		if connB != nil {
-			connB.Close()
+			if err := connB.Close(); err != nil {
+				b.Logf("Failed to close connB: %v", err)
+			}
 		}
-		agentA.Close()
-		agentB.Close()
+
+		if err := agentA.Close(); err != nil {
+			b.Logf("Failed to close agent A: %v", err)
+		}
+		if err := agentB.Close(); err != nil {
+			b.Logf("Failed to close agent B: %v", err)
+		}
 	}
 }
 

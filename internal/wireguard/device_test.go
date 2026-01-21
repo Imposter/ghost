@@ -352,10 +352,11 @@ func TestDevice_Close(t *testing.T) {
 
 func TestDevice_OperationsAfterClose(t *testing.T) {
 	device, _, _ := newMockDevice(t)
-	device.Close()
+	err := device.Close()
+	require.NoError(t, err)
 
 	// All operations should return ErrDeviceClosed
-	err := device.Up()
+	err = device.Up()
 	assert.ErrorIs(t, err, ErrDeviceClosed)
 
 	err = device.Down()
