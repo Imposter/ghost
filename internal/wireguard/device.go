@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -87,8 +88,12 @@ func (d *Device) Configure(privateKey []byte) error {
 		return fmt.Errorf("invalid private key: %w", err)
 	}
 
+	// WireGuard IPC protocol uses HEX encoding for keys, not base64!
+	// 32 bytes → 64 hex characters
+	privateKeyHex := hex.EncodeToString(privateKey)
+
 	// Build IPC configuration
-	config := fmt.Sprintf("private_key=%s\n", EncodeKey(privateKey))
+	config := fmt.Sprintf("private_key=%s\n", privateKeyHex)
 
 	if d.config.ListenPort > 0 {
 		config += fmt.Sprintf("listen_port=%d\n", d.config.ListenPort)
@@ -123,8 +128,11 @@ func (d *Device) AddPeer(peerConfig *PeerConfig) error {
 		return fmt.Errorf("peer already exists: %s", publicKeyStr)
 	}
 
+	// WireGuard IPC protocol uses HEX encoding for keys!
+	publicKeyHex := hex.EncodeToString(peerConfig.PublicKey)
+
 	// Build peer configuration
-	config := fmt.Sprintf("public_key=%s\n", publicKeyStr)
+	config := fmt.Sprintf("public_key=%s\n", publicKeyHex)
 
 	// Add endpoint if provided
 	if peerConfig.Endpoint != "" {
