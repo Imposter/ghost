@@ -489,4 +489,4 @@ fmt.Println(status)  // Full IPC output
 ---
 
 **Last Updated**: January 2026  
-**Maintainer**: Ghost-GO Team
+**Maintainer**: Ghost Team
