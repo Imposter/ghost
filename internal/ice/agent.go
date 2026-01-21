@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/pion/ice/v3"
+	"github.com/pion/stun/v2"
 )
 
 // Agent handles ICE connectivity establishment.
@@ -82,7 +83,7 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 
 	// Add STUN servers
 	for _, stunURL := range config.STUNServers {
-		url, err := ice.ParseURL(stunURL)
+		url, err := stun.ParseURI(stunURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid STUN URL %s: %w", stunURL, err)
 		}
@@ -92,7 +93,7 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 	// Add TURN servers
 	for _, turnServer := range config.TURNServers {
 		for _, turnURL := range turnServer.URLs {
-			url, err := ice.ParseURL(turnURL)
+			url, err := stun.ParseURI(turnURL)
 			if err != nil {
 				return nil, fmt.Errorf("invalid TURN URL %s: %w", turnURL, err)
 			}
