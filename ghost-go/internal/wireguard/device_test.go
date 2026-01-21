@@ -3,6 +3,7 @@ package wireguard
 import (
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"testing"
@@ -63,6 +64,12 @@ type mockBind struct {
 
 func (m *mockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return []conn.ReceiveFunc{func([][]byte, []int, []conn.Endpoint) (int, error) {
+		// Check if closed - return error to signal shutdown
+		if m.closed {
+			return 0, net.ErrClosed
+		}
+		// Sleep briefly to prevent spinning, allows checking closed flag periodically
+		time.Sleep(10 * time.Millisecond)
 		return 0, nil
 	}}, port, nil
 }

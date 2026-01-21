@@ -205,8 +205,11 @@ func (d *Device) RemovePeer(publicKey []byte) error {
 		return ErrPeerNotFound
 	}
 
+	// WireGuard IPC protocol uses HEX encoding for keys!
+	publicKeyHex := hex.EncodeToString(publicKey)
+
 	// Build remove configuration
-	config := fmt.Sprintf("public_key=%s\nremove=true\n", publicKeyStr)
+	config := fmt.Sprintf("public_key=%s\nremove=true\n", publicKeyHex)
 
 	// Apply configuration via IPC
 	if err := d.device.IpcSet(config); err != nil {
@@ -388,8 +391,11 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 		return ErrInvalidEndpoint
 	}
 
+	// WireGuard IPC protocol uses HEX encoding for keys!
+	publicKeyHex := hex.EncodeToString(publicKey)
+
 	// Build IPC command to update endpoint using constants
-	config := fmt.Sprintf("%s=%s\n%s=%s\n", IPCFieldPublicKey, publicKeyStr, IPCFieldEndpoint, endpoint)
+	config := fmt.Sprintf("%s=%s\n%s=%s\n", IPCFieldPublicKey, publicKeyHex, IPCFieldEndpoint, endpoint)
 
 	// Apply configuration via IPC
 	if err := d.device.IpcSet(config); err != nil {
