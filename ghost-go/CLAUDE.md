@@ -179,7 +179,7 @@ Provides encrypted peer-to-peer tunneling using the WireGuard protocol. Wraps wi
 
 - `tun.go` + platform files - Cross-platform TUN device creation
   - `CreateTUN()` - Creates TUN device (auto-detects platform)
-  - `CreateTUNFromFD()` - Android VpnService support (Phase 5)
+  - `CreateTUNFromFD()` - Create from file descriptor (for mobile)
   - Platform-specific implementations for Linux, Windows, macOS
 
 **Design Notes:**
@@ -262,9 +262,9 @@ These decisions are foundational to the codebase. Changes should be carefully co
 
 **Scope:**
 - Export simplified API for mobile bindings
-- Test WireGuard on Android VpnService
-- Test on iOS NEPacketTunnelProvider
-- Validate performance characteristics
+- Test TUN device creation from file descriptors
+- Validate performance characteristics on mobile platforms
+- User-space library - applications manage the tunnel
 
 **Timeline:** Next phase after Phase 1 completion
 
@@ -273,7 +273,7 @@ These decisions are foundational to the codebase. Changes should be carefully co
 - **Phase 2**: WebSocket signaling server (automated candidate exchange)
 - **Phase 3**: Connection management (reconnection, keep-alive)
 - **Phase 4**: HTTP proxy layer (SOCKS5/HTTP over tunnel)
-- **Phase 5**: Full mobile SDK (Android/iOS packages)
+- **Phase 5**: Mobile SDK enhancements (gomobile bindings, platform optimization)
 
 ## Usage Example
 
@@ -424,8 +424,17 @@ sudo go run ./cmd/demo -role b
 | Linux    | ✅ Full | Native TUN, requires CAP_NET_ADMIN |
 | Windows  | ✅ Full | Wintun driver, requires Administrator |
 | macOS    | ✅ Full | utun devices, requires root |
-| Android  | ⏳ Phase 5 | VpnService integration needed |
-| iOS      | ⏳ Phase 5 | NEPacketTunnelProvider integration needed |
+| Android  | ⏳ Phase 1b | User-space library, app manages TUN via FD |
+| iOS      | ⏳ Phase 1b | User-space library, app manages TUN via FD |
+
+### Architectural Philosophy
+
+**User-Space Library**: Ghost-go is designed as a user-space library that creates encrypted tunnels. It does NOT integrate with system VPN services (Android VpnService, iOS NEPacketTunnelProvider, etc.). The library:
+- Creates the TUN device and encrypted tunnel
+- Provides the tunnel to the application
+- Delegates tunnel management (IP assignment, routing, lifecycle) to the application
+
+This design gives applications full control over tunnel behavior without requiring system-level VPN permissions or integration.
 
 ### Known Limitations
 
@@ -433,6 +442,7 @@ sudo go run ./cmd/demo -role b
 2. **Manual Signaling**: Phase 1 requires manual candidate exchange; automated in Phase 2
 3. **No Reconnection**: Connection loss requires full restart; handled in Phase 3
 4. **IPv4 Only (ICE)**: IPv6 support in ICE config but not tested (future work)
+5. **Tunnel Management**: Applications must handle IP assignment, routing, and lifecycle
 
 ## Common Tasks
 
