@@ -535,4 +535,4 @@ agent.Close()        // Close ICE agent
 
 **Last Updated:** January 2026
 **Project Phase:** Phase 1 Complete (100%)
-**Maintainer:** Ghost-GO Team
+**Maintainer:** Ghost Team
