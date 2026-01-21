@@ -1,6 +1,6 @@
 # Phase 1: Core P2P Library (ghost-go)
 
-**Status**: ✅ 100% COMPLETE - All components implemented, tested, and debugged
+**Status**: ✅ Core Complete, 📋 Userspace Networking Planned
 **Last Updated**: January 21, 2026
 **Repository**: `ghost-go/`
 
@@ -14,7 +14,8 @@ This phase implements the **core P2P tunneling library** - a pure Go library foc
 - ✅ ICE-based NAT traversal (Pion/ICE)
 - ✅ WireGuard encrypted tunneling
 - ✅ ICEBind adapter (bridges ICE to WireGuard)
-- ✅ Platform-specific TUN device creation
+- ✅ Platform-specific TUN device creation (kernel)
+- 📋 Userspace networking via gvisor/netstack (no root required)
 
 **What this library does NOT do:**
 - ❌ NO coordination/signaling (handled by ghost-proxy in Phase 2b)
@@ -56,13 +57,19 @@ This phase establishes the foundational components: Pion/ICE integration for NAT
 - ICE agent wrapper with STUN/TURN support
 - ICEBind adapter (critical component)
 - WireGuard configuration and key management
-- Cross-platform TUN device abstraction (simplified)
+- Cross-platform TUN device abstraction (kernel-based)
 - WireGuard device wrapper with lifecycle management
 - Integration tests with mock signaling
 - Demo application with interactive shell
 - **All critical bugs debugged and fixed**
 - **Code quality improvements (constants, error handling)**
 - **Comprehensive documentation**
+
+### 📋 What's Planned
+- Userspace networking (`CreateNetTUN`) via gvisor/netstack
+- Enables mobile apps without VpnService/NEPacketTunnelProvider
+- No root/admin permissions required
+- Standard Go networking interfaces (`net.Conn`, `net.Listener`)
 
 ### 🎯 Ready for Final Testing
 - End-to-end demo with HEX-encoded WireGuard keys
@@ -270,6 +277,146 @@ Go Layer:
 
 iOS is **not fd-based** - it uses packet flow callbacks, requiring custom bridging code that we'll implement in Phase 5.
 
+### 1.5 Userspace Networking (`internal/wireguard/tun_netstack.go`)
+
+**Status**: 📋 PLANNED
+
+Provides an alternative to kernel TUN devices using gvisor's netstack - a complete userspace TCP/IP stack. This enables WireGuard tunneling without requiring root/admin privileges or platform-specific VPN APIs.
+
+```go
+// CreateNetTUN creates a userspace TUN device backed by gvisor/netstack
+// Returns both the TUN device (for WireGuard) and the Net (for applications)
+func CreateNetTUN(localAddresses []netip.Addr, dnsServers []netip.Addr, mtu int) (tun.Device, *Net, error)
+
+// Net provides standard Go networking interfaces over the WireGuard tunnel
+// Applications use these to communicate through the encrypted tunnel
+type Net struct {
+    // ... internal netstack state
+}
+
+// DialContext creates an outbound connection through the tunnel
+// Returns standard net.Conn - works with any protocol (HTTP, TCP, etc.)
+func (n *Net) DialContext(ctx context.Context, network, address string) (net.Conn, error)
+
+// DialContextTCP creates an outbound TCP connection through the tunnel
+func (n *Net) DialContextTCP(ctx context.Context, addr *net.TCPAddr) (*gonet.TCPConn, error)
+
+// DialContextUDP creates an outbound UDP connection through the tunnel
+func (n *Net) DialContextUDP(ctx context.Context, addr *net.UDPAddr) (*gonet.UDPConn, error)
+
+// ListenTCP creates a TCP listener on the tunnel's virtual IP
+// Returns standard net.Listener - works with http.Serve, grpc, etc.
+func (n *Net) ListenTCP(addr *net.TCPAddr) (*gonet.TCPListener, error)
+
+// ListenUDP creates a UDP listener on the tunnel's virtual IP
+func (n *Net) ListenUDP(addr *net.UDPAddr) (*gonet.UDPConn, error)
+```
+
+**Why Userspace Networking?**
+
+| Aspect | Kernel TUN (`CreateTUN`) | Userspace (`CreateNetTUN`) |
+|--------|--------------------------|----------------------------|
+| Permissions | Root/admin required | No special permissions |
+| Platform APIs | VpnService (Android), NEPacketTunnelProvider (iOS) | None - pure Go |
+| Traffic routed | All system traffic (configurable) | Only app-initiated traffic |
+| Performance | Better (kernel optimized) | Good (userspace overhead) |
+| Use case | System VPN, full tunnel | App-level tunnel, testing, mobile |
+
+**Integration with WireGuard:**
+
+```go
+// Userspace networking integrates at the same point as kernel TUN
+// The WireGuard device doesn't know the difference
+
+// Option 1: Kernel TUN (requires root)
+tunDev, err := CreateTUN("ghost0", 1420)
+wgDevice := device.NewDevice(tunDev, iceBind, logger)
+
+// Option 2: Userspace TUN (no root needed)
+tunDev, tunNet, err := CreateNetTUN(
+    []netip.Addr{netip.MustParseAddr("10.0.0.2")},  // Local virtual IP
+    []netip.Addr{},                                   // DNS servers (optional)
+    1420,                                             // MTU
+)
+wgDevice := device.NewDevice(tunDev, iceBind, logger)
+// tunNet now provides DialContext/ListenTCP for applications
+```
+
+**Application Usage:**
+
+The `Net` object returned by `CreateNetTUN` exposes **standard Go networking interfaces**. Applications use the standard library - no custom helpers needed:
+
+```go
+// HTTP Client - use standard http.Client with custom transport
+httpClient := &http.Client{
+    Transport: &http.Transport{
+        DialContext: tunNet.DialContext,  // Routes through WireGuard
+    },
+}
+resp, err := httpClient.Get("http://10.0.0.1:8080/api/data")
+
+// HTTP Server - use standard http.Server with custom listener
+listener, err := tunNet.ListenTCP(&net.TCPAddr{
+    IP:   net.ParseIP("10.0.0.2"),
+    Port: 8080,
+})
+http.Serve(listener, myHandler)
+
+// Raw TCP - standard net.Conn
+conn, err := tunNet.DialContext(ctx, "tcp", "10.0.0.1:9000")
+conn.Write([]byte("hello"))
+
+// gRPC, WebSocket, or any other protocol works the same way
+```
+
+**Data Flow (Userspace):**
+
+```
+Application Layer:
+  http.Client.Get("http://10.0.0.1/test")
+       │
+       ▼
+  tunNet.DialContext("tcp", "10.0.0.1:80")
+       │
+       ▼
+Userspace TCP/IP Stack (gvisor/netstack):
+  Creates TCP connection, manages packets
+       │
+       ▼
+Channel-based TUN Device:
+  IP packets written to channel (not kernel)
+       │
+       ▼
+WireGuard Device:
+  Encrypts packets with peer's public key
+       │
+       ▼
+ICEBind Adapter:
+  Sends encrypted packets over ICE connection
+       │
+       ▼
+Network (UDP over ICE):
+  Packets traverse NAT via STUN/TURN
+```
+
+**File Structure:**
+
+```
+internal/wireguard/
+├── tun.go              # Existing: CreateTUN (kernel)
+├── tun_netstack.go     # NEW: CreateNetTUN (userspace)
+├── tun_linux.go        # Existing: Linux constants
+├── tun_windows.go      # Existing: Windows constants
+└── tun_darwin.go       # Existing: macOS constants
+```
+
+**Implementation Notes:**
+
+1. Uses `golang.zx2c4.com/wireguard/tun/netstack` which wraps gvisor
+2. The `tun.Device` returned works with existing WireGuard device code unchanged
+3. The `Net` object is the application interface - exposes standard Go networking
+4. No HTTP-specific code in ghost-go - applications build protocols on top
+
 ---
 
 ## Dependencies
@@ -282,6 +429,8 @@ require (
     github.com/pion/turn/v3 v3.x.x
     golang.zx2c4.com/wireguard v0.x.x
     golang.zx2c4.com/wireguard/tun v0.x.x
+    golang.zx2c4.com/wireguard/tun/netstack v0.x.x  // Userspace networking
+    gvisor.dev/gvisor v0.x.x                         // TCP/IP stack (transitive)
 )
 ```
 
@@ -342,7 +491,8 @@ type WireGuardConfig struct {
 | `internal/wireguard/config.go` | ✅ Complete | WireGuard configuration with constants | ~150 |
 | `internal/wireguard/keys.go` | ✅ Complete | Key generation with documented constants | ~130 |
 | `internal/wireguard/errors.go` | ✅ Complete | Domain-specific errors | ~25 |
-| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction (simplified) | ~45 |
+| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction (kernel) | ~45 |
+| `internal/wireguard/tun_netstack.go` | 📋 Planned | Userspace TUN via gvisor/netstack | ~80 |
 | `internal/wireguard/tun_linux.go` | ✅ Simplified | Linux default name constant | ~6 |
 | `internal/wireguard/tun_darwin.go` | ✅ Simplified | macOS default name constant | ~6 |
 | `internal/wireguard/tun_windows.go` | ✅ Simplified | Windows default name constant | ~5 |
