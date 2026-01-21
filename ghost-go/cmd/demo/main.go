@@ -20,8 +20,8 @@ import (
 const banner = `
 ╔════════════════════════════════════════════════════════╗
 ║                                                        ║
-║            Ghost-GO Phase 1 Demo                      ║
-║    ICE + WireGuard P2P Connection Demo                ║
+║             Ghost-GO Demo                              ║
+║     ICE + WireGuard P2P Connection Demo                ║
 ║                                                        ║
 ╚════════════════════════════════════════════════════════╝
 `
@@ -62,7 +62,7 @@ func main() {
 	// Setup logger
 	logger := setupLogger()
 
-	logger.Info("Starting Ghost-GO Phase 1 Demo",
+	logger.Info("Starting Ghost-GO Demo",
 		"role", config.Role,
 		"stun", config.STUNServer,
 	)

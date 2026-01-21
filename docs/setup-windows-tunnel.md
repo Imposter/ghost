@@ -300,12 +300,12 @@ Just run the demo directly (with sudo for Linux/macOS):
 
 **Linux:**
 ```bash
-sudo ./phase1-demo -role a
+sudo ./demo -role a
 ```
 
 **macOS:**
 ```bash
-sudo ./phase1-demo -role a
+sudo ./demo -role a
 ```
 
 ## Summary Checklist

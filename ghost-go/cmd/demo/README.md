@@ -1,4 +1,4 @@
-# Ghost-GO Phase 1 Demo
+# Ghost-GO Demo
 
 This demo application shows the complete integration of ICE (NAT traversal) with WireGuard (encrypted tunneling).
 
@@ -31,16 +31,16 @@ The demo establishes a peer-to-peer encrypted tunnel between two machines:
 #### Terminal 1 (Peer A)
 ```bash
 # Linux/macOS (requires sudo)
-sudo go run ./cmd/phase1-demo -role a
+sudo go run ./cmd/demo -role a
 
 # Windows (run as Administrator)
-go run ./cmd/phase1-demo -role a
+go run ./cmd/demo -role a
 ```
 
 #### Terminal 2 (Peer B)
 ```bash
 # On same or different machine
-sudo go run ./cmd/phase1-demo -role b
+sudo go run ./cmd/demo -role b
 ```
 
 ### Step-by-Step Process
@@ -188,24 +188,24 @@ Demo completed successfully
 
 ```bash
 # Custom STUN server
-go run ./cmd/phase1-demo -role a -stun "stun:stun.example.com:3478"
+go run ./cmd/demo -role a -stun "stun:stun.example.com:3478"
 
 # Custom timeouts
-go run ./cmd/phase1-demo -role a \
+go run ./cmd/demo -role a \
   -gather-timeout 20s \
   -conn-timeout 60s
 
 # Custom TUN device name and MTU
-go run ./cmd/phase1-demo -role a \
+go run ./cmd/demo -role a \
   -tun ghost1 \
   -mtu 1420
 
 # Custom allowed IPs
-go run ./cmd/phase1-demo -role a \
+go run ./cmd/demo -role a \
   -allowed-ips "10.1.0.0/16"
 
 # Custom keepalive interval
-go run ./cmd/phase1-demo -role a \
+go run ./cmd/demo -role a \
   -keepalive 30s
 ```
 
