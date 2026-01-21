@@ -102,7 +102,7 @@ func TestAgentAddRemoteCandidate(t *testing.T) {
 	// Add a fake remote candidate (this won't connect, just testing the API)
 	remoteCand := &Candidate{
 		Type:       CandidateTypeHost,
-		Protocol:   "udp",
+		Protocol:   ProtocolUDP,
 		Address:    "192.168.1.100",
 		Port:       54321,
 		Priority:   100,

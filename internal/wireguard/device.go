@@ -12,6 +12,22 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+// WireGuard IPC configuration field names
+const (
+	// IPCFieldPrivateKey is the private key field name
+	IPCFieldPrivateKey = "private_key"
+	// IPCFieldPublicKey is the public key field name
+	IPCFieldPublicKey = "public_key"
+	// IPCFieldEndpoint is the endpoint field name
+	IPCFieldEndpoint = "endpoint"
+	// IPCFieldAllowedIP is the allowed IP field name
+	IPCFieldAllowedIP = "allowed_ip"
+	// IPCFieldPersistentKeepalive is the persistent keepalive interval field name
+	IPCFieldPersistentKeepalive = "persistent_keepalive_interval"
+	// IPCFieldRemove is the remove peer field name
+	IPCFieldRemove = "remove"
+)
+
 // Device wraps a WireGuard device with lifecycle management.
 type Device struct {
 	device *device.Device
@@ -92,8 +108,8 @@ func (d *Device) Configure(privateKey []byte) error {
 	// 32 bytes → 64 hex characters
 	privateKeyHex := hex.EncodeToString(privateKey)
 
-	// Build IPC configuration
-	config := fmt.Sprintf("private_key=%s\n", privateKeyHex)
+	// Build IPC configuration using constants
+	config := fmt.Sprintf("%s=%s\n", IPCFieldPrivateKey, privateKeyHex)
 
 	if d.config.ListenPort > 0 {
 		config += fmt.Sprintf("listen_port=%d\n", d.config.ListenPort)
@@ -131,17 +147,17 @@ func (d *Device) AddPeer(peerConfig *PeerConfig) error {
 	// WireGuard IPC protocol uses HEX encoding for keys!
 	publicKeyHex := hex.EncodeToString(peerConfig.PublicKey)
 
-	// Build peer configuration
-	config := fmt.Sprintf("public_key=%s\n", publicKeyHex)
+	// Build peer configuration using IPC field constants
+	config := fmt.Sprintf("%s=%s\n", IPCFieldPublicKey, publicKeyHex)
 
 	// Add endpoint if provided
 	if peerConfig.Endpoint != "" {
-		config += fmt.Sprintf("endpoint=%s\n", peerConfig.Endpoint)
+		config += fmt.Sprintf("%s=%s\n", IPCFieldEndpoint, peerConfig.Endpoint)
 	}
 
 	// Add allowed IPs
 	for _, allowedIP := range peerConfig.AllowedIPs {
-		config += fmt.Sprintf("allowed_ip=%s\n", allowedIP)
+		config += fmt.Sprintf("%s=%s\n", IPCFieldAllowedIP, allowedIP)
 	}
 
 	// Set persistent keepalive
@@ -150,7 +166,7 @@ func (d *Device) AddPeer(peerConfig *PeerConfig) error {
 		keepalive = d.config.PersistentKeepalive
 	}
 	if keepalive > 0 {
-		config += fmt.Sprintf("persistent_keepalive_interval=%d\n", int(keepalive.Seconds()))
+		config += fmt.Sprintf("%s=%d\n", IPCFieldPersistentKeepalive, int(keepalive.Seconds()))
 	}
 
 	// Apply peer configuration via IPC
@@ -372,8 +388,8 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 		return ErrInvalidEndpoint
 	}
 
-	// Build configuration
-	config := fmt.Sprintf("public_key=%s\nendpoint=%s\n", publicKeyStr, endpoint)
+	// Build IPC command to update endpoint using constants
+	config := fmt.Sprintf("%s=%s\n%s=%s\n", IPCFieldPublicKey, publicKeyStr, IPCFieldEndpoint, endpoint)
 
 	// Apply configuration via IPC
 	if err := d.device.IpcSet(config); err != nil {

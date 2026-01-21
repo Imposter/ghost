@@ -6,6 +6,14 @@ import (
 	"net/netip"
 )
 
+// Transport protocol constants
+const (
+	// ProtocolUDP is the UDP transport protocol
+	ProtocolUDP = "udp"
+	// ProtocolTCP is the TCP transport protocol
+	ProtocolTCP = "tcp"
+)
+
 // Candidate represents an ICE candidate.
 type Candidate struct {
 	// Type is the type of candidate (host, srflx, prflx, relay)

@@ -415,7 +415,7 @@ func convertToPionCandidate(c *Candidate) (ice.Candidate, error) {
 	}
 
 	config := &ice.CandidateHostConfig{
-		Network:   "udp",
+		Network:   ProtocolUDP,
 		Address:   c.Address,
 		Port:      c.Port,
 		Component: 1,

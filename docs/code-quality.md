@@ -33,6 +33,22 @@ const (
 - **15s keepalive**: Keeps NAT bindings alive without excessive bandwidth usage
 - **19302/3478**: IETF-assigned standard ports for STUN/TURN
 
+### ICE Package (`internal/ice/types.go`)
+
+```go
+// Transport protocol constants
+const (
+    ProtocolUDP = "udp"  // UDP transport protocol
+    ProtocolTCP = "tcp"  // TCP transport protocol
+)
+```
+
+**Why constants:**
+- Prevents typos in protocol strings
+- Single source of truth for protocol values
+- IDE autocomplete support
+- Easy to grep/refactor
+
 ### ICE Bind Package (`internal/ice/bind.go`)
 
 ```go
@@ -65,6 +81,27 @@ const (
 - **1280 MTU**: Minimum IPv6 MTU, works across all networks including tunnels
 - **576 minimum**: Absolute minimum for IP networks (RFC 791)
 - **25s keepalive**: Standard WireGuard keepalive interval
+
+### WireGuard Package (`internal/wireguard/device.go`)
+
+```go
+// WireGuard IPC configuration field names
+const (
+    IPCFieldPrivateKey           = "private_key"
+    IPCFieldPublicKey            = "public_key"
+    IPCFieldEndpoint             = "endpoint"
+    IPCFieldAllowedIP            = "allowed_ip"
+    IPCFieldPersistentKeepalive  = "persistent_keepalive_interval"
+    IPCFieldRemove               = "remove"
+)
+```
+
+**Why constants:**
+- IPC protocol uses specific field names
+- Prevents typos that would cause silent failures
+- Makes IPC configuration code more maintainable
+- Single source of truth for WireGuard IPC protocol strings
+- Easier to update if protocol changes
 
 ### Cryptographic Constants (`internal/wireguard/keys.go`)
 
