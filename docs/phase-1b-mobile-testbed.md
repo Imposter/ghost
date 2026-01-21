@@ -19,7 +19,7 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 ### What This Is NOT
 
 - ❌ NOT a production-ready app
-- ❌ NOT full VpnService/NEPacketTunnelProvider integration (Phase 5)
+- ❌ NOT full VpnService/NEPacketTunnelProvider integration
 - ❌ NOT a polished UI/UX (minimal interface only)
 - ❌ NOT feature-complete (testing core functionality only)
 
@@ -40,10 +40,10 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
    - Display public key
    - Accept peer public key (manual input or QR code)
 
-3. **TUN Interface & IP Configuration**
-   - Create TUN device on both peers
-   - Assign IP addresses (desktop: 10.0.0.1, mobile: 10.0.0.2)
-   - Configure routing for tunnel subnet
+3. **Userspace Network Stack**
+   - WireGuard device with userspace networking (no TUN devices)
+   - Virtual IP addresses (desktop: 10.0.0.1, mobile: 10.0.0.2)
+   - Application-level network access via Go net.Conn/HTTP
 
 4. **Data Transfer Validation**
    - HTTP server running on desktop peer (10.0.0.1:8080)
@@ -62,8 +62,9 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
    - Proper cleanup on app backgrounding
    - Graceful shutdown
 
-### Out of Scope (Phase 5)
+### Out of Scope
 
+- ❌ TUN devices (no kernel-level networking)
 - ❌ VpnService integration (Android system VPN)
 - ❌ NEPacketTunnelProvider integration (iOS system VPN)
 - ❌ Automatic reconnection
@@ -71,6 +72,7 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 - ❌ Full VPN routing (all traffic through tunnel)
 - ❌ Split tunneling
 - ❌ DNS configuration
+- ❌ Raw IP packet routing
 
 ---
 
@@ -84,6 +86,7 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 │  │  - Connection controls                           │   │
 │  │  - Status display                                │   │
 │  │  - QR code scanner/generator                     │   │
+│  │  - HTTP test button                              │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │ React Native Bridge             │
 │  ┌────────────────────▼─────────────────────────────┐   │
@@ -97,16 +100,47 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 │  │        Go Mobile Bindings (gomobile)             │   │
 │  │  - Exported Go functions                         │   │
 │  │  - Event callbacks (candidates, status)          │   │
-│  │  - Simplified API for mobile                     │   │
+│  │  - HTTP client through tunnel                    │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │                                 │
 │  ┌────────────────────▼─────────────────────────────┐   │
 │  │          ghost-go Core Library                   │   │
 │  │  - ICE agent (pion/ice)                          │   │
 │  │  - ICEBind adapter                               │   │
-│  │  - WireGuard device (no TUN yet)                 │   │
+│  │  - WireGuard device (userspace, NO TUN)          │   │
+│  │  - Userspace TCP/IP stack (gvisor netstack)      │   │
 │  │  - Key generation                                │   │
 │  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+
+Data Flow (Userspace Networking - No TUN Devices):
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│   Mobile App                       Desktop Peer         │
+│   ──────────                       ────────────         │
+│                                                         │
+│   HTTP Client                      HTTP Server          │
+│       │                                ▲                │
+│       ▼                                │                │
+│   ┌─────────────┐              ┌─────────────┐         │
+│   │ Userspace   │              │ Userspace   │         │
+│   │ TCP/IP Stack│              │ TCP/IP Stack│         │
+│   │ (netstack)  │              │ (netstack)  │         │
+│   │ 10.0.0.2    │              │ 10.0.0.1    │         │
+│   └──────┬──────┘              └──────┬──────┘         │
+│          │                            │                 │
+│          ▼                            ▼                 │
+│   ┌─────────────┐              ┌─────────────┐         │
+│   │ WireGuard   │◄────────────►│ WireGuard   │         │
+│   │ (encrypt)   │   Encrypted  │ (encrypt)   │         │
+│   └──────┬──────┘    Packets   └──────┬──────┘         │
+│          │                            │                 │
+│          ▼                            ▼                 │
+│   ┌─────────────┐              ┌─────────────┐         │
+│   │ ICE Transport◄────────────►│ ICE Transport         │
+│   │ (UDP/NAT)   │   Traversal  │ (UDP/NAT)   │         │
+│   └─────────────┘              └─────────────┘         │
+│                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -187,17 +221,35 @@ func (c *GhostClient) GenerateWireGuardKey() string
 // SetWireGuardPeer configures the WireGuard peer (JSON)
 func (c *GhostClient) SetWireGuardPeer(jsonConfig string) error
 
-// ConfigureTUN assigns IP address to TUN interface
+// SetLocalIP configures the local virtual IP address for userspace networking
 // ipAddress: "10.0.0.2/24" (CIDR notation)
-func (c *GhostClient) ConfigureTUN(ipAddress string) error
+func (c *GhostClient) SetLocalIP(ipAddress string) error
 
 // GetTunnelStats returns bytes sent/received as JSON
 // { "bytesSent": 12345, "bytesReceived": 67890 }
 func (c *GhostClient) GetTunnelStats() string
 
-// TestHTTPConnection tests HTTP connectivity through tunnel
-// Returns JSON: { "success": true, "statusCode": 200, "body": "...", "latency": 123 }
-func (c *GhostClient) TestHTTPConnection(url string) string
+// HTTPGet performs an HTTP GET request through the WireGuard tunnel
+// Uses userspace networking (no TUN device required)
+// Returns JSON: { "success": true, "statusCode": 200, "body": "...", "latencyMs": 123 }
+func (c *GhostClient) HTTPGet(url string) string
+
+// HTTPPost performs an HTTP POST request through the WireGuard tunnel
+// Returns JSON: { "success": true, "statusCode": 200, "body": "...", "latencyMs": 123 }
+func (c *GhostClient) HTTPPost(url string, contentType string, body string) string
+
+// Dial creates a net.Conn through the WireGuard tunnel (for advanced use)
+// Returns a connection ID that can be used with Read/Write/Close methods
+func (c *GhostClient) Dial(network string, address string) (int64, error)
+
+// ConnRead reads from an established connection
+func (c *GhostClient) ConnRead(connID int64, maxBytes int) ([]byte, error)
+
+// ConnWrite writes to an established connection
+func (c *GhostClient) ConnWrite(connID int64, data []byte) (int, error)
+
+// ConnClose closes an established connection
+func (c *GhostClient) ConnClose(connID int64) error
 
 // Close cleans up all resources
 func (c *GhostClient) Close() error
@@ -219,58 +271,87 @@ type EventCallback interface {
 1. **JSON for Complex Data**: gomobile doesn't handle complex Go types well, use JSON strings
 2. **Event-Based Callbacks**: ICE candidate gathering is async, use events
 3. **Simple State Machine**: Expose minimal state (disconnected, gathering, connecting, connected)
-4. **TUN Device Creation**: Phase 1b creates TUN devices but doesn't integrate with system VPN
-   - On Android: Requires root for testing (no VpnService)
-   - On iOS: Uses standard utun device (no NEPacketTunnelProvider)
-   - Phase 5 will add proper VPN service integration
-5. **IP Configuration**: Uses standard `ip` command (Linux/macOS) or `netsh` (Windows) to configure TUN interface
+4. **No TUN Devices**: Phase 1b uses userspace networking exclusively
+   - No kernel-level networking required
+   - No root access or special permissions needed
+   - Works on all platforms without VpnService/NEPacketTunnelProvider
+   - Uses gvisor/netstack for userspace TCP/IP stack
+5. **Virtual IP Addresses**: Assigned in userspace (no OS configuration needed)
    - Desktop: 10.0.0.1/24
    - Mobile: 10.0.0.2/24
+6. **HTTP Client/Server Integration**: The Go layer provides HTTP methods that route through WireGuard
+   - Client side: `HTTPGet()`, `HTTPPost()` - similar to `tsnet.Server.HTTPClient()`
+   - Server side: `TestServer` listens on userspace network - similar to `tsnet.Server.Listen()`
+   - No TUN devices, no special permissions, works on all platforms
 
-#### Implementation: ConfigureTUN Method
+#### Implementation: Userspace Network Stack
+
+The key insight is that WireGuard can work entirely in userspace by using a channel-based TUN device implementation (similar to `wireguard-go/tun/netstack`). This allows us to:
+
+1. Read/write IP packets to/from WireGuard without a real TUN device
+2. Process those packets with a userspace TCP/IP stack (gvisor netstack)
+3. Expose standard Go network primitives (net.Conn, http.Client) to applications
 
 ```go
-// ConfigureTUN assigns IP address to TUN interface
-func (c *GhostClient) ConfigureTUN(ipAddress string) error {
-    // ipAddress format: "10.0.0.2/24"
-
-    // Platform-specific IP configuration
-    var cmd *exec.Command
-
-    switch runtime.GOOS {
-    case "linux":
-        // ip addr add 10.0.0.2/24 dev ghost0
-        // ip link set ghost0 up
-        cmd = exec.Command("ip", "addr", "add", ipAddress, "dev", c.tunName)
-        if err := cmd.Run(); err != nil {
-            return fmt.Errorf("failed to add IP: %w", err)
-        }
-        cmd = exec.Command("ip", "link", "set", c.tunName, "up")
-        return cmd.Run()
-
-    case "darwin":
-        // ifconfig utun0 10.0.0.2 10.0.0.1 netmask 255.255.255.0
-        host, peer := splitCIDR(ipAddress) // 10.0.0.2, 10.0.0.1
-        cmd = exec.Command("ifconfig", c.tunName, host, peer, "netmask", "255.255.255.0", "up")
-        return cmd.Run()
-
-    case "android":
-        // On Android without VpnService, requires root
-        // Same as Linux
-        cmd = exec.Command("ip", "addr", "add", ipAddress, "dev", c.tunName)
-        if err := cmd.Run(); err != nil {
-            return fmt.Errorf("failed to add IP (requires root): %w", err)
-        }
-        cmd = exec.Command("ip", "link", "set", c.tunName, "up")
-        return cmd.Run()
-
-    default:
-        return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+// Userspace networking setup (conceptual)
+func (c *GhostClient) setupUserspaceNetworking() error {
+    // Create channel-based TUN (no kernel TUN device)
+    tunDev, tunNet, err := netstack.CreateNetTUN(
+        []netip.Addr{c.localIP},    // Our virtual IP: 10.0.0.2
+        []netip.Addr{},              // DNS servers (optional)
+        1420,                        // MTU
+    )
+    if err != nil {
+        return err
     }
+
+    // Wire it to WireGuard device
+    c.wgDevice = device.NewDevice(tunDev, c.iceBind, logger)
+
+    // Store the userspace network for creating connections
+    c.tunNet = tunNet
+
+    return nil
+}
+
+// HTTPGet uses the userspace network stack
+func (c *GhostClient) HTTPGet(url string) string {
+    // Create HTTP client that uses our userspace TCP/IP stack
+    client := &http.Client{
+        Transport: &http.Transport{
+            DialContext: c.tunNet.DialContext,  // Routes through WireGuard
+        },
+        Timeout: 30 * time.Second,
+    }
+
+    start := time.Now()
+    resp, err := client.Get(url)
+    latency := time.Since(start).Milliseconds()
+
+    if err != nil {
+        return toJSON(map[string]interface{}{
+            "success": false,
+            "error":   err.Error(),
+        })
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    return toJSON(map[string]interface{}{
+        "success":    true,
+        "statusCode": resp.StatusCode,
+        "body":       string(body),
+        "latencyMs":  latency,
+    })
 }
 ```
 
-**Note**: On Android without VpnService integration (Phase 1b), this requires root access for testing. Phase 5 will use VpnService which doesn't require root.
+**Benefits of Userspace Networking:**
+- No root access required on mobile
+- No VpnService (Android) or NEPacketTunnelProvider (iOS) needed
+- Works identically on all platforms
+- Simpler testing and debugging
+- Only tunnels application-level traffic (HTTP), not all device traffic
 
 ### 2. React Native Native Modules
 
@@ -451,24 +532,55 @@ export function useGhostClient() {
     setState('connecting');
   };
 
-  return { state, candidates, error, startGathering, connect };
+  // HTTP request through userspace networking (no TUN device)
+  const httpGet = async (url: string): Promise<{
+    success: boolean;
+    statusCode?: number;
+    body?: string;
+    latencyMs?: number;
+    error?: string;
+  }> => {
+    const resultJson = await GhostModule.httpGet(url);
+    return JSON.parse(resultJson);
+  };
+
+  const getTunnelStats = async (): Promise<{ bytesSent: number; bytesReceived: number }> => {
+    const statsJson = await GhostModule.getTunnelStats();
+    return JSON.parse(statsJson);
+  };
+
+  return { state, candidates, error, startGathering, connect, httpGet, getTunnelStats };
 }
 ```
 
 **App.tsx** (Minimal UI):
 ```typescript
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, Button, ScrollView, StyleSheet } from 'react-native';
 import { useGhostClient } from './hooks/useGhostClient';
 
 export default function App() {
-  const { state, candidates, error, startGathering, connect, testHTTP } = useGhostClient();
+  const { state, candidates, error, startGathering, connect, httpGet, getTunnelStats } = useGhostClient();
   const [httpResult, setHttpResult] = useState<string | null>(null);
   const [tunnelStats, setTunnelStats] = useState({ bytesSent: 0, bytesReceived: 0 });
 
+  // Poll tunnel stats when connected
+  useEffect(() => {
+    if (state !== 'connected') return;
+    const interval = setInterval(async () => {
+      const stats = await getTunnelStats();
+      setTunnelStats(stats);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [state]);
+
   const handleTestHTTP = async () => {
-    const result = await testHTTP('http://10.0.0.1:8080/test');
-    setHttpResult(result);
+    // HTTP request goes through userspace WireGuard tunnel (no TUN device)
+    const result = await httpGet('http://10.0.0.1:8080/test');
+    setHttpResult(result.success
+      ? `✓ ${result.statusCode} - ${result.body} (${result.latencyMs}ms)`
+      : `✗ Error: ${result.error}`
+    );
   };
 
   return (
@@ -546,9 +658,15 @@ const styles = StyleSheet.create({
 
 ---
 
-### 4. Desktop HTTP Server (Go)
+### 4. Desktop HTTP Test Server (Go)
 
-The desktop peer runs a simple HTTP server accessible through the tunnel.
+The desktop peer (server side) runs an HTTP server on the userspace network stack to handle requests from the mobile client. This is the **key verification mechanism** that proves end-to-end connectivity through the WireGuard tunnel.
+
+**Purpose:**
+- Validates that the mobile client can reach the server through the encrypted tunnel
+- Confirms WireGuard handshake completed successfully
+- Provides measurable test data (latency, response content)
+- Logs incoming requests for debugging
 
 **File**: `ghost-go/cmd/mobile-demo/server.go`
 
@@ -557,54 +675,141 @@ package main
 
 import (
     "encoding/json"
-    "fmt"
     "log"
+    "net"
     "net/http"
     "time"
+
+    "golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// StartHTTPServer starts a test HTTP server on the tunnel interface
-// Listens on 10.0.0.1:8080 (accessible from mobile peer via tunnel)
-func StartHTTPServer(listenAddr string) error {
+// TestServer wraps the HTTP server running on userspace networking
+type TestServer struct {
+    tunNet   *netstack.Net
+    listener net.Listener
+    mux      *http.ServeMux
+}
+
+// NewTestServer creates a test HTTP server on the userspace network
+// The server listens on the virtual IP (10.0.0.1:8080) - NOT on the OS network
+func NewTestServer(tunNet *netstack.Net, ip string, port int) (*TestServer, error) {
     mux := http.NewServeMux()
 
-    // Simple test endpoint
+    // Test endpoint - proves end-to-end tunnel connectivity
     mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
         response := map[string]interface{}{
             "success":   true,
             "message":   "Hello from desktop peer via WireGuard tunnel!",
             "timestamp": time.Now().Unix(),
             "server":    "ghost-go-desktop",
+            "clientIP":  r.RemoteAddr,
         }
 
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(response)
 
-        log.Printf("HTTP request from %s via tunnel", r.RemoteAddr)
+        log.Printf("✓ HTTP request received from %s via tunnel", r.RemoteAddr)
     })
 
-    // Health check endpoint
+    // Echo endpoint - returns request body (for testing POST)
+    mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
+        io.Copy(w, r.Body)
+        log.Printf("✓ Echo request from %s", r.RemoteAddr)
+    })
+
+    // Health check
     mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusOK)
         w.Write([]byte("OK"))
     })
 
-    log.Printf("Starting HTTP server on %s", listenAddr)
-    return http.ListenAndServe(listenAddr, mux)
+    // Listen on userspace network (not OS network!)
+    listener, err := tunNet.ListenTCP(&net.TCPAddr{
+        IP:   net.ParseIP(ip),
+        Port: port,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to listen on userspace network: %w", err)
+    }
+
+    return &TestServer{
+        tunNet:   tunNet,
+        listener: listener,
+        mux:      mux,
+    }, nil
+}
+
+// Start begins serving HTTP requests
+func (s *TestServer) Start() error {
+    log.Printf("HTTP test server listening on userspace network")
+    return http.Serve(s.listener, s.mux)
+}
+
+// Close shuts down the server
+func (s *TestServer) Close() error {
+    return s.listener.Close()
 }
 ```
 
 **Updated Desktop Demo** (`cmd/mobile-demo/main.go`):
 ```go
-// After tunnel is established and TUN is configured with 10.0.0.1/24
-go func() {
-    if err := StartHTTPServer("10.0.0.1:8080"); err != nil {
-        log.Printf("HTTP server error: %v", err)
-    }
-}()
+func main() {
+    // ... ICE and WireGuard setup ...
 
-log.Println("HTTP server running on http://10.0.0.1:8080/test")
-log.Println("Mobile peer can now test connectivity!")
+    // After WireGuard handshake completes, start the test HTTP server
+    // This server runs on the USERSPACE network (10.0.0.1), not the OS network
+    testServer, err := NewTestServer(client.tunNet, "10.0.0.1", 8080)
+    if err != nil {
+        log.Fatalf("Failed to create test server: %v", err)
+    }
+
+    // Start server in background
+    go func() {
+        log.Println("✓ HTTP test server running on http://10.0.0.1:8080 (userspace)")
+        log.Println("  Endpoints:")
+        log.Println("    GET  /test   - Returns JSON with timestamp (connectivity test)")
+        log.Println("    POST /echo   - Echoes request body (data transfer test)")
+        log.Println("    GET  /health - Returns 'OK' (health check)")
+        if err := testServer.Start(); err != nil {
+            log.Printf("Test server error: %v", err)
+        }
+    }()
+
+    log.Println("")
+    log.Println("Mobile peer can now test connectivity!")
+    log.Println("No TUN device or root access required - all networking is userspace!")
+
+    // Wait for shutdown signal
+    // ...
+}
+```
+
+**Test Verification Flow:**
+```
+┌──────────────────┐                    ┌──────────────────┐
+│   Mobile Client  │                    │  Desktop Server  │
+│   (10.0.0.2)     │                    │   (10.0.0.1)     │
+├──────────────────┤                    ├──────────────────┤
+│                  │                    │                  │
+│  httpGet(        │  HTTP GET /test    │  TestServer      │
+│   "http://       │ =================> │  listening on    │
+│    10.0.0.1:     │  (through WG       │  userspace       │
+│    8080/test"    │   tunnel)          │  10.0.0.1:8080   │
+│  )               │                    │                  │
+│                  │  {"success":true,  │                  │
+│  Result:         │   "message":"...", │                  │
+│  ✓ success=true  │ <================= │                  │
+│  ✓ latency=42ms  │   "timestamp":...} │                  │
+│                  │                    │                  │
+└──────────────────┘                    └──────────────────┘
+
+This proves:
+✓ ICE connection established
+✓ WireGuard handshake completed
+✓ Encryption working (WireGuard)
+✓ Userspace TCP/IP stack working
+✓ HTTP layer functional end-to-end
 ```
 
 ---
@@ -616,20 +821,20 @@ log.Println("Mobile peer can now test connectivity!")
 **Step 1: Start Desktop Peer**
 ```bash
 cd ghost-go
-sudo go run ./cmd/mobile-demo -role server
+go run ./cmd/mobile-demo -role server  # No sudo needed!
 
 # Output:
 # ✓ ICE agent created
 # ✓ Gathering candidates...
 # ✓ WireGuard keys generated
-# ✓ TUN device created: ghost0
-# ✓ IP configured: 10.0.0.1/24
-# ✓ HTTP server running on http://10.0.0.1:8080
+# ✓ Userspace networking initialized (10.0.0.1/24)
+# ✓ HTTP server running on http://10.0.0.1:8080 (userspace)
 #
 # === Your Signaling Data (QR Code) ===
 # [QR code displayed]
 #
 # Waiting for mobile peer...
+# Note: No TUN device or root access required!
 ```
 
 **Step 2: Start Mobile App**
@@ -799,19 +1004,20 @@ npm test -- --updateSnapshot
 - [ ] Key generation on iOS
 - [ ] Public key export
 - [ ] Key validation (32 bytes, non-zero)
-- [ ] TUN device creation on both platforms
-- [ ] IP address assignment (10.0.0.2/24 on mobile)
+- [ ] Userspace network stack initialization (no TUN device)
+- [ ] Virtual IP address assignment (10.0.0.2/24 on mobile)
 - [ ] WireGuard handshake completes successfully
 
-### Data Transfer & Connectivity
-- [ ] Desktop HTTP server starts on 10.0.0.1:8080
-- [ ] Mobile can resolve 10.0.0.1 through tunnel
-- [ ] HTTP GET request succeeds from mobile
+### Data Transfer & Connectivity (Userspace Networking)
+- [ ] Desktop HTTP server starts on virtual 10.0.0.1:8080
+- [ ] Mobile can connect to 10.0.0.1 through userspace stack
+- [ ] HTTP GET request succeeds from mobile via userspace networking
 - [ ] Response data received correctly
 - [ ] Tunnel statistics update (bytes sent/received)
 - [ ] Multiple HTTP requests work (connection persistence)
 - [ ] Large payload transfer (>10KB) succeeds
 - [ ] Latency is reasonable (<500ms for local network)
+- [ ] No TUN device or root permissions required
 
 ### App Lifecycle
 - [ ] Proper cleanup on app backgrounding
@@ -864,21 +1070,23 @@ npm test -- --updateSnapshot
 - Establishes ICE connection
 - Reports connection state accurately
 - Generates WireGuard keys
-- Creates TUN device and assigns IP address (10.0.0.2/24)
+- Initializes userspace network stack (no TUN device required)
 - **Completes WireGuard handshake with desktop peer**
-- **Sends HTTP request through tunnel to desktop (10.0.0.1:8080)**
+- **Sends HTTP request through userspace tunnel to desktop (10.0.0.1:8080)**
 - **Receives and displays HTTP response**
 - **Tunnel statistics show data transfer (bytes sent/received > 0)**
 - Handles errors gracefully
 - No crashes during normal operation
 - Memory usage < 50MB
 - All automated tests pass
+- **No root access or special permissions required**
 
 ✅ **Desktop peer successfully:**
-- Creates TUN device and assigns IP address (10.0.0.1/24)
-- Runs HTTP server on tunnel interface
-- Receives HTTP requests from mobile peer via tunnel
+- Initializes userspace network stack (virtual 10.0.0.1/24)
+- Runs HTTP server on userspace network interface
+- Receives HTTP requests from mobile peer via encrypted tunnel
 - Logs successful data transfer
+- **No sudo or elevated permissions required**
 
 ✅ **Demonstrates feasibility of**:
 - gomobile for Go-to-mobile bridge
@@ -886,17 +1094,18 @@ npm test -- --updateSnapshot
 - Event-based async architecture
 - Testing patterns for mobile
 - **End-to-end encrypted data transfer through WireGuard tunnel**
-- **TUN device usage on mobile platforms**
+- **Userspace networking without TUN devices (gvisor/netstack)**
+- **Cross-platform compatibility without platform-specific permissions**
 
 ---
 
 ## Known Limitations (Deferred to Phase 5)
 
 1. **No System VPN Integration**
-   - TUN device created but not as system VPN
+   - Userspace networking only (application-level)
    - No VpnService (Android) or NEPacketTunnelProvider (iOS)
-   - Only tunnel subnet traffic (10.0.0.0/24), not all device traffic
-   - App-level TUN access only (requires root on Android for testing)
+   - Only application-initiated traffic goes through tunnel
+   - No routing of other app traffic
 
 2. **No Automatic Signaling**
    - Manual QR code/copy-paste only
@@ -914,6 +1123,7 @@ npm test -- --updateSnapshot
    - Only direct peer-to-peer (mobile ↔ desktop)
    - No internet routing through tunnel
    - No split tunneling
+   - Application must explicitly use tunnel APIs
 
 ---
 
@@ -924,9 +1134,12 @@ npm test -- --updateSnapshot
 // mobile/go.mod additions
 require (
     golang.org/x/mobile v0.x.x
+    gvisor.dev/gvisor v0.x.x          // Userspace TCP/IP stack (netstack)
     // Inherit from parent: pion/ice, wireguard-go
 )
 ```
+
+**Note on gvisor/netstack**: This is the same userspace TCP/IP stack used by wireguard-go's `tun/netstack` package. It provides a complete TCP/IP implementation in Go, allowing us to create network connections without kernel TUN devices.
 
 ### React Native Packages
 ```json
@@ -953,7 +1166,8 @@ require (
 
 ### Phase A: gomobile Bindings
 - Setup gomobile toolchain
-- Implement mobile API
+- Implement mobile API with userspace networking
+- Integrate gvisor/netstack for userspace TCP/IP
 - Unit tests for mobile package
 - Build .aar and .xcframework
 
@@ -968,6 +1182,7 @@ require (
 - Build minimal UI
 - Test ICE gathering
 - Test connection establishment
+- Test HTTP through userspace WireGuard tunnel
 
 ### Phase D: Testing & Validation
 - Manual testing on devices
@@ -985,6 +1200,9 @@ require (
 - [iOS Swift/C Interop](https://developer.apple.com/documentation/swift/imported_c_and_objective-c_apis)
 - [Detox Testing](https://wix.github.io/Detox/)
 - [Expo Prebuild](https://docs.expo.dev/workflow/prebuild/)
+- [gvisor netstack](https://gvisor.dev/docs/user_guide/networking/) - Userspace TCP/IP stack
+- [wireguard-go tun/netstack](https://github.com/WireGuard/wireguard-go/tree/master/tun/netstack) - WireGuard userspace networking
+- [Tailscale tsnet](https://pkg.go.dev/tailscale.com/tsnet) - Example of userspace WireGuard networking
 
 ---
 
