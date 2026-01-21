@@ -25,8 +25,10 @@ type Agent interface {
 	LocalCredentials() (ufrag, pwd string)
 
 	// Connect establishes the ICE connection.
+	// If controlling is true, this peer acts as the controlling agent (calls Dial).
+	// If false, this peer acts as the controlled agent (calls Accept).
 	// Returns a net.Conn that can be used for communication.
-	Connect(ctx context.Context) (net.Conn, error)
+	Connect(ctx context.Context, controlling bool) (net.Conn, error)
 
 	// GetSelectedCandidatePair returns the selected candidate pair after connection.
 	GetSelectedCandidatePair() (*CandidatePair, error)
@@ -42,10 +44,16 @@ type pionAgent struct {
 	logger *slog.Logger
 
 	// State tracking
-	conn       net.Conn
-	localUfrag string
-	localPwd   string
-	closed     bool
+	conn        net.Conn
+	localUfrag  string
+	localPwd    string
+	remoteUfrag string
+	remotePwd   string
+	closed      bool
+
+	// Candidate gathering
+	candidateChan chan *Candidate
+	gatherDone    chan struct{}
 }
 
 // NewAgent creates a new ICE agent with the given configuration.
@@ -62,9 +70,14 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		logger = slog.Default()
 	}
 
+	// Create candidate channel for OnCandidate callback
+	candidateChan := make(chan *Candidate, 10)
+	gatherDone := make(chan struct{})
+
 	// Build ICE agent configuration
 	agentConfig := &ice.AgentConfig{
-		NetworkTypes: []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
+		NetworkTypes:    []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
+		IncludeLoopback: true, // Required for localhost testing
 	}
 
 	// Add STUN servers
@@ -95,6 +108,26 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		return nil, fmt.Errorf("failed to create ICE agent: %w", err)
 	}
 
+	// Set OnCandidate callback to receive candidates as they're discovered
+	if err := agent.OnCandidate(func(c ice.Candidate) {
+		if c == nil {
+			// nil candidate signals gathering is complete
+			close(gatherDone)
+			return
+		}
+
+		candidate := convertPionCandidate(c)
+		select {
+		case candidateChan <- candidate:
+			logger.Debug("Gathered candidate", "type", candidate.Type, "address", candidate.Address)
+		default:
+			logger.Warn("Candidate channel full, dropping candidate")
+		}
+	}); err != nil {
+		agent.Close()
+		return nil, fmt.Errorf("failed to set OnCandidate callback: %w", err)
+	}
+
 	localUfrag, localPwd, err := agent.GetLocalUserCredentials()
 	if err != nil {
 		agent.Close()
@@ -108,11 +141,13 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 	)
 
 	return &pionAgent{
-		config:     config,
-		agent:      agent,
-		logger:     logger,
-		localUfrag: localUfrag,
-		localPwd:   localPwd,
+		config:        config,
+		agent:         agent,
+		logger:        logger,
+		localUfrag:    localUfrag,
+		localPwd:      localPwd,
+		candidateChan: candidateChan,
+		gatherDone:    gatherDone,
 	}, nil
 }
 
@@ -124,57 +159,51 @@ func (a *pionAgent) GatherCandidates(ctx context.Context) (<-chan *Candidate, er
 
 	a.logger.Info("Starting candidate gathering", "timeout", a.config.GatherTimeout)
 
-	candidates := make(chan *Candidate, 10)
+	// Create output channel
+	outChan := make(chan *Candidate, 10)
 
 	// Start gathering in background
 	go func() {
-		defer close(candidates)
+		defer close(outChan)
 
 		gatherCtx, cancel := context.WithTimeout(ctx, a.config.GatherTimeout)
 		defer cancel()
 
-		// Gather candidates
+		// Start gathering - candidates will be sent to a.candidateChan via OnCandidate callback
 		if err := a.agent.GatherCandidates(); err != nil {
 			a.logger.Error("Failed to start gathering", "error", err)
 			return
 		}
 
-		// Stream candidates as they are discovered
-		done := make(chan struct{})
-		go func() {
-			for {
-				select {
-				case <-gatherCtx.Done():
-					close(done)
-					return
-				case <-done:
+		// Forward candidates from internal channel to output channel
+		candidateCount := 0
+		for {
+			select {
+			case cand, ok := <-a.candidateChan:
+				if !ok {
+					// Channel closed, shouldn't happen
+					a.logger.Warn("Candidate channel closed unexpectedly")
 					return
 				}
-			}
-		}()
-
-		// Get all local candidates
-		localCandidates, err := a.agent.GetLocalCandidates()
-		if err != nil {
-			a.logger.Error("Failed to get local candidates", "error", err)
-			return
-		}
-
-		a.logger.Info("Candidate gathering complete", "count", len(localCandidates))
-
-		for _, c := range localCandidates {
-			candidate := convertPionCandidate(c)
-			select {
-			case candidates <- candidate:
-				a.logger.Debug("Gathered candidate", "type", candidate.Type, "address", candidate.Address)
+				candidateCount++
+				select {
+				case outChan <- cand:
+				case <-gatherCtx.Done():
+					a.logger.Warn("Candidate gathering timed out", "gathered", candidateCount)
+					return
+				}
+			case <-a.gatherDone:
+				// Gathering complete (nil candidate received)
+				a.logger.Info("Candidate gathering complete", "count", candidateCount)
+				return
 			case <-gatherCtx.Done():
-				a.logger.Warn("Candidate gathering timed out")
+				a.logger.Warn("Candidate gathering timed out", "gathered", candidateCount)
 				return
 			}
 		}
 	}()
 
-	return candidates, nil
+	return outChan, nil
 }
 
 // AddRemoteCandidate adds a remote candidate to the agent.
@@ -211,9 +240,9 @@ func (a *pionAgent) SetRemoteCredentials(ufrag, pwd string) error {
 		return ErrInvalidCredentials
 	}
 
-	if err := a.agent.SetRemoteCredentials(ufrag, pwd); err != nil {
-		return fmt.Errorf("failed to set remote credentials: %w", err)
-	}
+	// Store credentials for later use in Connect
+	a.remoteUfrag = ufrag
+	a.remotePwd = pwd
 
 	a.logger.Info("Remote credentials set", "ufrag", ufrag)
 	return nil
@@ -225,7 +254,9 @@ func (a *pionAgent) LocalCredentials() (ufrag, pwd string) {
 }
 
 // Connect establishes the ICE connection.
-func (a *pionAgent) Connect(ctx context.Context) (net.Conn, error) {
+// If controlling is true, this peer will use Dial (controlling agent).
+// If false, this peer will use Accept (controlled agent).
+func (a *pionAgent) Connect(ctx context.Context, controlling bool) (net.Conn, error) {
 	if a.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -234,17 +265,36 @@ func (a *pionAgent) Connect(ctx context.Context) (net.Conn, error) {
 		return a.conn, nil
 	}
 
-	a.logger.Info("Establishing ICE connection", "timeout", a.config.ConnectionTimeout)
+	// Validate remote credentials are set
+	if a.remoteUfrag == "" || a.remotePwd == "" {
+		return nil, fmt.Errorf("remote ufrag is empty")
+	}
+
+	role := "controlled (Accept)"
+	if controlling {
+		role = "controlling (Dial)"
+	}
+	a.logger.Info("Establishing ICE connection",
+		"timeout", a.config.ConnectionTimeout,
+		"role", role)
 
 	// Create context with timeout
 	connectCtx, cancel := context.WithTimeout(ctx, a.config.ConnectionTimeout)
 	defer cancel()
 
-	// Wait for connection
-	// Third parameter is the remote ufrag (empty for LITE agents)
-	conn, err := a.agent.Dial(connectCtx, "", "")
+	var conn *ice.Conn
+	var err error
+
+	if controlling {
+		// Controlling agent uses Dial
+		conn, err = a.agent.Dial(connectCtx, a.remoteUfrag, a.remotePwd)
+	} else {
+		// Controlled agent uses Accept
+		conn, err = a.agent.Accept(connectCtx, a.remoteUfrag, a.remotePwd)
+	}
+
 	if err != nil {
-		a.logger.Error("ICE connection failed", "error", err)
+		a.logger.Error("ICE connection failed", "error", err, "role", role)
 		return nil, fmt.Errorf("failed to establish connection: %w", err)
 	}
 
@@ -255,9 +305,9 @@ func (a *pionAgent) Connect(ctx context.Context) (net.Conn, error) {
 		a.logger.Info("ICE connection established",
 			"local", pair.Local.String(),
 			"remote", pair.Remote.String(),
-		)
+			"role", role)
 	} else {
-		a.logger.Info("ICE connection established")
+		a.logger.Info("ICE connection established", "role", role)
 	}
 
 	return conn, nil

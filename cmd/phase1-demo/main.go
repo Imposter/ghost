@@ -176,6 +176,10 @@ func runDemo(ctx context.Context, config *Config, logger *slog.Logger) error {
 		fmt.Printf("   • Found %s candidate: %s:%d\n", cand.Type, cand.Address, cand.Port)
 	}
 
+	if len(candidates) == 0 {
+		return fmt.Errorf("no candidates gathered - check network connectivity")
+	}
+
 	fmt.Printf("✓ Gathered %d candidates\n", len(candidates))
 
 	// Step 5: Export signaling data
@@ -234,11 +238,17 @@ func runDemo(ctx context.Context, config *Config, logger *slog.Logger) error {
 			Foundation: candJSON.Foundation,
 		}
 		if err := agent.AddRemoteCandidate(cand); err != nil {
-			logger.Warn("failed to add candidate", "error", err)
+			logger.Warn("failed to add candidate", "error", err, "address", cand.Address)
+		} else {
+			logger.Debug("added remote candidate", "type", cand.Type, "address", cand.Address, "port", cand.Port)
 		}
 	}
 
 	fmt.Printf("✓ Added %d remote candidates\n", len(remoteData.Candidates))
+
+	// Give time for remote candidates to be processed
+	fmt.Println("   (Processing remote candidates...)")
+	time.Sleep(1 * time.Second)
 
 	// Step 8: Set remote credentials
 	fmt.Println("\nStep 8: Setting remote credentials...")
@@ -249,14 +259,25 @@ func runDemo(ctx context.Context, config *Config, logger *slog.Logger) error {
 
 	// Step 9: Establish ICE connection
 	fmt.Println("\nStep 9: Establishing ICE connection...")
+
+	// Determine ICE role based on peer role
+	// Peer A = controlling (Dial), Peer B = controlled (Accept)
+	controlling := config.Role == "a"
+	if controlling {
+		fmt.Println("   Role: Controlling (initiating connection)")
+	} else {
+		fmt.Println("   Role: Controlled (accepting connection)")
+	}
 	fmt.Println("   (This may take 5-30 seconds...)")
+	fmt.Println("   Performing connectivity checks...")
 
 	connCtx, connCancel := context.WithTimeout(ctx, config.ConnectionTimeout)
 	defer connCancel()
 
-	conn, err := agent.Connect(connCtx)
+	conn, err := agent.Connect(connCtx, controlling)
 	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
+		// Add detailed error context
+		return fmt.Errorf("failed to connect (check both peers started, have matching candidates, firewall allows UDP): %w", err)
 	}
 	defer conn.Close()
 
