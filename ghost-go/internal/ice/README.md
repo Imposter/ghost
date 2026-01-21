@@ -419,4 +419,4 @@ Key debug points:
 ---
 
 **Last Updated**: January 2026  
-**Maintainer**: Ghost-GO Team
+**Maintainer**: Ghost Team
