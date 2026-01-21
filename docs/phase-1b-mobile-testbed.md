@@ -271,87 +271,58 @@ type EventCallback interface {
 1. **JSON for Complex Data**: gomobile doesn't handle complex Go types well, use JSON strings
 2. **Event-Based Callbacks**: ICE candidate gathering is async, use events
 3. **Simple State Machine**: Expose minimal state (disconnected, gathering, connecting, connected)
-4. **No TUN Devices**: Phase 1b uses userspace networking exclusively
-   - No kernel-level networking required
-   - No root access or special permissions needed
-   - Works on all platforms without VpnService/NEPacketTunnelProvider
-   - Uses gvisor/netstack for userspace TCP/IP stack
+4. **Userspace Networking**: Uses ghost-go's `CreateNetTUN()` (see [Phase 1 Section 1.5](phase-1-core-infrastructure.md#15-userspace-networking-internalwireguardtun_netstackgo))
+   - No kernel-level networking, no root/admin permissions
+   - Returns `tun.Device` + `*Net` with standard Go interfaces
+   - Mobile app uses `tunNet.DialContext()` for HTTP client
+   - Desktop uses `tunNet.ListenTCP()` for HTTP server
 5. **Virtual IP Addresses**: Assigned in userspace (no OS configuration needed)
    - Desktop: 10.0.0.1/24
    - Mobile: 10.0.0.2/24
-6. **HTTP Client/Server Integration**: The Go layer provides HTTP methods that route through WireGuard
-   - Client side: `HTTPGet()`, `HTTPPost()` - similar to `tsnet.Server.HTTPClient()`
-   - Server side: `TestServer` listens on userspace network - similar to `tsnet.Server.Listen()`
-   - No TUN devices, no special permissions, works on all platforms
 
 #### Implementation: Userspace Network Stack
 
-The key insight is that WireGuard can work entirely in userspace by using a channel-based TUN device implementation (similar to `wireguard-go/tun/netstack`). This allows us to:
-
-1. Read/write IP packets to/from WireGuard without a real TUN device
-2. Process those packets with a userspace TCP/IP stack (gvisor netstack)
-3. Expose standard Go network primitives (net.Conn, http.Client) to applications
+The mobile bindings use ghost-go's userspace networking (Phase 1, Section 1.5). The `GhostClient` wraps the core library:
 
 ```go
-// Userspace networking setup (conceptual)
-func (c *GhostClient) setupUserspaceNetworking() error {
-    // Create channel-based TUN (no kernel TUN device)
-    tunDev, tunNet, err := netstack.CreateNetTUN(
-        []netip.Addr{c.localIP},    // Our virtual IP: 10.0.0.2
-        []netip.Addr{},              // DNS servers (optional)
-        1420,                        // MTU
+// GhostClient wraps ghost-go's userspace networking for mobile
+type GhostClient struct {
+    iceAgent  *ice.Agent
+    wgDevice  *device.Device
+    tunNet    *wireguard.Net   // From ghost-go's CreateNetTUN
+    // ...
+}
+
+// Setup uses ghost-go core library
+func (c *GhostClient) setupTunnel() error {
+    // Use ghost-go's userspace networking (Phase 1, Section 1.5)
+    tunDev, tunNet, err := wireguard.CreateNetTUN(
+        []netip.Addr{c.localIP},  // 10.0.0.2
+        []netip.Addr{},            // DNS (optional)
+        1420,                      // MTU
     )
     if err != nil {
         return err
     }
 
-    // Wire it to WireGuard device
+    // Standard ghost-go WireGuard setup
     c.wgDevice = device.NewDevice(tunDev, c.iceBind, logger)
-
-    // Store the userspace network for creating connections
-    c.tunNet = tunNet
-
+    c.tunNet = tunNet  // Store for DialContext/ListenTCP
     return nil
 }
 
-// HTTPGet uses the userspace network stack
+// HTTPGet wraps tunNet.DialContext for mobile API (returns JSON)
 func (c *GhostClient) HTTPGet(url string) string {
-    // Create HTTP client that uses our userspace TCP/IP stack
     client := &http.Client{
         Transport: &http.Transport{
-            DialContext: c.tunNet.DialContext,  // Routes through WireGuard
+            DialContext: c.tunNet.DialContext,
         },
-        Timeout: 30 * time.Second,
     }
-
-    start := time.Now()
-    resp, err := client.Get(url)
-    latency := time.Since(start).Milliseconds()
-
-    if err != nil {
-        return toJSON(map[string]interface{}{
-            "success": false,
-            "error":   err.Error(),
-        })
-    }
-    defer resp.Body.Close()
-
-    body, _ := io.ReadAll(resp.Body)
-    return toJSON(map[string]interface{}{
-        "success":    true,
-        "statusCode": resp.StatusCode,
-        "body":       string(body),
-        "latencyMs":  latency,
-    })
+    // ... make request, return JSON result
 }
 ```
 
-**Benefits of Userspace Networking:**
-- No root access required on mobile
-- No VpnService (Android) or NEPacketTunnelProvider (iOS) needed
-- Works identically on all platforms
-- Simpler testing and debugging
-- Only tunnels application-level traffic (HTTP), not all device traffic
+See [Phase 1 Section 1.5](phase-1-core-infrastructure.md#15-userspace-networking-internalwireguardtun_netstackgo) for full API documentation and data flow diagrams.
 
 ### 2. React Native Native Modules
 
@@ -1131,15 +1102,19 @@ npm test -- --updateSnapshot
 
 ### Go Packages
 ```go
-// mobile/go.mod additions
+// mobile/go.mod
 require (
-    golang.org/x/mobile v0.x.x
-    gvisor.dev/gvisor v0.x.x          // Userspace TCP/IP stack (netstack)
-    // Inherit from parent: pion/ice, wireguard-go
+    golang.org/x/mobile v0.x.x          // gomobile bindings
+    ghost-go v0.x.x                     // Core library (local replace)
 )
 ```
 
-**Note on gvisor/netstack**: This is the same userspace TCP/IP stack used by wireguard-go's `tun/netstack` package. It provides a complete TCP/IP implementation in Go, allowing us to create network connections without kernel TUN devices.
+The mobile bindings depend on ghost-go core, which provides:
+- ICE agent (pion/ice)
+- WireGuard device (wireguard-go)
+- Userspace networking (gvisor/netstack via wireguard-go/tun/netstack)
+
+See [Phase 1 Dependencies](phase-1-core-infrastructure.md#dependencies) for the full list.
 
 ### React Native Packages
 ```json
