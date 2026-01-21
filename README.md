@@ -161,8 +161,6 @@ Application Layer
 - **[Phase 1 Progress](docs/phase-1-core-infrastructure.md)** - Current implementation status
 - **[ICE Package Guide](internal/ice/)** - ICE agent and NAT traversal
 - **[WireGuard Package Guide](internal/wireguard/)** - Encryption and tunneling
-- **[TUN Simplification](docs/TUN-SIMPLIFICATION.md)** - Platform architecture decisions
-- **[Stage 7 Complete](docs/STAGE-7-COMPLETE.md)** - Latest milestone
 
 ---
 
