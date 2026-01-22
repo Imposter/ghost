@@ -41,6 +41,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   const [localSignalingData, setLocalSignalingData] = useState<SignalingData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [step, setStep] = useState<'init' | 'gathering' | 'exchange' | 'connecting' | 'connected'>('init');
+  const [wasConnected, setWasConnected] = useState(false);
 
   // Initialize client on mount
   useEffect(() => {
@@ -75,6 +76,17 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       }
     }
   }, [candidates, status, getSignalingData]);
+
+  // Track connection status changes - handle disconnect events
+  useEffect(() => {
+    if (status === 'connected') {
+      setWasConnected(true);
+      setStep('connected');
+    } else if ((status === 'disconnected' || status === 'error') && wasConnected) {
+      // We were connected but now disconnected - show reconnect UI
+      setStep('exchange');
+    }
+  }, [status, wasConnected]);
 
   const handleStartGathering = async () => {
     setIsLoading(true);
@@ -191,6 +203,33 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     if (tunnelSuccess) {
       setStep('connected');
       Alert.alert('Connected!', 'Tunnel established successfully. You can now test connectivity.', [
+        { text: 'Test Now', onPress: () => navigation.navigate('Test') },
+        { text: 'OK' },
+      ]);
+    } else {
+      setStep('exchange');
+    }
+  };
+
+  const handleReconnect = async () => {
+    // Reset state and re-attempt connection
+    setWasConnected(false);
+    setIsLoading(true);
+    setStep('connecting');
+
+    const iceSuccess = await connect(false);
+    if (!iceSuccess) {
+      setIsLoading(false);
+      setStep('exchange');
+      return;
+    }
+
+    const tunnelSuccess = await startTunnel();
+    setIsLoading(false);
+
+    if (tunnelSuccess) {
+      setStep('connected');
+      Alert.alert('Reconnected!', 'Tunnel re-established successfully.', [
         { text: 'Test Now', onPress: () => navigation.navigate('Test') },
         { text: 'OK' },
       ]);
@@ -406,7 +445,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       {renderConnectionState()}
 
       {/* Connected State */}
-      {step === 'connected' && (
+      {step === 'connected' && status === 'connected' && (
         <View style={styles.section}>
           <View style={styles.successBox}>
             <Text style={styles.successText}>✓ Tunnel Active</Text>
@@ -416,6 +455,36 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
             onPress={() => navigation.navigate('Test')}
           >
             <Text style={styles.buttonText}>Test Connectivity</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Disconnected State - Show when previously connected but now disconnected */}
+      {wasConnected && (status === 'disconnected' || status === 'error') && (
+        <View style={styles.section}>
+          <View style={styles.disconnectedBox}>
+            <Text style={styles.disconnectedText}>Connection Lost</Text>
+            <Text style={styles.disconnectedSubtext}>
+              {error || 'The tunnel has been disconnected'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.reconnectButton}
+            onPress={handleReconnect}
+            disabled={isLoading}
+          >
+            <Text style={styles.buttonText}>
+              {isLoading ? 'Reconnecting...' : 'Reconnect'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => {
+              setWasConnected(false);
+              setStep('exchange');
+            }}
+          >
+            <Text style={styles.secondaryButtonText}>Re-enter Peer Data</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -633,5 +702,30 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
+  },
+  disconnectedBox: {
+    backgroundColor: '#F44336',
+    borderRadius: 8,
+    padding: 16,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  disconnectedText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  disconnectedSubtext: {
+    color: '#ffcdd2',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  reconnectButton: {
+    backgroundColor: '#FF9800',
+    borderRadius: 8,
+    padding: 14,
+    alignItems: 'center',
+    marginBottom: 12,
   },
 });

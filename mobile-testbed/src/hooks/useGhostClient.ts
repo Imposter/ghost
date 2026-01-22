@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
 
 // Types matching the Go mobile API
 export interface Candidate {
@@ -46,6 +46,13 @@ export interface TunnelStats {
 }
 
 export type ConnectionStatus = 'disconnected' | 'gathering' | 'connecting' | 'connected' | 'error';
+
+// Event types from Go mobile API
+export interface GhostEvent {
+  type: 'candidate' | 'state_change' | 'error' | 'connected' | 'disconnected' | 'tunnel_up' | 'tunnel_down';
+  data?: string;
+  message?: string;
+}
 
 // Native module interface (to be implemented in native code)
 interface GhostNativeModule {
@@ -170,6 +177,82 @@ export function useGhostClient() {
   const [isInitialized, setIsInitialized] = useState(false);
 
   const clientRef = useRef<boolean>(false);
+
+  // Subscribe to native events
+  useEffect(() => {
+    if (!isNativeAvailable()) return;
+
+    const eventEmitter = new NativeEventEmitter(NativeGhostModule);
+    const subscription = eventEmitter.addListener('GhostEvent', (eventJSON: string) => {
+      try {
+        const event: GhostEvent = JSON.parse(eventJSON);
+        console.log('[GhostEvent]', event.type, event.message || event.data?.substring(0, 50));
+
+        switch (event.type) {
+          case 'state_change':
+            if (event.data) {
+              const newState: ConnectionState = JSON.parse(event.data);
+              setConnectionState(newState);
+
+              // Update status based on state
+              if (newState.isTunnelActive) {
+                setStatus('connected');
+              } else if (newState.isConnected) {
+                setStatus('connecting');
+              } else if (newState.iceState === 'failed' || newState.iceState === 'disconnected') {
+                setStatus('disconnected');
+              }
+            }
+            break;
+
+          case 'error':
+            setError(event.message || 'Unknown error');
+            setStatus('error');
+            break;
+
+          case 'disconnected':
+            setStatus('disconnected');
+            setConnectionState((prev) =>
+              prev ? { ...prev, isConnected: false, isTunnelActive: false, iceState: 'disconnected' } : null
+            );
+            break;
+
+          case 'connected':
+            // ICE connection established, waiting for tunnel
+            setStatus('connecting');
+            break;
+
+          case 'tunnel_up':
+            setStatus('connected');
+            setConnectionState((prev) =>
+              prev ? { ...prev, isTunnelActive: true, tunnelState: 'active' } : null
+            );
+            break;
+
+          case 'tunnel_down':
+            setStatus('disconnected');
+            setConnectionState((prev) =>
+              prev ? { ...prev, isTunnelActive: false, tunnelState: 'inactive' } : null
+            );
+            break;
+
+          case 'candidate':
+            // New candidate gathered - update candidates list
+            if (event.data) {
+              const newCandidate: Candidate = JSON.parse(event.data);
+              setCandidates((prev) => [...prev, newCandidate]);
+            }
+            break;
+        }
+      } catch (err) {
+        console.error('[GhostEvent] Failed to parse event:', err);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   // Initialize client
   const initialize = useCallback(async (stunServers: string = '') => {

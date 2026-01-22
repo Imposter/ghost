@@ -159,6 +159,16 @@ func (c *GhostClient) Close() error {
 
 	c.tunnelState = TunnelStateInactive
 	c.iceState = ICEStateClosed
+
+	// Emit state change before disconnect so UI updates immediately
+	c.dispatcher.emitStateChange(&ConnectionStateJSON{
+		ICEState:       c.iceState,
+		TunnelState:    c.tunnelState,
+		IsConnected:    false,
+		IsTunnelActive: false,
+		LocalIP:        c.localIP,
+		PeerIP:         c.peerIP,
+	})
 	c.dispatcher.emitDisconnected("Client closed")
 
 	return nil
@@ -385,6 +395,16 @@ func (c *GhostClient) Connect(isControlling bool) string {
 	c.iceState = ICEStateConnected
 	c.dispatcher.emitConnected("ICE connection established")
 
+	// Emit state change so UI updates immediately
+	c.dispatcher.emitStateChange(&ConnectionStateJSON{
+		ICEState:       c.iceState,
+		TunnelState:    c.tunnelState,
+		IsConnected:    true,
+		IsTunnelActive: false,
+		LocalIP:        c.localIP,
+		PeerIP:         c.peerIP,
+	})
+
 	return ""
 }
 
@@ -538,6 +558,16 @@ func (c *GhostClient) StartTunnel() string {
 
 	c.tunnelState = TunnelStateActive
 	c.dispatcher.emitTunnelUp()
+
+	// Emit full state change so UI updates immediately
+	c.dispatcher.emitStateChange(&ConnectionStateJSON{
+		ICEState:       c.iceState,
+		TunnelState:    c.tunnelState,
+		IsConnected:    c.iceState == ICEStateConnected || c.iceState == ICEStateCompleted,
+		IsTunnelActive: true,
+		LocalIP:        c.localIP,
+		PeerIP:         c.peerIP,
+	})
 
 	return ""
 }
