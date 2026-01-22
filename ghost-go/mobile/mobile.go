@@ -224,12 +224,14 @@ func (c *GhostClient) StartGathering() string {
 		return toErrorJSON(ErrClientClosed)
 	}
 
-	// Create ICE config
+	// Create ICE config with fast disconnect detection
 	iceConfig := &ice.ICEConfig{
-		STUNServers:       c.stunServers,
-		GatherTimeout:     15 * time.Second,
-		ConnectionTimeout: 30 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
+		STUNServers:         c.stunServers,
+		GatherTimeout:       15 * time.Second,
+		ConnectionTimeout:   30 * time.Second,
+		KeepaliveInterval:   2 * time.Second,  // Send keepalives every 2s
+		DisconnectedTimeout: 5 * time.Second,  // Detect disconnect in ~5s
+		FailedTimeout:       15 * time.Second, // Transition to failed after 15s
 	}
 
 	// Create ICE agent
