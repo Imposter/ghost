@@ -8,6 +8,7 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  Clipboard,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../App';
@@ -91,23 +92,83 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   };
 
   const handleSetPeerData = async () => {
-    if (!peerDataInput.trim()) {
+    // Strip null characters and other control characters, then trim whitespace
+    const inputText = peerDataInput
+      .replace(/\x00/g, '')  // Remove null characters
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')  // Remove other control chars (keep \t, \n, \r)
+      .trim();
+
+    if (!inputText) {
       Alert.alert('Error', 'Please enter peer signaling data');
       return;
     }
 
+    // Debug logging - full dump
+    console.log('\n' + '='.repeat(60));
+    console.log('PEER DATA INPUT DEBUG');
+    console.log('='.repeat(60));
+    console.log('LENGTH:', inputText.length);
+    console.log('='.repeat(60));
+    console.log('RAW STRING:');
+    console.log(inputText);
+    console.log('='.repeat(60));
+    console.log('BASE64 ENCODED:');
+    // Base64 encode using btoa or Buffer-like approach
     try {
-      const peerData: SignalingData = JSON.parse(peerDataInput);
+      // React Native compatible base64
+      const base64 = btoa(unescape(encodeURIComponent(inputText)));
+      console.log(base64);
+    } catch (e) {
+      console.log('Base64 encoding failed:', e);
+    }
+    console.log('='.repeat(60));
+    console.log('HEX DUMP:');
+    // Standard hexdump format: offset | 16 hex bytes | ASCII
+    const bytes = inputText.split('').map(c => c.charCodeAt(0));
+    for (let offset = 0; offset < bytes.length; offset += 16) {
+      const chunk = bytes.slice(offset, offset + 16);
+      const offsetStr = offset.toString(16).padStart(8, '0');
+      const hexPart = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ').padEnd(48, ' ');
+      const asciiPart = chunk.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+      console.log(`${offsetStr}  ${hexPart} |${asciiPart}|`);
+    }
+    console.log('='.repeat(60) + '\n');
+
+    try {
+      const peerData: SignalingData = JSON.parse(inputText);
+
+      // Validate required fields
+      if (!peerData.ufrag || !peerData.pwd) {
+        Alert.alert('Error', 'Missing required fields: ufrag or pwd');
+        return;
+      }
+      if (!peerData.candidates || peerData.candidates.length === 0) {
+        Alert.alert('Error', 'Missing or empty candidates array');
+        return;
+      }
+
+      console.log('Successfully parsed! Candidates:', peerData.candidates.length);
+
       setIsLoading(true);
       const success = await setSignalingData(peerData);
       setIsLoading(false);
 
       if (success) {
         setStep('exchange');
-        Alert.alert('Success', 'Peer data set successfully. Ready to connect.');
+        Alert.alert('Success', `Peer data set! ${peerData.candidates.length} candidates loaded.`);
       }
     } catch (err) {
-      Alert.alert('Error', 'Invalid JSON format');
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      console.log('JSON PARSE ERROR:', errorMsg);
+
+      // Build helpful error message
+      let details = `Error: ${errorMsg}\n\nInput length: ${inputText.length} chars`;
+      if (!inputText.endsWith('}')) {
+        details += '\n\nJSON appears truncated (should end with })';
+        details += `\n\nLast 30 chars: "${inputText.substring(inputText.length - 30)}"`;
+      }
+
+      Alert.alert('Invalid JSON', details);
     }
   };
 
@@ -140,8 +201,43 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
 
   const copySignalingData = () => {
     if (localSignalingData) {
-      // In a real app, use Clipboard.setString
       Alert.alert('Signaling Data', JSON.stringify(localSignalingData, null, 2));
+    }
+  };
+
+  const copyToClipboard = () => {
+    if (localSignalingData) {
+      const jsonStr = JSON.stringify(localSignalingData);
+      Clipboard.setString(jsonStr);
+      Alert.alert('Copied!', 'Signaling data copied to clipboard (compact JSON).');
+    }
+  };
+
+  const printToConsole = () => {
+    if (localSignalingData) {
+      const jsonStr = JSON.stringify(localSignalingData);
+      console.log('\n');
+      console.log('='.repeat(60));
+      console.log('MOBILE SIGNALING DATA (copy this to desktop):');
+      console.log('='.repeat(60));
+      console.log(jsonStr);
+      console.log('='.repeat(60));
+      console.log('\n');
+      Alert.alert('Printed!', 'Check your Metro/Expo terminal for the signaling data.');
+    }
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await Clipboard.getString();
+      if (text) {
+        setPeerDataInput(text);
+        Alert.alert('Pasted!', `Pasted ${text.length} characters from clipboard.`);
+      } else {
+        Alert.alert('Empty', 'Clipboard is empty.');
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to read clipboard.');
     }
   };
 
@@ -239,9 +335,19 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
           )}
           {renderCandidates()}
           {localSignalingData && (
-            <TouchableOpacity style={styles.secondaryButton} onPress={copySignalingData}>
-              <Text style={styles.secondaryButtonText}>View Signaling Data</Text>
-            </TouchableOpacity>
+            <View>
+              <TouchableOpacity style={styles.secondaryButton} onPress={copySignalingData}>
+                <Text style={styles.secondaryButtonText}>View Signaling Data</Text>
+              </TouchableOpacity>
+              <View style={styles.buttonRow}>
+                <TouchableOpacity style={[styles.smallButton, styles.copyButton]} onPress={copyToClipboard}>
+                  <Text style={styles.smallButtonText}>Copy to Clipboard</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.smallButton, styles.consoleButton]} onPress={printToConsole}>
+                  <Text style={styles.smallButtonText}>Print to Console</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           )}
         </View>
       )}
@@ -253,14 +359,19 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
           <Text style={styles.helpText}>
             Paste the signaling data from the desktop server.
           </Text>
+          <TouchableOpacity style={styles.pasteButton} onPress={pasteFromClipboard}>
+            <Text style={styles.pasteButtonText}>Paste from Clipboard</Text>
+          </TouchableOpacity>
           <TextInput
             style={styles.input}
             multiline
-            numberOfLines={4}
+            numberOfLines={6}
             placeholder='{"ufrag":"...", "pwd":"...", "publicKey":"...", "candidates":[...]}'
             placeholderTextColor="#666"
             value={peerDataInput}
             onChangeText={setPeerDataInput}
+            autoCapitalize="none"
+            autoCorrect={false}
           />
           <TouchableOpacity
             style={styles.button}
@@ -403,6 +514,43 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     color: '#4CAF50',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    gap: 8,
+  },
+  smallButton: {
+    flex: 1,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    padding: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  smallButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  copyButton: {
+    borderColor: '#4CAF50',
+  },
+  consoleButton: {
+    borderColor: '#2196F3',
+  },
+  pasteButton: {
+    backgroundColor: '#2196F3',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  pasteButtonText: {
+    color: '#fff',
     fontSize: 14,
     fontWeight: '600',
   },
