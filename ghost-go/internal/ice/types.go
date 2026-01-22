@@ -14,6 +14,23 @@ const (
 	ProtocolTCP = "tcp"
 )
 
+// ConnectionState represents the ICE connection state.
+type ConnectionState string
+
+// ICE connection states
+const (
+	ConnectionStateNew          ConnectionState = "new"
+	ConnectionStateChecking     ConnectionState = "checking"
+	ConnectionStateConnected    ConnectionState = "connected"
+	ConnectionStateCompleted    ConnectionState = "completed"
+	ConnectionStateFailed       ConnectionState = "failed"
+	ConnectionStateDisconnected ConnectionState = "disconnected"
+	ConnectionStateClosed       ConnectionState = "closed"
+)
+
+// ConnectionStateChangeCallback is called when the ICE connection state changes.
+type ConnectionStateChangeCallback func(state ConnectionState)
+
 // Candidate represents an ICE candidate.
 type Candidate struct {
 	// Type is the type of candidate (host, srflx, prflx, relay)

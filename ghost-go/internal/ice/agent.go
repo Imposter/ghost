@@ -34,6 +34,10 @@ type Agent interface {
 	// GetSelectedCandidatePair returns the selected candidate pair after connection.
 	GetSelectedCandidatePair() (*CandidatePair, error)
 
+	// OnConnectionStateChange sets a callback to be invoked when the ICE connection state changes.
+	// This is useful for detecting disconnections from the remote peer.
+	OnConnectionStateChange(callback ConnectionStateChangeCallback)
+
 	// Close closes the agent and releases all resources.
 	Close() error
 }
@@ -55,6 +59,9 @@ type pionAgent struct {
 	// Candidate gathering
 	candidateChan chan *Candidate
 	gatherDone    chan struct{}
+
+	// Connection state change callback
+	stateChangeCallback ConnectionStateChangeCallback
 }
 
 // NewAgent creates a new ICE agent with the given configuration.
@@ -129,11 +136,56 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		return nil, fmt.Errorf("failed to set OnCandidate callback: %w", err)
 	}
 
+	// Create the pionAgent early so we can reference it in the callback
+	pa := &pionAgent{
+		config:        config,
+		agent:         agent,
+		logger:        logger,
+		candidateChan: candidateChan,
+		gatherDone:    gatherDone,
+	}
+
+	// Set OnConnectionStateChange callback to detect disconnections
+	if err := agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+		var connState ConnectionState
+		switch state {
+		case ice.ConnectionStateNew:
+			connState = ConnectionStateNew
+		case ice.ConnectionStateChecking:
+			connState = ConnectionStateChecking
+		case ice.ConnectionStateConnected:
+			connState = ConnectionStateConnected
+		case ice.ConnectionStateCompleted:
+			connState = ConnectionStateCompleted
+		case ice.ConnectionStateFailed:
+			connState = ConnectionStateFailed
+		case ice.ConnectionStateDisconnected:
+			connState = ConnectionStateDisconnected
+		case ice.ConnectionStateClosed:
+			connState = ConnectionStateClosed
+		default:
+			connState = ConnectionState(state.String())
+		}
+
+		logger.Info("ICE connection state changed", "state", connState)
+
+		if pa.stateChangeCallback != nil {
+			pa.stateChangeCallback(connState)
+		}
+	}); err != nil {
+		agent.Close()
+		return nil, fmt.Errorf("failed to set OnConnectionStateChange callback: %w", err)
+	}
+
 	localUfrag, localPwd, err := agent.GetLocalUserCredentials()
 	if err != nil {
 		agent.Close()
 		return nil, fmt.Errorf("failed to get local credentials: %w", err)
 	}
+
+	// Set credentials on the already-created pionAgent
+	pa.localUfrag = localUfrag
+	pa.localPwd = localPwd
 
 	logger.Info("ICE agent created",
 		"ufrag", localUfrag,
@@ -141,15 +193,7 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		"turn_servers", len(config.TURNServers),
 	)
 
-	return &pionAgent{
-		config:        config,
-		agent:         agent,
-		logger:        logger,
-		localUfrag:    localUfrag,
-		localPwd:      localPwd,
-		candidateChan: candidateChan,
-		gatherDone:    gatherDone,
-	}, nil
+	return pa, nil
 }
 
 // GatherCandidates starts gathering local ICE candidates.
@@ -360,6 +404,11 @@ func (a *pionAgent) Close() error {
 	}
 
 	return nil
+}
+
+// OnConnectionStateChange sets a callback to be invoked when the ICE connection state changes.
+func (a *pionAgent) OnConnectionStateChange(callback ConnectionStateChangeCallback) {
+	a.stateChangeCallback = callback
 }
 
 // convertPionCandidate converts a Pion candidate to our Candidate type.

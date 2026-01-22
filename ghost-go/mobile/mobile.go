@@ -240,6 +240,47 @@ func (c *GhostClient) StartGathering() string {
 	c.iceAgent = agent
 	c.iceState = ICEStateChecking
 
+	// Register ICE connection state change callback to detect disconnections
+	agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		// Map ICE connection state to our state
+		switch state {
+		case ice.ConnectionStateConnected:
+			c.iceState = ICEStateConnected
+		case ice.ConnectionStateCompleted:
+			c.iceState = ICEStateCompleted
+		case ice.ConnectionStateFailed:
+			c.iceState = ICEStateFailed
+			c.dispatcher.emitError(fmt.Errorf("ICE connection failed"))
+			c.dispatcher.emitStateChange(&ConnectionStateJSON{
+				ICEState:       c.iceState,
+				TunnelState:    c.tunnelState,
+				IsConnected:    false,
+				IsTunnelActive: false,
+				LocalIP:        c.localIP,
+				PeerIP:         c.peerIP,
+				ErrorMessage:   "ICE connection failed",
+			})
+		case ice.ConnectionStateDisconnected:
+			c.iceState = ICEStateDisconnected
+			c.tunnelState = TunnelStateInactive
+			c.dispatcher.emitTunnelDown()
+			c.dispatcher.emitStateChange(&ConnectionStateJSON{
+				ICEState:       c.iceState,
+				TunnelState:    c.tunnelState,
+				IsConnected:    false,
+				IsTunnelActive: false,
+				LocalIP:        c.localIP,
+				PeerIP:         c.peerIP,
+			})
+			c.dispatcher.emitDisconnected("Peer disconnected")
+		case ice.ConnectionStateClosed:
+			c.iceState = ICEStateClosed
+		}
+	})
+
 	// Start gathering in background
 	ctx := context.Background()
 	candChan, err := agent.GatherCandidates(ctx)
