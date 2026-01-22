@@ -111,3 +111,10 @@ func (d *eventDispatcher) emitTunnelDown() {
 		Message: "WireGuard tunnel is inactive",
 	})
 }
+
+// emitTunnelDownWithState emits a tunnel down event along with a state change event.
+// This is useful when the tunnel goes down so the UI can update immediately.
+func (d *eventDispatcher) emitTunnelDownWithState(state *ConnectionStateJSON) {
+	d.emitTunnelDown()
+	d.emitStateChange(state)
+}
