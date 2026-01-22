@@ -18,8 +18,16 @@ const (
 	DefaultConnectionTimeout = 30 * time.Second
 
 	// DefaultKeepaliveInterval is the default interval between keepalive packets.
-	// 15 seconds keeps NAT bindings alive while being bandwidth-efficient.
-	DefaultKeepaliveInterval = 15 * time.Second
+	// 2 seconds provides fast disconnect detection while being reasonable for bandwidth.
+	DefaultKeepaliveInterval = 2 * time.Second
+
+	// DefaultDisconnectedTimeout is the time after which a connection is considered disconnected
+	// if no packets are received. 5 seconds provides fast detection.
+	DefaultDisconnectedTimeout = 5 * time.Second
+
+	// DefaultFailedTimeout is the time after which a disconnected connection is considered failed.
+	// 15 seconds allows time for recovery attempts.
+	DefaultFailedTimeout = 15 * time.Second
 
 	// DefaultSTUNPort is the standard STUN server port (RFC 5389).
 	DefaultSTUNPort = 19302
@@ -70,8 +78,16 @@ type ICEConfig struct {
 	ConnectionTimeout time.Duration
 
 	// KeepaliveInterval is the interval between keepalive packets.
-	// Default: 15 seconds
+	// Default: 2 seconds
 	KeepaliveInterval time.Duration
+
+	// DisconnectedTimeout is the time to wait before transitioning to disconnected state
+	// after no packets are received. Default: 5 seconds
+	DisconnectedTimeout time.Duration
+
+	// FailedTimeout is the time to wait before transitioning from disconnected to failed.
+	// Default: 15 seconds
+	FailedTimeout time.Duration
 
 	// InterfaceFilter is a list of network interface names to use.
 	// If empty, all interfaces are used.
@@ -85,12 +101,14 @@ type ICEConfig struct {
 // DefaultICEConfig returns a configuration with sensible defaults.
 func DefaultICEConfig() *ICEConfig {
 	return &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		TURNServers:       []TURNServer{},
-		GatherTimeout:     DefaultGatherTimeout,
-		ConnectionTimeout: DefaultConnectionTimeout,
-		KeepaliveInterval: DefaultKeepaliveInterval,
-		InterfaceFilter:   []string{},
+		STUNServers:         []string{"stun:stun.l.google.com:19302"},
+		TURNServers:         []TURNServer{},
+		GatherTimeout:       DefaultGatherTimeout,
+		ConnectionTimeout:   DefaultConnectionTimeout,
+		KeepaliveInterval:   DefaultKeepaliveInterval,
+		DisconnectedTimeout: DefaultDisconnectedTimeout,
+		FailedTimeout:       DefaultFailedTimeout,
+		InterfaceFilter:     []string{},
 		CandidateTypes: []CandidateType{
 			CandidateTypeHost,
 			CandidateTypeSrflx,

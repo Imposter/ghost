@@ -84,8 +84,11 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 
 	// Build ICE agent configuration
 	agentConfig := &ice.AgentConfig{
-		NetworkTypes:    []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
-		IncludeLoopback: true, // Required for localhost testing
+		NetworkTypes:        []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
+		IncludeLoopback:     true, // Required for localhost testing
+		KeepaliveInterval:   &config.KeepaliveInterval,
+		DisconnectedTimeout: &config.DisconnectedTimeout,
+		FailedTimeout:       &config.FailedTimeout,
 	}
 
 	// Add STUN servers

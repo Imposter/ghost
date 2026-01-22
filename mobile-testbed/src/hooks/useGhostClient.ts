@@ -186,7 +186,8 @@ export function useGhostClient() {
     const subscription = eventEmitter.addListener('GhostEvent', (eventJSON: string) => {
       try {
         const event: GhostEvent = JSON.parse(eventJSON);
-        console.log('[GhostEvent]', event.type, event.message || event.data?.substring(0, 50));
+        const timestamp = new Date().toISOString().substring(11, 23); // HH:mm:ss.SSS
+        console.log(`[${timestamp}] [GhostEvent]`, event.type, event.message || event.data?.substring(0, 50));
 
         switch (event.type) {
           case 'state_change':
@@ -245,7 +246,8 @@ export function useGhostClient() {
             break;
         }
       } catch (err) {
-        console.error('[GhostEvent] Failed to parse event:', err);
+        const timestamp = new Date().toISOString().substring(11, 23);
+        console.error(`[${timestamp}] [GhostEvent] Failed to parse event:`, err);
       }
     });
 
