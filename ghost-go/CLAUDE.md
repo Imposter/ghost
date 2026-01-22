@@ -57,11 +57,26 @@ type ICEBind struct {
 
 ### Critical Design Decisions
 
+- **Ownership Pattern**: ICEBind does NOT own the underlying `net.Conn`. The caller who created the connection is responsible for closing it. This follows Go's convention that whoever creates a resource is responsible for cleaning it up.
+- **Close() Behavior**: `Close()` only stops the receive loop - it does NOT close the underlying connection
 - **BatchSize = 1**: Simplifies implementation; processes one packet at a time (can be optimized later)
 - **Single Endpoint**: ICE connections are point-to-point, so only one endpoint exists per bind
 - **Direct Reads**: No additional buffering beyond the recvChan (32 packet buffer)
 - **SetMark() No-op**: Not applicable for ICE; ICE handles routing internally
 - **Receive Loop**: Continuous goroutine reading from conn and pushing to channel
+
+### Cleanup Order (Ownership Pattern)
+
+When shutting down a tunnel, resources must be closed in the correct order:
+
+```go
+// Correct cleanup order:
+device.Close()   // 1. Stops WireGuard, calls bind.Close() (stops receive loop)
+iceConn.Close()  // 2. Caller closes the connection they created
+agent.Close()    // 3. Caller closes the ICE agent they created
+```
+
+**Why this matters**: The previous design used a `DestroyableBind` interface with runtime type assertions, which was hacky and violated package boundaries. The ownership pattern is cleaner, more idiomatic Go, and makes the lifecycle explicit.
 
 ### Why This Matters
 
@@ -206,42 +221,49 @@ Provides encrypted peer-to-peer tunneling using the WireGuard protocol. Wraps wi
 
 These decisions are foundational to the codebase. Changes should be carefully considered:
 
-1. **BatchSize = 1** (ICEBind)
+1. **Ownership Pattern for ICEBind** (CRITICAL)
+   - ICEBind does NOT own the underlying `net.Conn`
+   - `Close()` only stops the receive loop, does NOT close the connection
+   - Caller who creates the connection is responsible for closing it
+   - This follows Go's idiom: whoever creates a resource closes it
+   - Cleanup order: `device.Close()` → `iceConn.Close()` → `agent.Close()`
+
+2. **BatchSize = 1** (ICEBind)
    - Simplifies initial implementation
    - Processes one packet at a time
    - Can be optimized later for throughput
 
-2. **HEX Encoding for IPC** (WireGuard)
+3. **HEX Encoding for IPC** (WireGuard)
    - WireGuard IPC protocol requires hex-encoded keys
    - External API uses base64 (standard WireGuard format)
    - Internal IPC uses hex (32 bytes → 64 hex chars)
 
-3. **Single Endpoint Per Bind** (ICEBind)
+4. **Single Endpoint Per Bind** (ICEBind)
    - ICE connections are point-to-point
    - One ICEBind = one ICE connection = one endpoint
    - Multiple peers require multiple devices (future: connection pooling)
 
-4. **Direct Reads from net.Conn** (ICEBind)
+5. **Direct Reads from net.Conn** (ICEBind)
    - No additional buffering beyond recvChan (32 packets)
    - Keeps latency low
    - Buffer size tunable for high-throughput scenarios
 
-5. **Curve25519 Clamping** (keys.go)
+6. **Curve25519 Clamping** (keys.go)
    - Follows RFC 7748 for key generation
    - Ensures keys are valid Curve25519 points
    - Critical for WireGuard compatibility
 
-6. **IPC Field Constants** (device.go)
+7. **IPC Field Constants** (device.go)
    - All IPC field names defined as constants
    - Prevents typos in string literals
    - Makes refactoring safer
 
-7. **MTU Default = 1280** (config.go)
+8. **MTU Default = 1280** (config.go)
    - Safe for IPv6 minimum MTU
    - Works across most networks
    - Accounts for WireGuard + ICE overhead
 
-8. **Thread Safety via RWMutex** (all components)
+9. **Thread Safety via RWMutex** (all components)
    - All public methods are thread-safe
    - Uses RWMutex for read-heavy operations
    - Proper lock ordering to prevent deadlocks

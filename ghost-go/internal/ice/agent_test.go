@@ -18,6 +18,7 @@ func TestNewAgent(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agent, err := NewAgent(config, logger)
@@ -39,6 +40,7 @@ func TestAgentGatherCandidates(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     10 * time.Second,
 		ConnectionTimeout: 15 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agent, err := NewAgent(config, logger)
@@ -93,6 +95,7 @@ func TestAgentAddRemoteCandidate(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agent, err := NewAgent(config, logger)
@@ -120,6 +123,7 @@ func TestAgentCredentials(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agent, err := NewAgent(config, logger)
@@ -142,6 +146,7 @@ func TestAgentSetRemoteCredentials(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agent, err := NewAgent(config, logger)

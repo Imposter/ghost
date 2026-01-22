@@ -288,6 +288,8 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	fmt.Println("\nStep 9: Creating WireGuard tunnel...")
 
 	// Create ICEBind
+	// Note: bind.Close() is called by device.Close() internally.
+	// We close conn separately (ownership pattern - caller closes what they created)
 	bind := ice.NewICEBind(conn, logger)
 
 	// Parse local IP
@@ -332,10 +334,15 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 		return fmt.Errorf("invalid peer public key: %w", err)
 	}
 
+	// The endpoint must be set for WireGuard to know where to send packets.
+	// For ICEBind, we use the ICE connection's remote address.
+	peerEndpoint := conn.RemoteAddr().String()
+
 	peerConfig := &wireguard.PeerConfig{
 		PublicKey:           peerPublicKey,
 		AllowedIPs:          []string{mobile.VirtualSubnet},
 		PersistentKeepalive: config.Keepalive,
+		Endpoint:            peerEndpoint,
 	}
 
 	if err := device.AddPeer(peerConfig); err != nil {
