@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { NativeModules, Platform } from 'react-native';
 
 // Types matching the Go mobile API
 export interface Candidate {
@@ -69,28 +70,96 @@ interface GhostNativeModule {
   setSignalingData(json: string): Promise<string>;
 }
 
-// Placeholder for native module - will be replaced by actual native bridge
-const GhostModule: GhostNativeModule = {
-  newClient: async () => { throw new Error('Native module not available'); },
-  close: async () => { throw new Error('Native module not available'); },
-  generateWireGuardKey: async () => { throw new Error('Native module not available'); },
-  getPublicKey: () => '',
-  startGathering: async () => '',
-  getLocalCredentials: () => '{}',
-  getLocalCandidatesJSON: () => '[]',
-  setRemoteCredentials: async () => '',
-  addRemoteCandidate: async () => '',
-  connect: async () => '',
-  getConnectionState: () => '{"iceState":"new","tunnelState":"inactive","isConnected":false,"isTunnelActive":false}',
-  setPeerPublicKey: async () => '',
-  setLocalIP: async () => '',
-  startTunnel: async () => '',
-  httpGet: async () => '{"success":false,"error":"Native module not available"}',
-  httpPost: async () => '{"success":false,"error":"Native module not available"}',
-  getTunnelStats: () => '{"isActive":false,"bytesSent":0,"bytesReceived":0}',
-  getSignalingData: () => '',
-  setSignalingData: async () => '',
+// Get native module - will be available after prebuild and proper setup
+const { GhostModule: NativeGhostModule } = NativeModules;
+
+// Check if native module is available
+const isNativeAvailable = (): boolean => {
+  return NativeGhostModule != null;
 };
+
+// Wrapper that provides fallbacks when native module isn't available
+const GhostModule: GhostNativeModule = {
+  newClient: async (stunServers: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available. Run "npx expo prebuild" and rebuild the app.');
+    return NativeGhostModule.newClient(stunServers);
+  },
+  close: async () => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.close();
+  },
+  generateWireGuardKey: async () => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.generateWireGuardKey();
+  },
+  getPublicKey: () => {
+    if (!isNativeAvailable()) return '';
+    return NativeGhostModule.getPublicKey();
+  },
+  startGathering: async () => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.startGathering();
+  },
+  getLocalCredentials: () => {
+    if (!isNativeAvailable()) return '{}';
+    return NativeGhostModule.getLocalCredentials();
+  },
+  getLocalCandidatesJSON: () => {
+    if (!isNativeAvailable()) return '[]';
+    return NativeGhostModule.getLocalCandidatesJSON();
+  },
+  setRemoteCredentials: async (json: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.setRemoteCredentials(json);
+  },
+  addRemoteCandidate: async (json: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.addRemoteCandidate(json);
+  },
+  connect: async (isControlling: boolean) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.connect(isControlling);
+  },
+  getConnectionState: () => {
+    if (!isNativeAvailable()) return '{"iceState":"new","tunnelState":"inactive","isConnected":false,"isTunnelActive":false}';
+    return NativeGhostModule.getConnectionState();
+  },
+  setPeerPublicKey: async (base64Key: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.setPeerPublicKey(base64Key);
+  },
+  setLocalIP: async (cidr: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.setLocalIP(cidr);
+  },
+  startTunnel: async () => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.startTunnel();
+  },
+  httpGet: async (url: string) => {
+    if (!isNativeAvailable()) return '{"success":false,"error":"Native module not available"}';
+    return NativeGhostModule.httpGet(url);
+  },
+  httpPost: async (url: string, contentType: string, body: string) => {
+    if (!isNativeAvailable()) return '{"success":false,"error":"Native module not available"}';
+    return NativeGhostModule.httpPost(url, contentType, body);
+  },
+  getTunnelStats: () => {
+    if (!isNativeAvailable()) return '{"isActive":false,"bytesSent":0,"bytesReceived":0}';
+    return NativeGhostModule.getTunnelStats();
+  },
+  getSignalingData: () => {
+    if (!isNativeAvailable()) return '';
+    return NativeGhostModule.getSignalingData();
+  },
+  setSignalingData: async (json: string) => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.setSignalingData(json);
+  },
+};
+
+// Export the availability check for UI components
+export const isGhostNativeModuleAvailable = isNativeAvailable;
 
 export function useGhostClient() {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');

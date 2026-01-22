@@ -39,7 +39,8 @@
         {
           "cameraPermission": "Allow $(PRODUCT_NAME) to scan QR codes for peer connection"
         }
-      ]
+      ],
+      "./plugins/withGhostModule"
     ]
   }
 }
