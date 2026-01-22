@@ -102,10 +102,12 @@ ghost-go/
 │   │   ├── tun_linux.go         # Linux-specific TUN (wg0, ghost0)
 │   │   ├── tun_windows.go       # Windows-specific TUN (Wintun)
 │   │   ├── tun_darwin.go        # macOS-specific TUN (utun)
+│   │   ├── tun_netstack.go      # ⭐ Userspace TUN via gvisor/netstack
 │   │   ├── errors.go            # WireGuard-specific errors
 │   │   ├── device_test.go       # Device unit tests
 │   │   ├── config_test.go       # Config validation tests
 │   │   ├── keys_test.go         # Key generation tests
+│   │   ├── tun_netstack_test.go # Userspace TUN tests
 │   │   └── README.md            # Comprehensive WireGuard package docs
 │   │
 │   └── testutil/                # Testing Utilities
@@ -182,6 +184,13 @@ Provides encrypted peer-to-peer tunneling using the WireGuard protocol. Wraps wi
   - `CreateTUNFromFD()` - Create from file descriptor (for mobile)
   - Platform-specific implementations for Linux, Windows, macOS
 
+- `tun_netstack.go` (~100 lines) - **Userspace TUN via gvisor/netstack**
+  - `CreateNetTUN()` - Creates userspace TUN without kernel privileges
+  - `Net` type wrapping `netstack.Net` with accessors
+  - `LocalAddresses()`, `DNSServers()`, `MTU()` - Configuration accessors
+  - `HasIPv4()`, `HasIPv6()` - Address type detection
+  - Enables WireGuard tunneling on platforms without TUN support (mobile, unprivileged)
+
 **Design Notes:**
 - IPC uses **HEX encoding** for keys (not base64), per WireGuard spec
 - IPC field names defined as constants for maintainability
@@ -256,17 +265,20 @@ These decisions are foundational to the codebase. Changes should be carefully co
 - Demo application showing full tunnel establishment
 - Documentation (READMEs, code comments, this file)
 
-### Phase 1b: Mobile Test Bed - ⏳ Planned
+### Phase 1b: Mobile Test Bed - 🔄 In Progress
 
 **Goal:** Create gomobile-compatible API for testing on Android/iOS
 
-**Scope:**
-- Export simplified API for mobile bindings
-- Test TUN device creation from file descriptors
-- Validate performance characteristics on mobile platforms
-- User-space library - applications manage the tunnel
+**Completed:**
+- ✅ Userspace networking via gvisor/netstack (`tun_netstack.go`)
+- ✅ `CreateNetTUN()` for TUN without kernel privileges
+- ✅ `Net` wrapper with dial/listen capabilities
+- ✅ Comprehensive test coverage
 
-**Timeline:** Next phase after Phase 1 completion
+**Remaining:**
+- ⏳ Export simplified API for mobile bindings (gomobile)
+- ⏳ Test on Android/iOS simulators
+- ⏳ Validate performance characteristics on mobile platforms
 
 ### Future Phases (Planned)
 
@@ -421,11 +433,17 @@ sudo go run ./cmd/demo -role b
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Linux    | ✅ Full | Native TUN, requires CAP_NET_ADMIN |
-| Windows  | ✅ Full | Wintun driver, requires Administrator |
-| macOS    | ✅ Full | utun devices, requires root |
-| Android  | ⏳ Phase 1b | User-space library, app manages TUN via FD |
-| iOS      | ⏳ Phase 1b | User-space library, app manages TUN via FD |
+| Linux    | ✅ Full | Native TUN (requires CAP_NET_ADMIN) or userspace via netstack |
+| Windows  | ✅ Full | Wintun driver (requires Administrator) or userspace via netstack |
+| macOS    | ✅ Full | utun devices (requires root) or userspace via netstack |
+| Android  | 🔄 Phase 1b | Userspace via netstack (no root required) |
+| iOS      | 🔄 Phase 1b | Userspace via netstack (no root required) |
+
+**Userspace Networking (gvisor/netstack):**
+- `CreateNetTUN()` creates a pure Go network stack - no kernel TUN device needed
+- Works on all platforms without elevated privileges
+- Ideal for mobile platforms and unprivileged environments
+- Provides `net.Conn`-compatible dial/listen through the WireGuard tunnel
 
 ### Architectural Philosophy
 
@@ -544,5 +562,5 @@ agent.Close()        // Close ICE agent
 ---
 
 **Last Updated:** January 2026
-**Project Phase:** Phase 1 Complete (100%)
+**Project Phase:** Phase 1b In Progress (Userspace Networking Complete)
 **Maintainer:** Ghost Team
