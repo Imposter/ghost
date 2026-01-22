@@ -292,7 +292,8 @@ func runDemo(ctx context.Context, config *Config, logger *slog.Logger) error {
 	// Step 10: Create ICEBind
 	fmt.Println("\nStep 10: Creating ICEBind adapter...")
 	bind := ice.NewICEBind(conn, logger)
-	defer bind.Close()
+	// Note: bind.Close() is called by device.Close() internally
+	// We close the conn separately (ownership pattern)
 	fmt.Println("✓ ICEBind created")
 
 	// Step 11: Create TUN device

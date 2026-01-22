@@ -94,17 +94,17 @@ android: check-deps check-android-ndk
 ios: check-deps
 	@echo "Building iOS XCFramework..."
 	@echo "  Minimum iOS: $(IOS_MIN_VERSION)"
-	@echo "  Output: $(BUILD_DIR)/Mobile.xcframework"
+	@echo "  Output: $(BUILD_DIR)/Ghost.xcframework"
 	@mkdir -p $(BUILD_DIR)
 	gomobile bind \
 		-v \
 		-ldflags="$(LDFLAGS)" \
 		-target=ios \
 		-iosversion $(IOS_MIN_VERSION) \
-		-o $(BUILD_DIR)/Mobile.xcframework \
+		-o $(BUILD_DIR)/Ghost.xcframework \
 		$(MOBILE_PKG)
 	@echo ""
-	@echo "Build complete: $(BUILD_DIR)/Mobile.xcframework"
+	@echo "Build complete: $(BUILD_DIR)/Ghost.xcframework"
 
 # Run all tests
 test: test-mobile test-integration

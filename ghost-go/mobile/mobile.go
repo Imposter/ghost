@@ -70,7 +70,7 @@ type GhostClient struct {
 //
 // Parameters:
 //   - stunServers: Comma-separated list of STUN server URLs (e.g., "stun:stun.l.google.com:19302")
-//                  If empty, uses Google's public STUN server.
+//     If empty, uses Google's public STUN server.
 //
 // Returns the client and an error if initialization fails.
 func NewClient(stunServers string) (*GhostClient, error) {
@@ -116,6 +116,12 @@ func (c *GhostClient) SetEventCallback(callback EventCallback) {
 
 // Close releases all resources held by the client.
 // This should always be called when done with the client.
+//
+// Cleanup order follows the ownership pattern:
+//  1. Close HTTP connection pool
+//  2. Bring down and close WireGuard device (stops bind's receive loop)
+//  3. Close the ICE connection (we created it, we close it)
+//  4. Close the ICE agent
 func (c *GhostClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -127,14 +133,22 @@ func (c *GhostClient) Close() error {
 
 	c.logger.Info("Closing GhostClient")
 
-	// Close connections first
+	// Close HTTP connections first
 	c.connPool.closeAll()
 
-	// Close WireGuard device (also closes bind and TUN)
+	// Close WireGuard device (stops bind's receive loop, but doesn't close ICE conn)
 	if c.device != nil {
 		c.device.Down()
 		c.device.Close()
 		c.device = nil
+	}
+
+	// Close the ICE connection (ownership pattern: we created it, we close it)
+	if c.iceConn != nil {
+		if err := c.iceConn.Close(); err != nil {
+			c.logger.Warn("Error closing ICE connection", "error", err)
+		}
+		c.iceConn = nil
 	}
 
 	// Close ICE agent

@@ -2,7 +2,6 @@ package ice_test
 
 import (
 	"context"
-	"io"
 	"net"
 	"sync"
 	"testing"
@@ -36,6 +35,7 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 		STUNServers:       []string{"stun:stun.l.google.com:19302"},
 		GatherTimeout:     15 * time.Second,
 		ConnectionTimeout: 30 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	// Create both agents
@@ -236,6 +236,7 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 		STUNServers:       []string{},
 		GatherTimeout:     5 * time.Second,
 		ConnectionTimeout: 10 * time.Second,
+		KeepaliveInterval: 15 * time.Second,
 	}
 
 	agentA, err := ice.NewAgent(config, logger.With("peer", "A"))
@@ -352,71 +353,91 @@ func TestICEBind_WithMockConnection(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
 	// Create a pipe to simulate a connection
+	// Note: net.Pipe() is synchronous - writes block until reads happen
 	connA, connB := net.Pipe()
-	defer func() {
-		if err := connA.Close(); err != nil {
-			t.Logf("Failed to close connA: %v", err)
-		}
-	}()
-	defer func() {
-		if err := connB.Close(); err != nil {
-			t.Logf("Failed to close connB: %v", err)
-		}
-	}()
 
 	// Create ICEBind with connA
 	bind := ice.NewICEBind(connA, logger)
-	defer bind.Close()
 
-	// Open the bind
-	_, recvFuncs, err := bind.Open(0)
+	// Open the bind - this starts a receive goroutine that will block on connA.Read()
+	recvFuncs, _, err := bind.Open(0)
 	require.NoError(t, err, "should open bind")
 	require.Len(t, recvFuncs, 1, "should have one receive function")
 
 	// Test sending
 	testData := []byte("test packet")
-	endpoint := ice.NewICEEndpoint(connA.RemoteAddr())
 
-	// Send data
-	err = bind.Send([][]byte{testData}, endpoint)
-	assert.NoError(t, err, "should send packet")
+	// Use a goroutine for send because net.Pipe() is synchronous
+	// (write blocks until the other end reads)
+	var sendErr error
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		// For ICE bind, endpoint is fixed (point-to-point), so we pass nil
+		sendErr = bind.Send([][]byte{testData}, nil)
+	}()
 
-	// Read from the other end
+	// Read from the other end - this unblocks the write
 	buf := make([]byte, 1500)
 	n, err := connB.Read(buf)
 	assert.NoError(t, err, "should read packet")
 	assert.Equal(t, testData, buf[:n], "should receive sent data")
 
+	// Wait for send to complete
+	<-sendDone
+	assert.NoError(t, sendErr, "should send packet")
+
 	t.Log("✅ ICEBind send/receive works")
+
+	// Cleanup: Close bind first (stops receive loop signal), then close connections
+	// The conn.Close() will unblock the receive goroutine's Read() call
+	bind.Close()
+	connA.Close()
+	connB.Close()
 }
 
 // TestICEBind_Close tests that ICEBind cleanup works correctly.
+// With the ownership pattern, bind.Close() does NOT close the underlying connection.
 func TestICEBind_Close(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
+	// Note: net.Pipe() is synchronous - writes block until reads happen
 	connA, connB := net.Pipe()
-	defer func() {
-		if err := connB.Close(); err != nil {
-			t.Logf("Failed to close connB: %v", err)
-		}
-	}()
 
 	bind := ice.NewICEBind(connA, logger)
 
-	// Open bind
+	// Open bind - starts receive goroutine (will block on connA.Read())
 	_, _, err := bind.Open(0)
 	require.NoError(t, err)
 
-	// Close should clean up
+	// Close should stop receive loop but NOT close the connection
 	err = bind.Close()
 	assert.NoError(t, err, "should close without error")
 
-	// Connection should be closed
-	_, err = connA.Write([]byte("test"))
-	assert.Error(t, err, "connection should be closed")
-	assert.ErrorIs(t, err, io.ErrClosedPipe, "should be closed pipe error")
+	// Connection should still be usable (ownership pattern)
+	// Use goroutine because net.Pipe() write blocks until read happens
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := connA.Write([]byte("test"))
+		writeDone <- err
+	}()
 
-	t.Log("✅ ICEBind close works")
+	// Read from other end to verify write worked
+	buf := make([]byte, 10)
+	n, err := connB.Read(buf)
+	assert.NoError(t, err, "should read from connection")
+	assert.Equal(t, "test", string(buf[:n]), "should receive written data")
+
+	// Check write completed successfully
+	writeErr := <-writeDone
+	assert.NoError(t, writeErr, "connection should still be open after bind.Close()")
+
+	t.Log("✅ ICEBind close works (ownership pattern)")
+
+	// Cleanup: Caller closes connections they created
+	// This unblocks any goroutines still waiting on conn.Read()
+	connA.Close()
+	connB.Close()
 }
 
 // Helper function to check if error is a timeout

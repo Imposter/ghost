@@ -414,6 +414,17 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 }
 
 // Close closes the WireGuard device and releases all resources.
+//
+// Note: This does NOT close the underlying bind's connection (e.g., ICE connection).
+// The caller who created the connection is responsible for closing it.
+// This follows Go's convention that whoever creates a resource is responsible
+// for cleaning it up.
+//
+// Example cleanup order:
+//
+//	device.Close()   // Stops WireGuard, closes bind's receive loop
+//	iceConn.Close()  // Caller closes the connection they created
+//	agent.Close()    // Caller closes the ICE agent they created
 func (d *Device) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -426,18 +437,11 @@ func (d *Device) Close() error {
 
 	d.closed = true
 
-	// Close the WireGuard device
+	// Close the WireGuard device.
+	// This internally calls bind.Close() and tun.Close().
+	// For ICEBind, Close() stops the receive loop but does NOT close
+	// the underlying connection (ownership pattern).
 	d.device.Close()
-
-	// Close the bind
-	if err := d.bind.Close(); err != nil {
-		d.logger.Warn("Error closing bind", "error", err)
-	}
-
-	// Close the TUN device
-	if err := d.tun.Close(); err != nil {
-		d.logger.Warn("Error closing TUN device", "error", err)
-	}
 
 	d.logger.Info("WireGuard device closed")
 	return nil

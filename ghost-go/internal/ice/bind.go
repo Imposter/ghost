@@ -31,13 +31,19 @@ const (
 //   - BatchSize of 1 (simplifies implementation, sufficient for initial version)
 //   - Direct reads from net.Conn (no buffering)
 //   - No SetMark support (not applicable for ICE)
+//   - Supports close/reopen cycle (wireguard-go rebinds on config changes)
+//   - Does NOT own the underlying connection (caller is responsible for closing it)
+//
+// Ownership: ICEBind does NOT close the underlying net.Conn. The caller who
+// created the connection is responsible for closing it. This follows Go's
+// convention that whoever creates a resource is responsible for cleaning it up.
 type ICEBind struct {
 	conn     net.Conn
 	endpoint *ICEEndpoint
 	logger   *slog.Logger
 
 	mu       sync.RWMutex
-	closed   bool
+	open     bool // Whether the bind is currently open (receive loop running)
 	recvChan chan []byte
 	stopChan chan struct{}
 }
@@ -66,15 +72,25 @@ func NewICEBind(conn net.Conn, logger *slog.Logger) *ICEBind {
 
 // Open initializes the bind and starts receiving packets.
 // The port parameter is ignored since ICE manages the socket.
+// This method can be called multiple times (wireguard-go rebinds on config changes).
 func (b *ICEBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.closed {
-		return nil, 0, errors.New("bind is closed")
+	if b.open {
+		// Already open, just return the receive function
+		b.logger.Debug("ICEBind already open, returning existing receive func")
+		receiveFuncs := []conn.ReceiveFunc{b.makeReceiveFunc()}
+		localPort := b.getLocalPort()
+		return receiveFuncs, localPort, nil
 	}
 
 	b.logger.Info("Opening ICEBind", "requested_port", port)
+
+	// Create fresh channels for this open cycle
+	b.recvChan = make(chan []byte, ReceiveChannelBufferSize)
+	b.stopChan = make(chan struct{})
+	b.open = true
 
 	// Start receive goroutine
 	go b.receiveLoop()
@@ -82,36 +98,44 @@ func (b *ICEBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	// Return a single receive function
 	receiveFuncs := []conn.ReceiveFunc{b.makeReceiveFunc()}
 
-	// Port is fixed by ICE connection
-	localAddr := b.conn.LocalAddr()
-	var localPort uint16
-	switch addr := localAddr.(type) {
-	case *net.UDPAddr:
-		localPort = uint16(addr.Port)
-	case *net.TCPAddr:
-		localPort = uint16(addr.Port)
-	default:
-		localPort = 0
-	}
-
+	localPort := b.getLocalPort()
 	b.logger.Info("ICEBind opened", "port", localPort)
 
 	return receiveFuncs, localPort, nil
+}
+
+// getLocalPort returns the local port from the connection.
+// Must be called with the lock held.
+func (b *ICEBind) getLocalPort() uint16 {
+	localAddr := b.conn.LocalAddr()
+	switch addr := localAddr.(type) {
+	case *net.UDPAddr:
+		return uint16(addr.Port)
+	case *net.TCPAddr:
+		return uint16(addr.Port)
+	default:
+		return 0
+	}
 }
 
 // makeReceiveFunc creates a receive function for WireGuard.
 func (b *ICEBind) makeReceiveFunc() conn.ReceiveFunc {
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		b.mu.RLock()
-		if b.closed {
+		if !b.open {
 			b.mu.RUnlock()
 			return 0, net.ErrClosed
 		}
+		recvChan := b.recvChan
+		stopChan := b.stopChan
 		b.mu.RUnlock()
 
 		// Wait for a packet
 		select {
-		case packet := <-b.recvChan:
+		case packet, ok := <-recvChan:
+			if !ok {
+				return 0, net.ErrClosed
+			}
 			if len(bufs) == 0 {
 				return 0, nil
 			}
@@ -124,7 +148,7 @@ func (b *ICEBind) makeReceiveFunc() conn.ReceiveFunc {
 			b.logger.Debug("Received packet", "size", n)
 			return 1, nil
 
-		case <-b.stopChan:
+		case <-stopChan:
 			return 0, net.ErrClosed
 		}
 	}
@@ -132,18 +156,28 @@ func (b *ICEBind) makeReceiveFunc() conn.ReceiveFunc {
 
 // receiveLoop continuously reads packets from the ICE connection.
 func (b *ICEBind) receiveLoop() {
-	defer b.logger.Info("Receive loop stopped")
+	defer b.logger.Debug("Receive loop stopped")
 
 	buffer := make([]byte, MaxUDPPacketSize)
 
 	for {
+		// Check if we should stop before reading
+		b.mu.RLock()
+		if !b.open {
+			b.mu.RUnlock()
+			return
+		}
+		stopChan := b.stopChan
+		recvChan := b.recvChan
+		b.mu.RUnlock()
+
 		n, err := b.conn.Read(buffer)
 		if err != nil {
 			b.mu.RLock()
-			closed := b.closed
+			open := b.open
 			b.mu.RUnlock()
 
-			if closed {
+			if !open {
 				return
 			}
 
@@ -161,8 +195,8 @@ func (b *ICEBind) receiveLoop() {
 
 		// Try to send to channel (non-blocking)
 		select {
-		case b.recvChan <- packet:
-		case <-b.stopChan:
+		case recvChan <- packet:
+		case <-stopChan:
 			return
 		default:
 			// Channel full, drop packet
@@ -173,13 +207,6 @@ func (b *ICEBind) receiveLoop() {
 
 // Send sends packets to the remote endpoint.
 func (b *ICEBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	if b.closed {
-		return net.ErrClosed
-	}
-
 	// ICE connection is point-to-point, endpoint should match
 	// Type assertion needed since endpoint is an interface
 	if endpoint != nil {
@@ -202,24 +229,27 @@ func (b *ICEBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 	return nil
 }
 
-// Close closes the bind and releases all resources.
+// Close stops the receive loop. Does NOT close the underlying connection.
+//
+// The caller who created the net.Conn is responsible for closing it.
+// This follows Go's convention that whoever creates a resource is responsible
+// for cleaning it up.
+//
+// This method can be called multiple times safely (idempotent).
+// After Close(), the bind can be reopened by calling Open() again.
 func (b *ICEBind) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.closed {
+	if !b.open {
+		// Already closed
 		return nil
 	}
 
-	b.closed = true
+	b.open = false
 	close(b.stopChan)
 
-	b.logger.Info("Closing ICEBind")
-
-	// Close the underlying connection
-	if err := b.conn.Close(); err != nil {
-		return fmt.Errorf("failed to close connection: %w", err)
-	}
+	b.logger.Debug("ICEBind closed (receive loop stopped)")
 
 	return nil
 }
