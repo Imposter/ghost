@@ -1,7 +1,7 @@
 # Phase 1b: Mobile Test Bed (React Native Expo)
 
 **Status**: ✅ COMPLETE
-**Last Updated**: January 21, 2026
+**Last Updated**: January 23, 2026
 **Repository**: `mobile-testbed/`, `ghost-go/mobile/`
 
 ## Overview
@@ -1183,6 +1183,31 @@ The mobile testbed implements a two-step reconnection strategy:
    - Creates a new ICE agent via `StartGathering()`
    - Generates new WireGuard keys
    - Requires re-exchanging signaling data with the peer
+
+---
+
+## Navigation Behavior
+
+The ConnectionScreen implements smart lifecycle management to preserve connections across navigation:
+
+### Connection Persistence
+
+When the user is already connected and navigates away (e.g., to the Test screen) and returns:
+- The `useFocusEffect` hook skips re-initialization if already in `connected` state
+- This prevents unnecessary state resets and maintains the active tunnel
+- The connection persists without requiring re-gathering or re-exchanging signaling data
+
+### In-Progress State Cleanup
+
+When the user navigates away during an in-progress state (`gathering`, `connecting`, or `exchange`):
+- The cleanup function cancels the gathering process and closes the connection
+- A `wasInProgressRef` tracks this state across navigation
+- On return, the UI resets to `init` state so the user can start fresh
+
+This behavior ensures:
+1. **Connected sessions are preserved** - Users can navigate to Test screen and back without losing connection
+2. **Incomplete sessions are cleaned up** - Prevents stale ICE agents or orphaned gathering processes
+3. **Clear user experience** - No confusing states when returning to the screen
 
 ---
 
