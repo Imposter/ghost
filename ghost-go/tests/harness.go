@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ghost-go/internal/ice"
 	"ghost-go/mobile"
 )
 
@@ -45,6 +46,13 @@ func NewTestHarness(t *testing.T) *TestHarness {
 		desktop.Close()
 		t.Fatalf("failed to create mobile client: %v", err)
 	}
+
+	// Set fixed ports for firewall compatibility
+	// Desktop uses port 51200, Mobile uses port 51201
+	desktopPort := uint16(ice.TestPortRangeStart + 200)
+	mobilePort := uint16(ice.TestPortRangeStart + 201)
+	desktop.SetPortRange(desktopPort, desktopPort)
+	mobileClient.SetPortRange(mobilePort, mobilePort)
 
 	h := &TestHarness{
 		t:       t,

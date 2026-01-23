@@ -14,12 +14,7 @@ import (
 func TestNewAgent(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
-	config := &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	config := TestICEConfigWithSTUN(20) // Port 51020
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")
@@ -36,12 +31,7 @@ func TestNewAgent(t *testing.T) {
 func TestAgentGatherCandidates(t *testing.T) {
 	logger := testutil.NewTestLogger(t)
 
-	config := &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     10 * time.Second,
-		ConnectionTimeout: 15 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	config := TestICEConfigWithSTUN(21) // Port 51021
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")
@@ -91,12 +81,7 @@ func TestAgentGatherCandidates(t *testing.T) {
 func TestAgentAddRemoteCandidate(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
-	config := &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	config := TestICEConfig(22) // Port 51022
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")
@@ -119,12 +104,7 @@ func TestAgentAddRemoteCandidate(t *testing.T) {
 func TestAgentCredentials(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
-	config := &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	config := TestICEConfig(23) // Port 51023
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")
@@ -142,12 +122,7 @@ func TestAgentCredentials(t *testing.T) {
 func TestAgentSetRemoteCredentials(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
-	config := &ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	config := TestICEConfig(24) // Port 51024
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")

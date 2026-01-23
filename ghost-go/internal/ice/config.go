@@ -127,6 +127,45 @@ func DefaultICEConfig() *ICEConfig {
 	}
 }
 
+// TestPortRangeStart is the starting port for test configurations.
+// Tests use a range of ports starting from this value to avoid conflicts.
+const TestPortRangeStart = 51000
+
+// TestICEConfig returns a configuration suitable for testing with fixed ports.
+// Each call increments the port range to allow multiple agents in the same test.
+// The portOffset parameter allows tests to specify unique port ranges for different agents.
+func TestICEConfig(portOffset int) *ICEConfig {
+	port := uint16(TestPortRangeStart + portOffset)
+	return &ICEConfig{
+		STUNServers:         []string{}, // No STUN for faster local tests
+		TURNServers:         []TURNServer{},
+		GatherTimeout:       5 * time.Second,
+		ConnectionTimeout:   10 * time.Second,
+		KeepaliveInterval:   DefaultKeepaliveInterval,
+		DisconnectedTimeout: DefaultDisconnectedTimeout,
+		FailedTimeout:       DefaultFailedTimeout,
+		InterfaceFilter:     []string{},
+		CandidateTypes: []CandidateType{
+			CandidateTypeHost,
+		},
+		PortMin: port,
+		PortMax: port,
+	}
+}
+
+// TestICEConfigWithSTUN returns a test configuration with STUN enabled and fixed ports.
+func TestICEConfigWithSTUN(portOffset int) *ICEConfig {
+	config := TestICEConfig(portOffset)
+	config.STUNServers = []string{"stun:stun.l.google.com:19302"}
+	config.GatherTimeout = 15 * time.Second
+	config.ConnectionTimeout = 30 * time.Second
+	config.CandidateTypes = []CandidateType{
+		CandidateTypeHost,
+		CandidateTypeSrflx,
+	}
+	return config
+}
+
 // Validate checks if the configuration is valid.
 func (c *ICEConfig) Validate() error {
 	if c == nil {
