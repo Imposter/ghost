@@ -20,7 +20,7 @@ This package wraps the core Ghost functionality (ICE NAT traversal + WireGuard e
 
 | Resource | Created By | Cleanup |
 |----------|------------|---------|
-| ICE agent | `StartGathering()` | `Close()` or re-calling `StartGathering()` |
+| ICE agent | `StartGathering()` | `Close()`, `CancelGathering()`, or re-calling `StartGathering()` |
 | ICE connection | `Connect()` | `Close()`, peer disconnect, or re-calling `Connect()` |
 | WireGuard device | `StartTunnel()` | `Close()`, peer disconnect, or re-calling `StartTunnel()` |
 | HTTP connection pool | Internal | `Close()` |
@@ -157,6 +157,7 @@ All public methods return JSON strings for gomobile compatibility:
 | `GenerateWireGuardKey()` | `{"privateKey": "...", "publicKey": "..."}` |
 | `GetPublicKey()` | Base64-encoded public key string |
 | `StartGathering()` | Empty string on success, `{"error": "..."}` on failure |
+| `CancelGathering()` | Empty string on success, `{"error": "..."}` on failure |
 | `GetLocalCredentials()` | `{"ufrag": "...", "pwd": "..."}` |
 | `GetLocalCandidatesJSON()` | `[{"type": "host", "address": "...", ...}, ...]` |
 | `GetSignalingData()` | `{"ufrag": "...", "pwd": "...", "publicKey": "...", "candidates": [...]}` |
@@ -237,6 +238,36 @@ inactive → starting → active
 3. **Check return values**: All methods that can fail return error JSON
 4. **Use signaling data helpers**: `GetSignalingData()`/`SetSignalingData()` simplify exchange
 5. **Handle disconnection**: Listen for `disconnected` events and handle accordingly
+6. **Cancel gathering on navigation**: Call `CancelGathering()` when user cancels or navigates away
+
+## Cancelling Gathering
+
+When the user cancels the connection flow or navigates away during ICE gathering, call `CancelGathering()` to properly clean up resources:
+
+```go
+// User pressed "Cancel" button during gathering
+if errStr := client.CancelGathering(); errStr != "" {
+    // Handle error (rare)
+}
+// State is now reset to "new", can call StartGathering() again later
+```
+
+### What CancelGathering Does
+
+1. **Cancels the gathering context**: Stops any in-progress STUN/TURN queries
+2. **Closes the ICE agent**: Releases network sockets and goroutines
+3. **Resets state**: Sets ICE state back to `new`
+4. **Clears candidates**: Removes any gathered candidates
+5. **Emits state_change event**: Notifies UI of the reset state
+
+### When to Use CancelGathering
+
+- User presses a "Cancel" button during the connection flow
+- User navigates away from the connection screen
+- App goes to background and you want to cancel the pending connection
+- Timeout occurs during gathering
+
+After `CancelGathering()`, you can safely call `StartGathering()` again to restart the process.
 
 ## Reconnection
 

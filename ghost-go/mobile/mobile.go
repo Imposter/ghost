@@ -90,6 +90,10 @@ type GhostClient struct {
 	tunnelState string
 	closed      bool
 
+	// Gathering context (for cancellation)
+	gatherCtx    context.Context
+	gatherCancel context.CancelFunc
+
 	// Event handling
 	dispatcher *eventDispatcher
 
@@ -179,6 +183,13 @@ func (c *GhostClient) Close() error {
 	c.closed = true
 
 	c.logger.Info("Closing GhostClient")
+
+	// Cancel any in-progress gathering
+	if c.gatherCancel != nil {
+		c.gatherCancel()
+		c.gatherCancel = nil
+		c.gatherCtx = nil
+	}
 
 	// Close HTTP connections first
 	c.connPool.closeAll()
@@ -320,6 +331,14 @@ func (c *GhostClient) StartGathering() string {
 		return toErrorJSON(ErrClientClosed)
 	}
 
+	// Cancel any in-progress gathering
+	if c.gatherCancel != nil {
+		c.logger.Info("Cancelling previous gathering")
+		c.gatherCancel()
+		c.gatherCancel = nil
+		c.gatherCtx = nil
+	}
+
 	// Clean up any existing ICE agent before creating a new one
 	// This prevents resource leaks when StartGathering is called multiple times
 	if c.iceAgent != nil {
@@ -395,10 +414,15 @@ func (c *GhostClient) StartGathering() string {
 		}
 	})
 
+	// Create cancellable context for gathering
+	c.gatherCtx, c.gatherCancel = context.WithCancel(context.Background())
+
 	// Start gathering in background
-	ctx := context.Background()
-	candChan, err := agent.GatherCandidates(ctx)
+	candChan, err := agent.GatherCandidates(c.gatherCtx)
 	if err != nil {
+		c.gatherCancel()
+		c.gatherCancel = nil
+		c.gatherCtx = nil
 		return toErrorJSON(fmt.Errorf("failed to start gathering: %w", err))
 	}
 
@@ -433,6 +457,49 @@ func (c *GhostClient) StartGathering() string {
 		c.mu.RUnlock()
 		c.logger.Info("Candidate gathering complete", "count", count)
 	}()
+
+	return ""
+}
+
+// CancelGathering cancels any in-progress ICE candidate gathering.
+// This should be called when the user cancels the connection flow or navigates away.
+// After cancellation, StartGathering() can be called again to restart.
+// Returns empty string on success.
+func (c *GhostClient) CancelGathering() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return toErrorJSON(ErrClientClosed)
+	}
+
+	// Cancel the gathering context if active
+	if c.gatherCancel != nil {
+		c.logger.Info("Cancelling ICE gathering")
+		c.gatherCancel()
+		c.gatherCancel = nil
+		c.gatherCtx = nil
+	}
+
+	// Clean up the ICE agent
+	if c.iceAgent != nil {
+		c.logger.Info("Closing ICE agent after gathering cancellation")
+		c.iceAgent.Close()
+		c.iceAgent = nil
+		c.candidates = nil
+	}
+
+	// Reset state to allow fresh start
+	c.iceState = ICEStateNew
+
+	c.dispatcher.emitStateChange(&ConnectionStateJSON{
+		ICEState:       c.iceState,
+		TunnelState:    c.tunnelState,
+		IsConnected:    false,
+		IsTunnelActive: false,
+		LocalIP:        c.localIP,
+		PeerIP:         c.peerIP,
+	})
 
 	return ""
 }

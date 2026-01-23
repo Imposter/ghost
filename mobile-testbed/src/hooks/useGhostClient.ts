@@ -72,6 +72,7 @@ interface GhostNativeModule {
   generateWireGuardKey(): Promise<string>;
   getPublicKey(): string;
   startGathering(): Promise<string>;
+  cancelGathering(): Promise<string>;
   getLocalCredentials(): string;
   getLocalCandidatesJSON(): string;
   setRemoteCredentials(json: string): Promise<string>;
@@ -117,6 +118,10 @@ const GhostModule: GhostNativeModule = {
   startGathering: async () => {
     if (!isNativeAvailable()) throw new Error('Native module not available');
     return NativeGhostModule.startGathering();
+  },
+  cancelGathering: async () => {
+    if (!isNativeAvailable()) throw new Error('Native module not available');
+    return NativeGhostModule.cancelGathering();
   },
   getLocalCredentials: () => {
     if (!isNativeAvailable()) return '{}';
@@ -548,6 +553,24 @@ export function useGhostClient() {
     }
   }, []);
 
+  // Cancel gathering - call when user cancels or navigates away
+  const cancelGathering = useCallback(async () => {
+    try {
+      const result = await GhostModule.cancelGathering();
+      if (result && result.includes('error')) {
+        const parsed = JSON.parse(result);
+        console.error('Failed to cancel gathering:', parsed.error);
+        return false;
+      }
+      setStatus('disconnected');
+      setCandidates([]);
+      return true;
+    } catch (err) {
+      console.error('Failed to cancel gathering:', err);
+      return false;
+    }
+  }, []);
+
   // Poll for candidates (in a real implementation, this would use native events)
   const pollCandidates = useCallback(() => {
     try {
@@ -730,6 +753,7 @@ export function useGhostClient() {
     close,
     generateKeys,
     startGathering,
+    cancelGathering,
     pollCandidates,
     getSignalingData,
     setSignalingData,
