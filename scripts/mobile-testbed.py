@@ -15,11 +15,15 @@ Usage:
     python scripts/mobile-testbed.py server      # Run desktop test server
     python scripts/mobile-testbed.py all         # Full workflow: build + prepare + prebuild + android
     python scripts/mobile-testbed.py clean       # Clean build artifacts
+    python scripts/mobile-testbed.py genkeys     # Generate new test keys
 """
 
 import argparse
+import base64
+import json
 import os
 import platform
+import secrets
 import shutil
 import subprocess
 import sys
@@ -91,6 +95,147 @@ def get_npm_cmd() -> str:
 def get_npx_cmd() -> str:
     """Get the correct npx command for the platform."""
     return "npx.cmd" if platform.system() == "Windows" else "npx"
+
+
+def get_test_keys_path() -> Path:
+    """Get the path to the test keys file."""
+    return get_project_root() / ".ghost-test-keys.json"
+
+
+def clamp_private_key(key: bytes) -> bytes:
+    """Clamp a private key as per Curve25519 requirements (RFC 7748)."""
+    key = bytearray(key)
+    key[0] &= 248   # Clear low 3 bits
+    key[31] &= 127  # Clear high bit
+    key[31] |= 64   # Set bit 6
+    return bytes(key)
+
+
+def generate_wireguard_keypair() -> tuple[str, str]:
+    """
+    Generate a WireGuard keypair.
+    Returns (private_key_b64, public_key_b64).
+
+    Note: This is a simplified implementation for testing.
+    For production, use the Go implementation or wg genkey.
+    """
+    # Generate 32 random bytes and clamp for Curve25519
+    private_key = clamp_private_key(secrets.token_bytes(32))
+
+    # For public key derivation, we'd need curve25519.
+    # Instead, let's use the Go binary to generate keys.
+    return None, None
+
+
+def generate_test_keys_via_go() -> dict:
+    """Generate test keys using the Go implementation."""
+    ghost_go = get_ghost_go_dir()
+
+    # Create a small Go program to generate keys
+    gen_code = '''
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "ghost-go/internal/wireguard"
+)
+
+func main() {
+    // Generate server keypair
+    serverPrivate, _ := wireguard.GeneratePrivateKey()
+    serverPublic, _ := wireguard.GetPublicKey(serverPrivate)
+
+    // Generate mobile keypair
+    mobilePrivate, _ := wireguard.GeneratePrivateKey()
+    mobilePublic, _ := wireguard.GetPublicKey(mobilePrivate)
+
+    keys := map[string]string{
+        "serverPrivateKey": wireguard.EncodeKey(serverPrivate),
+        "serverPublicKey":  wireguard.EncodeKey(serverPublic),
+        "mobilePrivateKey": wireguard.EncodeKey(mobilePrivate),
+        "mobilePublicKey":  wireguard.EncodeKey(mobilePublic),
+    }
+
+    data, _ := json.MarshalIndent(keys, "", "  ")
+    fmt.Println(string(data))
+}
+'''
+
+    # Write temp file
+    temp_file = ghost_go / "cmd" / "genkeys_temp.go"
+    try:
+        temp_file.write_text(gen_code)
+
+        # Run it
+        result = subprocess.run(
+            ["go", "run", str(temp_file)],
+            cwd=ghost_go,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        return json.loads(result.stdout)
+    finally:
+        if temp_file.exists():
+            temp_file.unlink()
+
+
+def load_or_generate_test_keys() -> dict:
+    """Load test keys from file, or generate new ones if they don't exist."""
+    keys_path = get_test_keys_path()
+
+    if keys_path.exists():
+        try:
+            with open(keys_path) as f:
+                keys = json.load(f)
+            # Validate keys are present
+            required = ["serverPrivateKey", "serverPublicKey", "mobilePrivateKey", "mobilePublicKey"]
+            if all(k in keys for k in required):
+                return keys
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # Generate new keys
+    print_step("Generating new test keys...")
+    keys = generate_test_keys_via_go()
+
+    # Save keys
+    with open(keys_path, 'w') as f:
+        json.dump(keys, f, indent=2)
+    print_success(f"Test keys saved to {keys_path}")
+
+    return keys
+
+
+def generate_new_test_keys() -> bool:
+    """Generate new test keys (for the 'genkeys' command)."""
+    print_header("Generating New Test Keys")
+
+    keys_path = get_test_keys_path()
+    if keys_path.exists():
+        response = input("Test keys already exist. Overwrite? [y/N] ").strip().lower()
+        if response != 'y':
+            print_warning("Cancelled")
+            return True
+
+    keys = generate_test_keys_via_go()
+
+    with open(keys_path, 'w') as f:
+        json.dump(keys, f, indent=2)
+
+    print_success(f"Test keys saved to {keys_path}")
+    print()
+    print("Keys generated:")
+    print(f"  Server Private Key: {keys['serverPrivateKey']}")
+    print(f"  Server Public Key:  {keys['serverPublicKey']}")
+    print(f"  Mobile Private Key: {keys['mobilePrivateKey']}")
+    print(f"  Mobile Public Key:  {keys['mobilePublicKey']}")
+    print()
+    print_warning("These keys are for testing only. Do not use in production!")
+
+    return True
 
 
 def run_command(cmd: list, cwd: Path = None, env: dict = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -326,12 +471,24 @@ def run_desktop_server() -> bool:
 
     ghost_go = get_ghost_go_dir()
 
+    # Load or generate test keys
+    keys = load_or_generate_test_keys()
+
+    print()
+    print("Using consistent test keys:")
+    print(f"  Server Public Key:  {keys['serverPublicKey']}")
+    print(f"  Mobile Public Key:  {keys['mobilePublicKey']}")
+    print()
     print_step("Starting desktop peer (server role)...")
     print_warning("Press Ctrl+C to stop")
     print()
 
     try:
-        run_command(["go", "run", "./cmd/mobile-demo", "-role", "server"], cwd=ghost_go, check=False)
+        run_command([
+            "go", "run", "./cmd/mobile-demo",
+            "-role", "server",
+            "-private-key", keys["serverPrivateKey"]
+        ], cwd=ghost_go, check=False)
         return True
     except KeyboardInterrupt:
         print("\nStopped")
@@ -403,8 +560,7 @@ def run_prebuild() -> bool:
     print()
 
     try:
-        # Use --clean to regenerate from scratch
-        run_command([get_npx_cmd(), "expo", "prebuild", "--clean"], cwd=testbed)
+        run_command([get_npx_cmd(), "expo", "prebuild"], cwd=testbed)
 
         # Copy native module files that may have been overwritten
         copy_native_module_files()
@@ -473,10 +629,11 @@ Commands:
   run                  Start Expo development server
   android              Run on Android device/emulator
   ios                  Run on iOS simulator (macOS only)
-  server               Run desktop test server
+  server               Run desktop test server (uses consistent test keys)
   test                 Run Go tests
   all                  Build + prepare + prebuild + android
   clean                Clean build artifacts
+  genkeys              Generate new test keys (stored in .ghost-test-keys.json)
 
 Examples:
   python scripts/mobile-testbed.py build      # Build gomobile bindings
@@ -484,11 +641,12 @@ Examples:
   python scripts/mobile-testbed.py android    # Build and run on Android
   python scripts/mobile-testbed.py all        # Full workflow
   python scripts/mobile-testbed.py server     # Run desktop test server
+  python scripts/mobile-testbed.py genkeys    # Generate new test keys
 """
     )
 
     parser.add_argument("command", nargs="?", default="all",
-                        choices=["build", "prepare", "prebuild", "run", "android", "ios", "server", "test", "all", "clean"],
+                        choices=["build", "prepare", "prebuild", "run", "android", "ios", "server", "test", "all", "clean", "genkeys"],
                         help="Command to run")
     parser.add_argument("target", nargs="?", default="android",
                         help="Build target (android or ios)")
@@ -565,6 +723,9 @@ Examples:
 
     elif args.command == "clean":
         success = clean_build()
+
+    elif args.command == "genkeys":
+        success = generate_new_test_keys()
 
     # Exit with appropriate code
     sys.exit(0 if success else 1)
