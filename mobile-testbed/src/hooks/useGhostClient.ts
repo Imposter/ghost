@@ -471,7 +471,13 @@ export function useGhostClient() {
   // Initialize client
   const initialize = useCallback(async (stunServers: string = '') => {
     try {
+      // Reset all state before initializing
       setError(null);
+      setStatus('disconnected');
+      setPublicKey('');
+      setCandidates([]);
+      setConnectionState(null);
+
       await GhostModule.newClient(stunServers);
       clientRef.current = true;
       setIsInitialized(true);
@@ -479,21 +485,24 @@ export function useGhostClient() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to initialize client');
     }
-  }, []);
+  }, [updateConnectionState]);
 
-  // Close client
+  // Close client and reset all state
   const close = useCallback(async () => {
     if (!clientRef.current) return;
     try {
       await GhostModule.close();
-      clientRef.current = false;
-      setIsInitialized(false);
-      setStatus('disconnected');
-      setPublicKey('');
-      setCandidates([]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to close client');
+      console.error('Error closing client:', err);
     }
+    // Always reset state, even if close() throws
+    clientRef.current = false;
+    setIsInitialized(false);
+    setStatus('disconnected');
+    setPublicKey('');
+    setCandidates([]);
+    setConnectionState(null);
+    setError(null);
   }, []);
 
   // Update connection state
