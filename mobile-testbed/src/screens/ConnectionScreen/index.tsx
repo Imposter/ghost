@@ -75,12 +75,21 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   useFocusEffect(
     React.useCallback(() => {
       const init = async () => {
+        // If we were in progress when we left, reset to init state
         if (wasInProgressRef.current) {
           wasInProgressRef.current = false;
           setStep('init');
           setPeerDataInput('');
           setLocalSignalingData(null);
           setWasConnected(false);
+        }
+
+        // Skip initialization if already connected - the connection persists
+        // across navigation and we don't want to reset the state
+        const currentStep = stepRef.current;
+        if (currentStep === 'connected') {
+          console.log('[ConnectionScreen] Already connected, skipping initialization');
+          return;
         }
 
         setIsLoading(true);
@@ -91,6 +100,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
 
       return () => {
         const currentStep = stepRef.current;
+        // Only cancel if we're in an in-progress state, not if connected
         if (currentStep === 'gathering' || currentStep === 'connecting' || currentStep === 'exchange') {
           console.log('[ConnectionScreen] Leaving during in-progress state, cancelling...');
           wasInProgressRef.current = true;
