@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
+import { useNetworkState, NetworkChangeEvent, NetworkState } from './useNetworkState';
 
 // Types matching the Go mobile API
 export interface Candidate {
@@ -46,6 +47,16 @@ export interface TunnelStats {
 }
 
 export type ConnectionStatus = 'disconnected' | 'gathering' | 'connecting' | 'connected' | 'error';
+
+// Re-export network types for convenience
+export type { NetworkChangeEvent, NetworkState } from './useNetworkState';
+
+// Network-triggered reconnection result
+export interface ReconnectionResult {
+  success: boolean;
+  requiresNewSession: boolean;
+  error?: string;
+}
 
 // Event types from Go mobile API
 export interface GhostEvent {
@@ -176,7 +187,18 @@ export function useGhostClient() {
   const [error, setError] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
+  // Network state monitoring
+  const [networkTriggeredReconnect, setNetworkTriggeredReconnect] = useState(false);
+  const [lastNetworkEvent, setLastNetworkEvent] = useState<NetworkChangeEvent | null>(null);
+
   const clientRef = useRef<boolean>(false);
+  const wasConnectedRef = useRef<boolean>(false);
+  const reconnectAttemptsRef = useRef<number>(0);
+  const maxReconnectAttempts = 3;
+
+  // Callback refs for network-triggered reconnection
+  const onNetworkReconnectRef = useRef<((result: ReconnectionResult) => void) | null>(null);
+  const onNetworkDisconnectRef = useRef<(() => void) | null>(null);
 
   // Subscribe to native events
   useEffect(() => {
@@ -255,6 +277,191 @@ export function useGhostClient() {
       subscription.remove();
     };
   }, []);
+
+  // Track connection state for network-triggered reconnection
+  useEffect(() => {
+    if (status === 'connected') {
+      wasConnectedRef.current = true;
+      reconnectAttemptsRef.current = 0;
+    } else if (status === 'disconnected' || status === 'error') {
+      // Don't reset wasConnectedRef here - we need it to know if reconnection makes sense
+    }
+  }, [status]);
+
+  // Handle network changes and attempt reconnection
+  const handleNetworkChange = useCallback(
+    async (event: NetworkChangeEvent, networkState: NetworkState) => {
+      setLastNetworkEvent(event);
+
+      const timestamp = new Date().toISOString().substring(11, 23);
+
+      // Case 1: Network switch (WiFi <-> Cellular) while connected or recently connected
+      if (event.isNetworkSwitch && wasConnectedRef.current) {
+        console.log(`[${timestamp}] [Ghost] Network switch detected, attempting reconnection...`);
+        setNetworkTriggeredReconnect(true);
+
+        // Wait a moment for the new network to stabilize
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Attempt quick reconnect
+        await attemptNetworkReconnect('network_switch');
+      }
+
+      // Case 2: Network reconnected after being disconnected
+      if (event.isReconnect && wasConnectedRef.current && status === 'disconnected') {
+        console.log(`[${timestamp}] [Ghost] Network reconnected, attempting tunnel reconnection...`);
+        setNetworkTriggeredReconnect(true);
+
+        // Wait a moment for the network to stabilize
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        // Attempt quick reconnect
+        await attemptNetworkReconnect('network_reconnect');
+      }
+
+      // Case 3: Network disconnected
+      if (event.isDisconnect && status === 'connected') {
+        console.log(`[${timestamp}] [Ghost] Network disconnected`);
+        if (onNetworkDisconnectRef.current) {
+          onNetworkDisconnectRef.current();
+        }
+      }
+    },
+    [status]
+  );
+
+  // Attempt reconnection after network change
+  const attemptNetworkReconnect = useCallback(
+    async (reason: 'network_switch' | 'network_reconnect'): Promise<ReconnectionResult> => {
+      const timestamp = new Date().toISOString().substring(11, 23);
+
+      if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+        console.log(`[${timestamp}] [Ghost] Max reconnection attempts reached`);
+        setNetworkTriggeredReconnect(false);
+        const result: ReconnectionResult = {
+          success: false,
+          requiresNewSession: true,
+          error: 'Max reconnection attempts reached',
+        };
+        if (onNetworkReconnectRef.current) {
+          onNetworkReconnectRef.current(result);
+        }
+        return result;
+      }
+
+      reconnectAttemptsRef.current++;
+      console.log(
+        `[${timestamp}] [Ghost] Reconnection attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts} (${reason})`
+      );
+
+      try {
+        // Try to reconnect using existing ICE agent
+        setStatus('connecting');
+        const connectResult = await GhostModule.connect(false);
+
+        if (connectResult && connectResult.includes('error')) {
+          const parsed = JSON.parse(connectResult);
+
+          // Check if we need a new session (ICE agent in terminal state)
+          if (parsed.error.includes('not usable') || parsed.error.includes('failed')) {
+            console.log(`[${timestamp}] [Ghost] ICE agent not usable, new session required`);
+            setNetworkTriggeredReconnect(false);
+            setStatus('disconnected');
+
+            const result: ReconnectionResult = {
+              success: false,
+              requiresNewSession: true,
+              error: parsed.error,
+            };
+            if (onNetworkReconnectRef.current) {
+              onNetworkReconnectRef.current(result);
+            }
+            return result;
+          }
+
+          // Other error - retry
+          console.log(`[${timestamp}] [Ghost] Reconnect failed: ${parsed.error}`);
+          setError(parsed.error);
+          setStatus('error');
+
+          const result: ReconnectionResult = {
+            success: false,
+            requiresNewSession: false,
+            error: parsed.error,
+          };
+          setNetworkTriggeredReconnect(false);
+          if (onNetworkReconnectRef.current) {
+            onNetworkReconnectRef.current(result);
+          }
+          return result;
+        }
+
+        // ICE reconnected, now restart tunnel
+        console.log(`[${timestamp}] [Ghost] ICE reconnected, starting tunnel...`);
+        const tunnelResult = await GhostModule.startTunnel();
+
+        if (tunnelResult && tunnelResult.includes('error')) {
+          const parsed = JSON.parse(tunnelResult);
+          console.log(`[${timestamp}] [Ghost] Tunnel restart failed: ${parsed.error}`);
+          setError(parsed.error);
+          setStatus('error');
+          setNetworkTriggeredReconnect(false);
+
+          const result: ReconnectionResult = {
+            success: false,
+            requiresNewSession: false,
+            error: parsed.error,
+          };
+          if (onNetworkReconnectRef.current) {
+            onNetworkReconnectRef.current(result);
+          }
+          return result;
+        }
+
+        // Success!
+        console.log(`[${timestamp}] [Ghost] Tunnel reconnected successfully!`);
+        setStatus('connected');
+        setError(null);
+        setNetworkTriggeredReconnect(false);
+        reconnectAttemptsRef.current = 0;
+
+        const result: ReconnectionResult = {
+          success: true,
+          requiresNewSession: false,
+        };
+        if (onNetworkReconnectRef.current) {
+          onNetworkReconnectRef.current(result);
+        }
+        return result;
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Reconnection failed';
+        console.log(`[${timestamp}] [Ghost] Reconnection error: ${errorMessage}`);
+        setError(errorMessage);
+        setStatus('error');
+        setNetworkTriggeredReconnect(false);
+
+        const result: ReconnectionResult = {
+          success: false,
+          requiresNewSession: false,
+          error: errorMessage,
+        };
+        if (onNetworkReconnectRef.current) {
+          onNetworkReconnectRef.current(result);
+        }
+        return result;
+      }
+    },
+    []
+  );
+
+  // Use network state hook with our handler
+  const {
+    networkState,
+    isOnline,
+    isWifi,
+    isCellular,
+    lastChangeEvent: networkChangeEvent,
+  } = useNetworkState(handleNetworkChange);
 
   // Initialize client
   const initialize = useCallback(async (stunServers: string = '') => {
@@ -483,8 +690,26 @@ export function useGhostClient() {
     };
   }, []);
 
+  // Set callback for network-triggered reconnection results
+  const setOnNetworkReconnect = useCallback((callback: (result: ReconnectionResult) => void) => {
+    onNetworkReconnectRef.current = callback;
+  }, []);
+
+  // Set callback for network disconnect
+  const setOnNetworkDisconnect = useCallback((callback: () => void) => {
+    onNetworkDisconnectRef.current = callback;
+  }, []);
+
+  // Reset reconnection tracking (call when starting a new session)
+  const resetReconnectionState = useCallback(() => {
+    wasConnectedRef.current = false;
+    reconnectAttemptsRef.current = 0;
+    setNetworkTriggeredReconnect(false);
+    setLastNetworkEvent(null);
+  }, []);
+
   return {
-    // State
+    // Connection State
     status,
     candidates,
     connectionState,
@@ -492,7 +717,15 @@ export function useGhostClient() {
     error,
     isInitialized,
 
-    // Actions
+    // Network State
+    networkState,
+    isOnline,
+    isWifi,
+    isCellular,
+    networkTriggeredReconnect,
+    lastNetworkEvent,
+
+    // Connection Actions
     initialize,
     close,
     generateKeys,
@@ -506,5 +739,10 @@ export function useGhostClient() {
     httpPost,
     getTunnelStats,
     updateConnectionState,
+
+    // Network Callbacks
+    setOnNetworkReconnect,
+    setOnNetworkDisconnect,
+    resetReconnectionState,
   };
 }

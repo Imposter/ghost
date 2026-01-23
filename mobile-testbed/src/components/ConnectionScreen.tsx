@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../App';
-import { useGhostClient, SignalingData, Candidate } from '../hooks/useGhostClient';
+import { useGhostClient, SignalingData, Candidate, ReconnectionResult } from '../hooks/useGhostClient';
 
 type ConnectionScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Connection'>;
@@ -35,6 +35,16 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     setSignalingData,
     connect,
     startTunnel,
+    // Network state
+    networkState,
+    isOnline,
+    isWifi,
+    isCellular,
+    networkTriggeredReconnect,
+    lastNetworkEvent,
+    setOnNetworkReconnect,
+    setOnNetworkDisconnect,
+    resetReconnectionState,
   } = useGhostClient();
 
   const [peerDataInput, setPeerDataInput] = useState('');
@@ -87,6 +97,38 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       setStep('exchange');
     }
   }, [status, wasConnected]);
+
+  // Set up network change callbacks
+  useEffect(() => {
+    // Handle network-triggered reconnection results
+    setOnNetworkReconnect((result: ReconnectionResult) => {
+      if (result.success) {
+        Alert.alert(
+          'Reconnected!',
+          'Network changed but tunnel was automatically restored.',
+          [
+            { text: 'Test Now', onPress: () => navigation.navigate('Test') },
+            { text: 'OK' },
+          ]
+        );
+      } else if (result.requiresNewSession) {
+        Alert.alert(
+          'New Session Required',
+          'The network change caused the connection to fail. A new session is needed.',
+          [
+            { text: 'Start New Session', onPress: handleStartNewSession },
+            { text: 'Cancel', style: 'cancel' },
+          ]
+        );
+      }
+      // Other errors are shown via the error state
+    });
+
+    // Handle network disconnect (optional - could show toast)
+    setOnNetworkDisconnect(() => {
+      console.log('[ConnectionScreen] Network disconnected - waiting for reconnect...');
+    });
+  }, [setOnNetworkReconnect, setOnNetworkDisconnect, navigation]);
 
   const handleStartGathering = async () => {
     setIsLoading(true);
@@ -256,6 +298,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   const handleStartNewSession = async () => {
     // Start completely fresh - new keys, new ICE agent
     setWasConnected(false);
+    resetReconnectionState(); // Reset network-triggered reconnection tracking
     setIsLoading(true);
 
     const keyResult = await generateKeys();
@@ -364,14 +407,60 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     );
   };
 
+  // Network state indicator
+  const renderNetworkState = () => {
+    const getNetworkIcon = () => {
+      if (!isOnline) return 'X';
+      if (isWifi) return 'W';
+      if (isCellular) return 'C';
+      return '?';
+    };
+
+    const getNetworkLabel = () => {
+      if (!isOnline) return 'Offline';
+      if (isWifi) return 'WiFi';
+      if (isCellular) return 'Cellular';
+      return networkState.type;
+    };
+
+    const getNetworkColor = () => {
+      if (!isOnline) return '#F44336';
+      if (isWifi) return '#4CAF50';
+      if (isCellular) return '#2196F3';
+      return '#888';
+    };
+
+    return (
+      <View style={styles.networkIndicator}>
+        <View style={[styles.networkIcon, { backgroundColor: getNetworkColor() }]}>
+          <Text style={styles.networkIconText}>{getNetworkIcon()}</Text>
+        </View>
+        <Text style={[styles.networkLabel, { color: getNetworkColor() }]}>
+          {getNetworkLabel()}
+        </Text>
+        {networkTriggeredReconnect && (
+          <View style={styles.reconnectingBadge}>
+            <ActivityIndicator size="small" color="#FF9800" />
+            <Text style={styles.reconnectingText}>Reconnecting...</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {/* Network State Indicator */}
+      {renderNetworkState()}
+
       {/* Status Banner */}
       <View style={[styles.statusBanner, styles[`status_${status}`]]}>
         <Text style={styles.statusText}>
           {status.charAt(0).toUpperCase() + status.slice(1)}
         </Text>
-        {isLoading && <ActivityIndicator color="#fff" style={styles.spinner} />}
+        {(isLoading || networkTriggeredReconnect) && (
+          <ActivityIndicator color="#fff" style={styles.spinner} />
+        )}
       </View>
 
       {/* Error Display */}
@@ -763,5 +852,45 @@ const styles = StyleSheet.create({
     padding: 14,
     alignItems: 'center',
     marginBottom: 12,
+  },
+  // Network state indicator styles
+  networkIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    paddingVertical: 8,
+  },
+  networkIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  networkIconText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  networkLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  reconnectingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 152, 0, 0.2)',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginLeft: 12,
+  },
+  reconnectingText: {
+    color: '#FF9800',
+    fontSize: 12,
+    fontWeight: '500',
+    marginLeft: 6,
   },
 });
