@@ -66,6 +66,8 @@ type GhostClient struct {
 
 	// Configuration
 	stunServers []string
+	portMin     uint16 // Minimum UDP port for ICE (0 = OS chooses)
+	portMax     uint16 // Maximum UDP port for ICE (0 = OS chooses)
 	logger      *slog.Logger
 
 	// ICE components
@@ -145,6 +147,18 @@ func NewClient(stunServers string) (*GhostClient, error) {
 // This should be called before starting any operations.
 func (c *GhostClient) SetEventCallback(callback EventCallback) {
 	c.dispatcher.setCallback(callback)
+}
+
+// SetPortRange sets the UDP port range for ICE.
+// This should be called before StartGathering().
+// Set both min and max to the same value for a fixed port.
+// Set both to 0 to let the OS choose ports (default).
+func (c *GhostClient) SetPortRange(min, max uint16) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.portMin = min
+	c.portMax = max
+	c.logger.Info("Port range set", "min", min, "max", max)
 }
 
 // Close releases all resources held by the client.
@@ -323,6 +337,8 @@ func (c *GhostClient) StartGathering() string {
 		KeepaliveInterval:   2 * time.Second,  // Send keepalives every 2s
 		DisconnectedTimeout: 5 * time.Second,  // Detect disconnect in ~5s
 		FailedTimeout:       15 * time.Second, // Transition to failed after 15s
+		PortMin:             c.portMin,
+		PortMax:             c.portMax,
 	}
 
 	// Create ICE agent

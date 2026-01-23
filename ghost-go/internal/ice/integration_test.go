@@ -30,20 +30,16 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 	// Create mock signaling channel
 	signaling := testutil.NewMockSignalingChannel(logger)
 
-	// Create configuration for both peers (using public STUN server)
-	config := &ice.ICEConfig{
-		STUNServers:       []string{"stun:stun.l.google.com:19302"},
-		GatherTimeout:     15 * time.Second,
-		ConnectionTimeout: 30 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	// Create configuration for both peers (using public STUN server with fixed ports)
+	configA := ice.TestICEConfigWithSTUN(0) // Port 51000
+	configB := ice.TestICEConfigWithSTUN(1) // Port 51001
 
 	// Create both agents
-	agentA, err := ice.NewAgent(config, logger.With("peer", "A"))
+	agentA, err := ice.NewAgent(configA, logger.With("peer", "A"))
 	require.NoError(t, err, "should create agent A")
 	defer agentA.Close()
 
-	agentB, err := ice.NewAgent(config, logger.With("peer", "B"))
+	agentB, err := ice.NewAgent(configB, logger.With("peer", "B"))
 	require.NoError(t, err, "should create agent B")
 	defer agentB.Close()
 
@@ -231,19 +227,15 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 
 	signaling := testutil.NewMockSignalingChannel(logger)
 
-	// Config without STUN servers (host candidates only)
-	config := &ice.ICEConfig{
-		STUNServers:       []string{},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
+	// Config without STUN servers (host candidates only) with fixed ports
+	configA := ice.TestICEConfig(10) // Port 51010
+	configB := ice.TestICEConfig(11) // Port 51011
 
-	agentA, err := ice.NewAgent(config, logger.With("peer", "A"))
+	agentA, err := ice.NewAgent(configA, logger.With("peer", "A"))
 	require.NoError(t, err)
 	defer agentA.Close()
 
-	agentB, err := ice.NewAgent(config, logger.With("peer", "B"))
+	agentB, err := ice.NewAgent(configB, logger.With("peer", "B"))
 	require.NoError(t, err)
 	defer agentB.Close()
 
@@ -462,24 +454,22 @@ func createTestMessage(size int) []byte {
 func BenchmarkICEConnection(b *testing.B) {
 	logger := testutil.NewQuietTestLogger(&testing.T{})
 
-	config := &ice.ICEConfig{
-		STUNServers:       []string{},
-		GatherTimeout:     5 * time.Second,
-		ConnectionTimeout: 10 * time.Second,
-		KeepaliveInterval: 15 * time.Second,
-	}
-
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 
+		// Use unique port offsets for each benchmark iteration
+		portOffset := i * 2
+		configA := ice.TestICEConfig(100 + portOffset)     // Ports 51100, 51102, ...
+		configB := ice.TestICEConfig(100 + portOffset + 1) // Ports 51101, 51103, ...
+
 		signaling := testutil.NewMockSignalingChannel(logger)
-		agentA, errA := ice.NewAgent(config, logger)
+		agentA, errA := ice.NewAgent(configA, logger)
 		if errA != nil {
 			b.Fatalf("Failed to create agent A: %v", errA)
 		}
-		agentB, errB := ice.NewAgent(config, logger)
+		agentB, errB := ice.NewAgent(configB, logger)
 		if errB != nil {
 			b.Fatalf("Failed to create agent B: %v", errB)
 		}
