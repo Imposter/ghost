@@ -96,6 +96,16 @@ type ICEConfig struct {
 	// CandidateTypes specifies which candidate types to gather.
 	// If empty, all types are gathered.
 	CandidateTypes []CandidateType
+
+	// PortMin is the minimum port number for ICE UDP sockets.
+	// If 0, the OS will choose ports automatically.
+	// Set both PortMin and PortMax to the same value for a fixed port.
+	PortMin uint16
+
+	// PortMax is the maximum port number for ICE UDP sockets.
+	// If 0, the OS will choose ports automatically.
+	// Set both PortMin and PortMax to the same value for a fixed port.
+	PortMax uint16
 }
 
 // DefaultICEConfig returns a configuration with sensible defaults.
@@ -157,6 +167,16 @@ func (c *ICEConfig) Validate() error {
 	}
 	if c.KeepaliveInterval <= 0 {
 		return errors.New("keepalive interval must be positive")
+	}
+
+	// Validate port range
+	if c.PortMin > 0 && c.PortMax > 0 {
+		if c.PortMin > c.PortMax {
+			return errors.New("port min cannot be greater than port max")
+		}
+		if c.PortMin < 1024 {
+			return errors.New("port min must be >= 1024 (non-privileged ports)")
+		}
 	}
 
 	return nil

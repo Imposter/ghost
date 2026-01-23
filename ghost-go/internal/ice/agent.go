@@ -172,6 +172,13 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		FailedTimeout:       &config.FailedTimeout,
 	}
 
+	// Set port range if specified (useful for firewall rules)
+	if config.PortMin > 0 && config.PortMax > 0 {
+		agentConfig.PortMin = config.PortMin
+		agentConfig.PortMax = config.PortMax
+		logger.Info("Using fixed port range for ICE", "min", config.PortMin, "max", config.PortMax)
+	}
+
 	// Add STUN servers
 	for _, stunURL := range config.STUNServers {
 		url, err := stun.ParseURI(stunURL)
