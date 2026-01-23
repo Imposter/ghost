@@ -50,6 +50,32 @@ export function useGhostConnection(): UseGhostConnectionResult {
   const reconnectable = canReconnect(state);
 
   // ===========================================================================
+  // Sync with Native State on Mount
+  // ===========================================================================
+
+  useEffect(() => {
+    if (!GhostBridge.isAvailable()) return;
+
+    // Query native module for current connection state
+    const connectionResult = GhostBridge.getConnectionState();
+    if (connectionResult.success) {
+      const connState = connectionResult.data;
+      dispatch({ type: 'UPDATE_CONNECTION_STATE', state: connState });
+
+      // If tunnel is active, sync the phase to connected
+      // tunnelState values: "inactive", "starting", "active", "error"
+      // iceState values: "new", "checking", "connected", "completed", "failed", "disconnected", "closed"
+      if (connState.tunnelState === 'active') {
+        dispatch({ type: 'TUNNEL_UP' });
+        clientRef.current = true;
+      } else if (connState.iceState === 'connected' || connState.iceState === 'completed') {
+        dispatch({ type: 'ICE_CONNECTED' });
+        clientRef.current = true;
+      }
+    }
+  }, []);
+
+  // ===========================================================================
   // Native Event Subscription
   // ===========================================================================
 
