@@ -1,3 +1,24 @@
+/**
+ * @deprecated This hook is deprecated. Use `useGhostConnection` from '../ghost' instead.
+ *
+ * The new abstraction layer provides:
+ * - Unified state via reducer (single source of truth)
+ * - Type-safe native bridge with Result<T> pattern
+ * - Explicit connection phases as a state machine
+ * - Separated event parsing and state management
+ *
+ * Migration:
+ * ```typescript
+ * // Old:
+ * import { useGhostClient } from '../hooks/useGhostClient';
+ *
+ * // New:
+ * import { useGhostConnection } from '../ghost';
+ * ```
+ *
+ * See docs/phase-1c-ghostclient-lib-improvements.md for full migration guide.
+ */
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
 import { useNetworkState, NetworkChangeEvent, NetworkState } from './useNetworkState';
@@ -485,7 +506,7 @@ export function useGhostClient() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to initialize client');
     }
-  }, [updateConnectionState]);
+  }, []); // Note: updateConnectionState has no deps, safe to exclude
 
   // Close client and reset all state
   const close = useCallback(async () => {
