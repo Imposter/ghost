@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Clipboard,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
 import { useGhostClient, SignalingData, Candidate, ReconnectionResult } from '../hooks/useGhostClient';
 
@@ -30,6 +31,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     close,
     generateKeys,
     startGathering,
+    cancelGathering,
     pollCandidates,
     getSignalingData,
     setSignalingData,
@@ -53,19 +55,49 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   const [step, setStep] = useState<'init' | 'gathering' | 'exchange' | 'connecting' | 'connected'>('init');
   const [wasConnected, setWasConnected] = useState(false);
 
-  // Initialize client on mount
-  useEffect(() => {
-    const init = async () => {
-      setIsLoading(true);
-      await initialize('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302');
-      setIsLoading(false);
-    };
-    init();
+  // Track whether we left during an in-progress operation
+  const wasInProgressRef = useRef(false);
+  // Track current step for cleanup (avoids stale closure)
+  const stepRef = useRef(step);
+  stepRef.current = step;
 
-    return () => {
-      close();
-    };
-  }, [initialize, close]);
+  // Initialize client on focus, cleanup on blur
+  useFocusEffect(
+    React.useCallback(() => {
+      // Screen gained focus
+      const init = async () => {
+        // If we were in progress when we left, reset to init state
+        if (wasInProgressRef.current) {
+          wasInProgressRef.current = false;
+          setStep('init');
+          setPeerDataInput('');
+          setLocalSignalingData(null);
+          setWasConnected(false);
+        }
+
+        setIsLoading(true);
+        await initialize('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302');
+        setIsLoading(false);
+      };
+      init();
+
+      // Screen lost focus (blur)
+      return () => {
+        // If we're in an in-progress state (not connected, not init), cancel and cleanup
+        // We check the current step to determine if we should cleanup
+        // Connected state: user probably went to Test screen, keep everything
+        // Init state: nothing to cleanup
+        // Other states: cancel gathering and close
+        const currentStep = stepRef.current;
+        if (currentStep === 'gathering' || currentStep === 'connecting' || currentStep === 'exchange') {
+          console.log('[ConnectionScreen] Leaving during in-progress state, cancelling...');
+          wasInProgressRef.current = true;
+          cancelGathering();
+          close();
+        }
+      };
+    }, [initialize, close, cancelGathering])
+  );
 
   // Poll candidates while gathering
   useEffect(() => {
