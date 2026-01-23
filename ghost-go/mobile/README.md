@@ -240,19 +240,47 @@ inactive → starting → active
 
 ## Reconnection
 
-There is no automatic reconnection. When the peer disconnects:
+There is no automatic reconnection. ICE connection states determine what action is required:
 
-1. Resources are cleaned up automatically
-2. A `disconnected` event is emitted
-3. To reconnect, call `StartGathering()` again to start a new session
+### ICE States and Recovery
+
+| State | Description | Recovery |
+|-------|-------------|----------|
+| `disconnected` | Temporary loss of connectivity (network hiccup) | Try `Connect()` - may recover without new session |
+| `failed` | Terminal failure - agent cannot recover | Must call `StartGathering()` for new session |
+| `closed` | Agent was explicitly closed | Must call `StartGathering()` for new session |
+
+### Quick Reconnect (Disconnected State)
+
+When the connection is temporarily lost (e.g., brief network interruption), you may be able to reconnect without re-exchanging signaling data:
 
 ```go
-// Reconnection pattern
+// Try quick reconnect first
+if errStr := client.Connect(isControlling); errStr != "" {
+    // Quick reconnect failed - need new session
+    // (agent is in failed/closed state)
+}
+```
+
+### Full Reconnect (Failed/Closed State)
+
+When the ICE agent has failed or been closed, you must start a completely new session:
+
+```go
+// Full reconnection pattern
 client.StartGathering()  // Creates new agent, cleans up old one
-// ... exchange signaling data with peer ...
+// ... exchange signaling data with peer again ...
 client.Connect(isControlling)
 client.StartTunnel()
 ```
+
+### Connect() State Validation
+
+`Connect()` checks the ICE state before attempting connection:
+- **Allowed states**: `new`, `checking`, `connected`, `completed`, `disconnected`
+- **Blocked states**: `failed`, `closed` (returns error: "ICE agent is not usable")
+
+This prevents using a broken agent and provides a clear error message indicating that `StartGathering()` must be called.
 
 ## Limitations
 

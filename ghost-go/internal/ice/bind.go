@@ -3,9 +3,11 @@ package ice
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -196,7 +198,19 @@ func (b *ICEBind) receiveLoop() {
 				return
 			}
 
-			if errors.Is(err, net.ErrClosed) {
+			// Check for terminal errors that mean the connection is dead
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+				return
+			}
+
+			// Pion ICE returns specific errors when the agent/connection is closed.
+			// These are terminal errors - the connection is no longer usable.
+			errStr := err.Error()
+			if strings.Contains(errStr, "agent is closed") ||
+				strings.Contains(errStr, "agent closed") ||
+				strings.Contains(errStr, "closed network connection") ||
+				strings.Contains(errStr, "use of closed") {
+				b.logger.Info("Connection closed, stopping receive loop")
 				return
 			}
 

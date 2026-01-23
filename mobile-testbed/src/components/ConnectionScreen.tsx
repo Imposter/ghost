@@ -212,29 +212,67 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   };
 
   const handleReconnect = async () => {
-    // Reset state and re-attempt connection
-    setWasConnected(false);
+    // Try quick reconnect first - works if ICE is in "disconnected" state (temporary)
+    // If that fails (ICE in "failed" state), start a new session
     setIsLoading(true);
     setStep('connecting');
 
     const iceSuccess = await connect(false);
-    if (!iceSuccess) {
+    if (iceSuccess) {
+      // Quick reconnect worked - now start tunnel
+      const tunnelSuccess = await startTunnel();
       setIsLoading(false);
-      setStep('exchange');
+
+      if (tunnelSuccess) {
+        setWasConnected(true);
+        setStep('connected');
+        Alert.alert('Reconnected!', 'Tunnel re-established successfully.', [
+          { text: 'Test Now', onPress: () => navigation.navigate('Test') },
+          { text: 'OK' },
+        ]);
+        return;
+      }
+    }
+
+    // Quick reconnect failed - need new session
+    // This happens when ICE agent is in "failed" or "closed" state
+    setIsLoading(false);
+    setWasConnected(false);
+    setStep('exchange');
+
+    Alert.alert(
+      'New Session Required',
+      'The connection cannot be restored. You need to start a new session and exchange signaling data with your peer again.',
+      [
+        {
+          text: 'Start New Session',
+          onPress: handleStartNewSession,
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const handleStartNewSession = async () => {
+    // Start completely fresh - new keys, new ICE agent
+    setWasConnected(false);
+    setIsLoading(true);
+
+    const keyResult = await generateKeys();
+    if (!keyResult) {
+      setIsLoading(false);
+      Alert.alert('Error', 'Failed to generate new keys. Please try again.');
       return;
     }
 
-    const tunnelSuccess = await startTunnel();
+    const success = await startGathering();
     setIsLoading(false);
 
-    if (tunnelSuccess) {
-      setStep('connected');
-      Alert.alert('Reconnected!', 'Tunnel re-established successfully.', [
-        { text: 'Test Now', onPress: () => navigation.navigate('Test') },
-        { text: 'OK' },
-      ]);
+    if (success) {
+      setStep('gathering');
+      setPeerDataInput(''); // Clear old peer data
     } else {
-      setStep('exchange');
+      Alert.alert('Error', 'Failed to start gathering. Please try again.');
     }
   };
 
@@ -479,12 +517,10 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={() => {
-              setWasConnected(false);
-              setStep('exchange');
-            }}
+            onPress={handleStartNewSession}
+            disabled={isLoading}
           >
-            <Text style={styles.secondaryButtonText}>Re-enter Peer Data</Text>
+            <Text style={styles.secondaryButtonText}>Start New Session</Text>
           </TouchableOpacity>
         </View>
       )}
