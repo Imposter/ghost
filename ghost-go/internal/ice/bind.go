@@ -49,16 +49,31 @@ type ICEBind struct {
 }
 
 // NewICEBind creates a new ICEBind from an established ICE connection.
+// Returns nil if the connection is nil or invalid (closed).
 func NewICEBind(conn net.Conn, logger *slog.Logger) *ICEBind {
+	if conn == nil {
+		return nil
+	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	endpoint := NewICEEndpoint(conn.RemoteAddr())
+	// Check if connection is still valid - closed connections return nil addresses
+	localAddr := conn.LocalAddr()
+	remoteAddr := conn.RemoteAddr()
+	if localAddr == nil || remoteAddr == nil {
+		logger.Error("NewICEBind called with invalid/closed connection",
+			"localAddr", localAddr,
+			"remoteAddr", remoteAddr)
+		return nil
+	}
+
+	endpoint := NewICEEndpoint(remoteAddr)
 
 	logger.Info("ICEBind created",
-		"local", conn.LocalAddr().String(),
-		"remote", conn.RemoteAddr().String(),
+		"local", localAddr.String(),
+		"remote", remoteAddr.String(),
 	)
 
 	return &ICEBind{

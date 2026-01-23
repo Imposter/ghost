@@ -20,9 +20,28 @@ import (
 // GhostClient is the main entry point for mobile applications.
 // It provides a simplified, JSON-based API for establishing encrypted P2P tunnels.
 //
-// Thread-safety: All methods are thread-safe and can be called from any goroutine.
+// # Thread Safety
 //
-// Lifecycle:
+// All methods are thread-safe and can be called from any goroutine.
+//
+// # Resource Management
+//
+// GhostClient manages several resources that require cleanup:
+//   - ICE agent (network sockets, goroutines)
+//   - ICE connection (network socket)
+//   - WireGuard device (goroutines, TUN device)
+//   - HTTP connection pool
+//
+// IMPORTANT: You MUST call Close() when done with the client to prevent resource leaks.
+// Failure to call Close() will leak goroutines and network sockets.
+//
+// The client is designed to be safe against multiple calls to resource-allocating methods:
+//   - StartGathering() cleans up any previous ICE agent before creating a new one
+//   - Connect() cleans up any previous connection before creating a new one
+//   - StartTunnel() cleans up any previous tunnel before creating a new one
+//
+// # Lifecycle
+//
 //  1. Create client with NewClient()
 //  2. Generate WireGuard keys with GenerateWireGuardKey()
 //  3. Start ICE gathering with StartGathering()
@@ -31,7 +50,17 @@ import (
 //  6. Connect with Connect()
 //  7. Start tunnel with StartTunnel()
 //  8. Use HTTPGet/HTTPPost for communication
-//  9. Close with Close()
+//  9. Close with Close() - REQUIRED to prevent resource leaks
+//
+// # Example
+//
+//	client, err := NewClient("")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer client.Close() // Always close to prevent resource leaks
+//
+//	// ... use client ...
 type GhostClient struct {
 	mu sync.RWMutex
 
@@ -64,6 +93,9 @@ type GhostClient struct {
 
 	// Connection pool
 	connPool *connPool
+
+	// Shared HTTP client for tunnel requests (created lazily when tunnel starts)
+	httpClient *http.Client
 }
 
 // NewClient creates a new GhostClient.
@@ -82,7 +114,8 @@ func NewClient(stunServers string) (*GhostClient, error) {
 		}
 	}
 
-	logger := slog.Default()
+	logger := newMobileLogger()
+	logger.Info("Creating GhostClient", "stun_servers", stunServers)
 
 	// Validate STUN servers by creating a test config
 	iceConfig := &ice.ICEConfig{
@@ -174,11 +207,50 @@ func (c *GhostClient) Close() error {
 	return nil
 }
 
+// cleanupConnectionResources cleans up resources when connection is lost.
+// Must be called with the lock held.
+// This preserves the ICE agent (for state change callbacks) but cleans up
+// the device, bind, connection, and HTTP client which are no longer usable.
+func (c *GhostClient) cleanupConnectionResources() {
+	c.logger.Info("Cleaning up connection resources due to disconnect/failure")
+
+	// Close HTTP client's transport to release any keep-alive connections
+	if c.httpClient != nil {
+		if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		c.httpClient = nil
+	}
+
+	// Close WireGuard device first (stops bind's receive loop)
+	if c.device != nil {
+		c.device.Down()
+		c.device.Close()
+		c.device = nil
+	}
+	c.tunNet = nil
+	c.iceBind = nil
+
+	// Close the ICE connection - it's no longer usable
+	if c.iceConn != nil {
+		c.iceConn.Close()
+		c.iceConn = nil
+	}
+
+	// Note: We don't close the ICE agent here because its state change
+	// callback is still registered and useful for detecting further state changes.
+	// The agent will be cleaned up on Close() or when StartGathering() is called again.
+}
+
 // GenerateWireGuardKey generates a new WireGuard key pair.
 // Returns JSON with privateKey and publicKey (both base64-encoded).
 func (c *GhostClient) GenerateWireGuardKey() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.closed {
+		return toErrorJSON(ErrClientClosed)
+	}
 
 	privateKey, err := wireguard.GeneratePrivateKey()
 	if err != nil {
@@ -216,12 +288,31 @@ func (c *GhostClient) GetPublicKey() string {
 // StartGathering starts ICE candidate gathering.
 // Candidates will be emitted via the EventCallback as they are discovered.
 // Returns an error string if gathering fails to start, empty string on success.
+//
+// # Resource Management
+//
+// This method allocates the following resources:
+//   - ICE agent (network sockets, goroutines for candidate gathering)
+//
+// If called multiple times, any existing ICE agent is cleaned up before creating
+// a new one. This makes it safe to restart gathering without manually calling Close().
+//
+// All resources are automatically cleaned up when Close() is called.
 func (c *GhostClient) StartGathering() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
 		return toErrorJSON(ErrClientClosed)
+	}
+
+	// Clean up any existing ICE agent before creating a new one
+	// This prevents resource leaks when StartGathering is called multiple times
+	if c.iceAgent != nil {
+		c.logger.Info("Cleaning up previous ICE agent before starting new gathering")
+		c.iceAgent.Close()
+		c.iceAgent = nil
+		c.candidates = nil
 	}
 
 	// Create ICE config with fast disconnect detection
@@ -255,6 +346,9 @@ func (c *GhostClient) StartGathering() string {
 			c.iceState = ICEStateCompleted
 		case ice.ConnectionStateFailed:
 			c.iceState = ICEStateFailed
+			c.tunnelState = TunnelStateInactive
+			// Clean up resources since connection is no longer usable
+			c.cleanupConnectionResources()
 			c.dispatcher.emitError(fmt.Errorf("ICE connection failed"))
 			c.dispatcher.emitStateChange(&ConnectionStateJSON{
 				ICEState:       c.iceState,
@@ -268,6 +362,8 @@ func (c *GhostClient) StartGathering() string {
 		case ice.ConnectionStateDisconnected:
 			c.iceState = ICEStateDisconnected
 			c.tunnelState = TunnelStateInactive
+			// Clean up resources since connection is no longer usable
+			c.cleanupConnectionResources()
 			c.dispatcher.emitTunnelDown()
 			c.dispatcher.emitStateChange(&ConnectionStateJSON{
 				ICEState:       c.iceState,
@@ -295,7 +391,11 @@ func (c *GhostClient) StartGathering() string {
 		for cand := range candChan {
 			c.mu.Lock()
 			c.candidates = append(c.candidates, cand)
+			count := len(c.candidates)
 			c.mu.Unlock()
+
+			// Log with count captured under lock to avoid race
+			c.logger.Debug("Candidate gathered", "type", cand.Type, "total", count)
 
 			// Emit candidate event
 			candJSON := &CandidateJSON{
@@ -310,7 +410,12 @@ func (c *GhostClient) StartGathering() string {
 			}
 			c.dispatcher.emitCandidate(candJSON)
 		}
-		c.logger.Info("Candidate gathering complete", "count", len(c.candidates))
+
+		// Get final count under lock to avoid race
+		c.mu.RLock()
+		count := len(c.candidates)
+		c.mu.RUnlock()
+		c.logger.Info("Candidate gathering complete", "count", count)
 	}()
 
 	return ""
@@ -416,12 +521,33 @@ func (c *GhostClient) AddRemoteCandidate(jsonStr string) string {
 // Connect establishes the ICE connection.
 // isControlling: true for the initiating peer, false for the responding peer.
 // Returns error string if connection fails, empty on success.
+//
+// # Resource Management
+//
+// This method allocates the following resources:
+//   - ICE connection (network socket)
+//
+// If called multiple times, any existing connection and associated tunnel resources
+// are cleaned up before creating a new connection. This makes it safe to reconnect
+// without manually calling Close().
+//
+// The connection is automatically cleaned up when:
+//   - Close() is called
+//   - The peer disconnects (detected via ICE state change callbacks)
+//   - Connect() is called again
 func (c *GhostClient) Connect(isControlling bool) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.iceAgent == nil {
 		return toErrorJSON(ErrGatheringNotStarted)
+	}
+
+	// Clean up any existing connection before creating a new one
+	// This also cleans up the tunnel since it depends on the connection
+	if c.iceConn != nil {
+		c.logger.Info("Cleaning up previous connection before establishing new one")
+		c.cleanupConnectionResources()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -473,6 +599,10 @@ func (c *GhostClient) SetPeerPublicKey(base64Key string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return toErrorJSON(ErrClientClosed)
+	}
+
 	peerKey, err := wireguard.DecodeKey(base64Key)
 	if err != nil {
 		return toErrorJSON(fmt.Errorf("%w: %v", ErrInvalidPublicKey, err))
@@ -493,6 +623,10 @@ func (c *GhostClient) SetLocalIP(cidr string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return toErrorJSON(ErrClientClosed)
+	}
+
 	prefix, err := netip.ParsePrefix(cidr)
 	if err != nil {
 		return toErrorJSON(fmt.Errorf("invalid CIDR: %w", err))
@@ -504,6 +638,22 @@ func (c *GhostClient) SetLocalIP(cidr string) string {
 
 // StartTunnel starts the WireGuard tunnel.
 // Prerequisites: ICE connection must be established, keys must be set.
+//
+// # Resource Management
+//
+// This method allocates the following resources:
+//   - WireGuard device (goroutines for packet processing)
+//   - Userspace TUN device via netstack (goroutines, memory buffers)
+//   - ICEBind adapter (goroutines for packet receiving)
+//
+// If called multiple times, any existing tunnel is cleaned up before creating
+// a new one. This makes it safe to restart the tunnel without manually calling Close().
+//
+// The tunnel is automatically cleaned up when:
+//   - Close() is called
+//   - The peer disconnects (detected via ICE state change callbacks)
+//   - StartTunnel() is called again
+//   - An error occurs during tunnel creation (partial resources are cleaned up)
 func (c *GhostClient) StartTunnel() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -522,6 +672,16 @@ func (c *GhostClient) StartTunnel() string {
 
 	if c.peerKey == nil {
 		return toErrorJSON(fmt.Errorf("peer public key not set"))
+	}
+
+	// Clean up any existing tunnel before starting a new one
+	if c.device != nil {
+		c.logger.Info("Cleaning up previous tunnel before starting new one")
+		c.device.Down()
+		c.device.Close()
+		c.device = nil
+		c.tunNet = nil
+		c.iceBind = nil
 	}
 
 	c.tunnelState = TunnelStateStarting
@@ -548,10 +708,25 @@ func (c *GhostClient) StartTunnel() string {
 		c.tunnelState = TunnelStateError
 		return toErrorJSON(fmt.Errorf("failed to create TUN: %w", err))
 	}
+
+	// Helper to clean up on error - prevents resource leaks
+	cleanupOnError := func() {
+		if tunDev != nil {
+			tunDev.Close()
+		}
+		c.tunNet = nil
+		c.iceBind = nil
+	}
+
 	c.tunNet = tunNet
 
 	// Create ICEBind from ICE connection
 	c.iceBind = ice.NewICEBind(c.iceConn, c.logger)
+	if c.iceBind == nil {
+		cleanupOnError()
+		c.tunnelState = TunnelStateError
+		return toErrorJSON(fmt.Errorf("ICE connection is no longer valid (peer may have disconnected)"))
+	}
 
 	// Create WireGuard config
 	wgConfig := &wireguard.WireGuardConfig{
@@ -564,13 +739,24 @@ func (c *GhostClient) StartTunnel() string {
 	// Create WireGuard device
 	device, err := wireguard.NewDevice(tunDev, c.iceBind, wgConfig, c.logger)
 	if err != nil {
+		cleanupOnError()
 		c.tunnelState = TunnelStateError
 		return toErrorJSON(fmt.Errorf("failed to create WireGuard device: %w", err))
 	}
 	c.device = device
 
+	// Helper to clean up device on error after device creation
+	cleanupDeviceOnError := func() {
+		device.Down()
+		device.Close()
+		c.device = nil
+		c.tunNet = nil
+		c.iceBind = nil
+	}
+
 	// Configure device with private key
 	if err := device.Configure(c.privateKey); err != nil {
+		cleanupDeviceOnError()
 		c.tunnelState = TunnelStateError
 		return toErrorJSON(fmt.Errorf("failed to configure device: %w", err))
 	}
@@ -582,6 +768,7 @@ func (c *GhostClient) StartTunnel() string {
 		PersistentKeepalive: 25 * time.Second,
 	}
 	if err := device.AddPeer(peerConfig); err != nil {
+		cleanupDeviceOnError()
 		c.tunnelState = TunnelStateError
 		return toErrorJSON(fmt.Errorf("failed to add peer: %w", err))
 	}
@@ -595,11 +782,22 @@ func (c *GhostClient) StartTunnel() string {
 
 	// Bring device up
 	if err := device.Up(); err != nil {
+		cleanupDeviceOnError()
 		c.tunnelState = TunnelStateError
 		return toErrorJSON(fmt.Errorf("failed to bring device up: %w", err))
 	}
 
 	c.tunnelState = TunnelStateActive
+
+	// Create shared HTTP client using tunnel's dial function
+	// This enables connection reuse across multiple HTTP requests
+	c.httpClient = &http.Client{
+		Transport: &http.Transport{
+			DialContext: tunNet.DialContext,
+		},
+		Timeout: HTTPTimeout,
+	}
+
 	c.dispatcher.emitTunnelUp()
 
 	// Emit full state change so UI updates immediately
@@ -618,13 +816,15 @@ func (c *GhostClient) StartTunnel() string {
 // HTTPGet performs an HTTP GET request through the tunnel.
 // url should be a full URL (e.g., "http://10.0.0.1:8080/test").
 // Returns HTTPResultJSON as a JSON string.
+//
+// Response bodies are limited to MaxHTTPBodySize (10MB) to prevent DoS.
 func (c *GhostClient) HTTPGet(url string) string {
 	c.mu.RLock()
-	tunNet := c.tunNet
+	httpClient := c.httpClient
 	tunnelState := c.tunnelState
 	c.mu.RUnlock()
 
-	if tunnelState != TunnelStateActive || tunNet == nil {
+	if tunnelState != TunnelStateActive || httpClient == nil {
 		return toJSON(&HTTPResultJSON{
 			Success: false,
 			Error:   ErrTunnelNotStarted.Error(),
@@ -633,15 +833,7 @@ func (c *GhostClient) HTTPGet(url string) string {
 
 	start := time.Now()
 
-	// Create HTTP client using tunnel's dial function
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: tunNet.DialContext,
-		},
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Get(url)
+	resp, err := httpClient.Get(url)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -653,12 +845,24 @@ func (c *GhostClient) HTTPGet(url string) string {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Limit body size to prevent DoS attacks
+	limitedReader := io.LimitReader(resp.Body, MaxHTTPBodySize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return toJSON(&HTTPResultJSON{
 			Success:    false,
 			StatusCode: resp.StatusCode,
 			Error:      fmt.Sprintf("failed to read body: %v", err),
+			LatencyMs:  latency,
+		})
+	}
+
+	// Check if body was truncated
+	if len(body) > MaxHTTPBodySize {
+		return toJSON(&HTTPResultJSON{
+			Success:    false,
+			StatusCode: resp.StatusCode,
+			Error:      fmt.Sprintf("response body too large (max %d bytes)", MaxHTTPBodySize),
 			LatencyMs:  latency,
 		})
 	}
@@ -682,13 +886,15 @@ func (c *GhostClient) HTTPGet(url string) string {
 
 // HTTPPost performs an HTTP POST request through the tunnel.
 // Returns HTTPResultJSON as a JSON string.
+//
+// Response bodies are limited to MaxHTTPBodySize (10MB) to prevent DoS.
 func (c *GhostClient) HTTPPost(url, contentType, body string) string {
 	c.mu.RLock()
-	tunNet := c.tunNet
+	httpClient := c.httpClient
 	tunnelState := c.tunnelState
 	c.mu.RUnlock()
 
-	if tunnelState != TunnelStateActive || tunNet == nil {
+	if tunnelState != TunnelStateActive || httpClient == nil {
 		return toJSON(&HTTPResultJSON{
 			Success: false,
 			Error:   ErrTunnelNotStarted.Error(),
@@ -697,15 +903,7 @@ func (c *GhostClient) HTTPPost(url, contentType, body string) string {
 
 	start := time.Now()
 
-	// Create HTTP client using tunnel's dial function
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: tunNet.DialContext,
-		},
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Post(url, contentType, strings.NewReader(body))
+	resp, err := httpClient.Post(url, contentType, strings.NewReader(body))
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -717,12 +915,24 @@ func (c *GhostClient) HTTPPost(url, contentType, body string) string {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Limit body size to prevent DoS attacks
+	limitedReader := io.LimitReader(resp.Body, MaxHTTPBodySize+1)
+	respBody, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return toJSON(&HTTPResultJSON{
 			Success:    false,
 			StatusCode: resp.StatusCode,
 			Error:      fmt.Sprintf("failed to read body: %v", err),
+			LatencyMs:  latency,
+		})
+	}
+
+	// Check if body was truncated
+	if len(respBody) > MaxHTTPBodySize {
+		return toJSON(&HTTPResultJSON{
+			Success:    false,
+			StatusCode: resp.StatusCode,
+			Error:      fmt.Sprintf("response body too large (max %d bytes)", MaxHTTPBodySize),
 			LatencyMs:  latency,
 		})
 	}

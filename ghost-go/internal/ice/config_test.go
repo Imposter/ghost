@@ -15,7 +15,7 @@ func TestDefaultICEConfig(t *testing.T) {
 	assert.NotEmpty(t, cfg.STUNServers)
 	assert.Equal(t, 10*time.Second, cfg.GatherTimeout)
 	assert.Equal(t, 30*time.Second, cfg.ConnectionTimeout)
-	assert.Equal(t, 15*time.Second, cfg.KeepaliveInterval)
+	assert.Equal(t, 2*time.Second, cfg.KeepaliveInterval) // Fast disconnect detection
 	assert.Contains(t, cfg.CandidateTypes, CandidateTypeHost)
 	assert.Contains(t, cfg.CandidateTypes, CandidateTypeSrflx)
 	assert.Contains(t, cfg.CandidateTypes, CandidateTypeRelay)

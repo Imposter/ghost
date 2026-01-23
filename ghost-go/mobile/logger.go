@@ -76,44 +76,11 @@ func LogDebug(msg string) {
 	fmt.Fprintf(os.Stderr, "[GHOST] DEBUG %s %s\n", timestamp, msg)
 }
 
-// LogPanic logs a panic message and stack trace.
-func LogPanic(msg string) {
-	timestamp := time.Now().Format("15:04:05.000")
-	buf := make([]byte, 16384)    // Larger buffer for full stack
-	n := runtime.Stack(buf, true) // true = all goroutines
-	fmt.Fprintf(os.Stderr, "[GHOST] PANIC %s %s\n%s\n", timestamp, msg, buf[:n])
-}
-
-// LogStackTrace logs the current stack trace without panicking.
+// LogStackTrace logs the current stack trace for debugging.
+// Use sparingly - prefer structured logging with error context.
 func LogStackTrace(msg string) {
 	timestamp := time.Now().Format("15:04:05.000")
-	buf := make([]byte, 16384)
+	buf := make([]byte, 4096)
 	n := runtime.Stack(buf, false)
 	fmt.Fprintf(os.Stderr, "[GHOST] TRACE %s %s\n%s\n", timestamp, msg, buf[:n])
-}
-
-// RecoverAndLog recovers from a panic and logs the full stack trace.
-// Use with defer: defer RecoverAndLog("methodName")
-func RecoverAndLog(methodName string) {
-	if r := recover(); r != nil {
-		timestamp := time.Now().Format("15:04:05.000")
-		buf := make([]byte, 16384)
-		n := runtime.Stack(buf, true) // true = all goroutines
-		fmt.Fprintf(os.Stderr, "[GHOST] PANIC %s in %s: %v\n%s\n", timestamp, methodName, r, buf[:n])
-	}
-}
-
-// WrapWithRecover wraps a function with panic recovery that logs and re-panics.
-// This ensures stack traces are captured but the panic still propagates.
-func WrapWithRecover(methodName string, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			timestamp := time.Now().Format("15:04:05.000")
-			buf := make([]byte, 16384)
-			n := runtime.Stack(buf, true)
-			fmt.Fprintf(os.Stderr, "[GHOST] PANIC %s in %s: %v\n%s\n", timestamp, methodName, r, buf[:n])
-			panic(r) // Re-panic after logging
-		}
-	}()
-	fn()
 }

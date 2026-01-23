@@ -1,5 +1,7 @@
 package mobile
 
+import "time"
+
 // Constants for virtual network configuration
 const (
 	// DesktopVirtualIP is the IP address assigned to the desktop/server peer
@@ -16,6 +18,14 @@ const (
 
 	// HTTPTestPort is the default port for HTTP test server
 	HTTPTestPort = 8080
+
+	// MaxHTTPBodySize is the maximum response body size for HTTP requests.
+	// This prevents denial-of-service by limiting memory usage.
+	// Default: 10MB
+	MaxHTTPBodySize = 10 * 1024 * 1024
+
+	// HTTPTimeout is the default timeout for HTTP requests through the tunnel.
+	HTTPTimeout = 30 * time.Second
 )
 
 // CandidateJSON represents an ICE candidate in JSON-serializable form.
