@@ -13,44 +13,43 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../App';
-import { useGhostClient, SignalingData, Candidate, ReconnectionResult } from '../hooks/useGhostClient';
+import { useGhostConnection, SignalingDataJSON, CandidateJSON } from '../ghost';
+import { useNetworkState } from '../hooks/useNetworkState';
 
 type ConnectionScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Connection'>;
 };
 
 export default function ConnectionScreen({ navigation }: ConnectionScreenProps) {
+  // Use the new abstraction layer hook
   const {
-    status,
-    candidates,
-    connectionState,
-    publicKey,
-    error,
-    isInitialized,
+    state,
+    phase,
+    isConnected,
+    isConnecting,
+    canReconnect,
     initialize,
-    close,
-    generateKeys,
+    generateKey,
     startGathering,
     cancelGathering,
-    pollCandidates,
-    getSignalingData,
-    setSignalingData,
+    setPeerData,
     connect,
     startTunnel,
-    // Network state
+    reconnect,
+    close,
+    getSignalingData,
+  } = useGhostConnection();
+
+  // Use network state hook directly for detailed network UI
+  const {
     networkState,
     isOnline,
     isWifi,
     isCellular,
-    networkTriggeredReconnect,
-    lastNetworkEvent,
-    setOnNetworkReconnect,
-    setOnNetworkDisconnect,
-    resetReconnectionState,
-  } = useGhostClient();
+  } = useNetworkState();
 
   const [peerDataInput, setPeerDataInput] = useState('');
-  const [localSignalingData, setLocalSignalingData] = useState<SignalingData | null>(null);
+  const [localSignalingData, setLocalSignalingData] = useState<SignalingDataJSON | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [step, setStep] = useState<'init' | 'gathering' | 'exchange' | 'connecting' | 'connected'>('init');
   const [wasConnected, setWasConnected] = useState(false);
@@ -60,6 +59,20 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   // Track current step for cleanup (avoids stale closure)
   const stepRef = useRef(step);
   stepRef.current = step;
+
+  // Derived state from hook
+  const status = phase === 'connected' ? 'connected'
+    : phase === 'gathering' ? 'gathering'
+    : phase === 'connecting' || phase === 'tunnel_starting' || phase === 'reconnecting' ? 'connecting'
+    : phase === 'error' ? 'error'
+    : 'disconnected';
+
+  const isInitialized = phase !== 'uninitialized';
+  const error = state.error;
+  const candidates = state.candidates;
+  const connectionState = state.connectionState;
+  const publicKey = state.publicKey;
+  const networkTriggeredReconnect = state.isReconnecting;
 
   // Initialize client on focus, cleanup on blur
   useFocusEffect(
@@ -99,80 +112,50 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     }, [initialize, close, cancelGathering])
   );
 
-  // Poll candidates while gathering
+  // Update local signaling data when gathering completes
   useEffect(() => {
-    if (status === 'gathering') {
-      const interval = setInterval(() => {
-        pollCandidates();
-      }, 500);
-      return () => clearInterval(interval);
-    }
-  }, [status, pollCandidates]);
-
-  // Update local signaling data when candidates change
-  useEffect(() => {
-    if (candidates.length > 0 && status === 'gathering') {
+    if (phase === 'awaiting_peer' || (candidates.length > 0 && phase === 'gathering')) {
       const data = getSignalingData();
       if (data) {
         setLocalSignalingData(data);
       }
     }
-  }, [candidates, status, getSignalingData]);
+  }, [phase, candidates, getSignalingData]);
 
   // Track connection status changes - handle disconnect events
   useEffect(() => {
-    if (status === 'connected') {
+    if (isConnected) {
       setWasConnected(true);
       setStep('connected');
-    } else if ((status === 'disconnected' || status === 'error') && wasConnected) {
+    } else if ((phase === 'disconnected' || phase === 'error') && wasConnected) {
       // We were connected but now disconnected - show reconnect UI
       setStep('exchange');
     }
-  }, [status, wasConnected]);
+  }, [isConnected, phase, wasConnected]);
 
-  // Set up network change callbacks
+  // Sync step with phase transitions
   useEffect(() => {
-    // Handle network-triggered reconnection results
-    setOnNetworkReconnect((result: ReconnectionResult) => {
-      if (result.success) {
-        Alert.alert(
-          'Reconnected!',
-          'Network changed but tunnel was automatically restored.',
-          [
-            { text: 'Test Now', onPress: () => navigation.navigate('Test') },
-            { text: 'OK' },
-          ]
-        );
-      } else if (result.requiresNewSession) {
-        Alert.alert(
-          'New Session Required',
-          'The network change caused the connection to fail. A new session is needed.',
-          [
-            { text: 'Start New Session', onPress: handleStartNewSession },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
-      }
-      // Other errors are shown via the error state
-    });
-
-    // Handle network disconnect (optional - could show toast)
-    setOnNetworkDisconnect(() => {
-      console.log('[ConnectionScreen] Network disconnected - waiting for reconnect...');
-    });
-  }, [setOnNetworkReconnect, setOnNetworkDisconnect, navigation]);
+    if (phase === 'gathering') {
+      setStep('gathering');
+    } else if (phase === 'awaiting_peer') {
+      setStep('exchange');
+    } else if (phase === 'connected') {
+      setStep('connected');
+    }
+  }, [phase]);
 
   const handleStartGathering = async () => {
     setIsLoading(true);
-    const keyResult = await generateKeys();
+    const keyResult = await generateKey();
     if (!keyResult) {
       setIsLoading(false);
       return;
     }
 
-    const success = await startGathering();
+    const signalingData = await startGathering();
     setIsLoading(false);
-    if (success) {
+    if (signalingData) {
+      setLocalSignalingData(signalingData);
       setStep('gathering');
     }
   };
@@ -221,7 +204,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     console.log('='.repeat(60) + '\n');
 
     try {
-      const peerData: SignalingData = JSON.parse(inputText);
+      const peerData: SignalingDataJSON = JSON.parse(inputText);
 
       // Validate required fields
       if (!peerData.ufrag || !peerData.pwd) {
@@ -236,7 +219,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       console.log('Successfully parsed! Candidates:', peerData.candidates.length);
 
       setIsLoading(true);
-      const success = await setSignalingData(peerData);
+      const success = await setPeerData(inputText);
       setIsLoading(false);
 
       if (success) {
@@ -291,26 +274,21 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     setIsLoading(true);
     setStep('connecting');
 
-    const iceSuccess = await connect(false);
-    if (iceSuccess) {
-      // Quick reconnect worked - now start tunnel
-      const tunnelSuccess = await startTunnel();
-      setIsLoading(false);
+    const success = await reconnect();
+    setIsLoading(false);
 
-      if (tunnelSuccess) {
-        setWasConnected(true);
-        setStep('connected');
-        Alert.alert('Reconnected!', 'Tunnel re-established successfully.', [
-          { text: 'Test Now', onPress: () => navigation.navigate('Test') },
-          { text: 'OK' },
-        ]);
-        return;
-      }
+    if (success) {
+      setWasConnected(true);
+      setStep('connected');
+      Alert.alert('Reconnected!', 'Tunnel re-established successfully.', [
+        { text: 'Test Now', onPress: () => navigation.navigate('Test') },
+        { text: 'OK' },
+      ]);
+      return;
     }
 
     // Quick reconnect failed - need new session
     // This happens when ICE agent is in "failed" or "closed" state
-    setIsLoading(false);
     setWasConnected(false);
     setStep('exchange');
 
@@ -330,20 +308,20 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
   const handleStartNewSession = async () => {
     // Start completely fresh - new keys, new ICE agent
     setWasConnected(false);
-    resetReconnectionState(); // Reset network-triggered reconnection tracking
     setIsLoading(true);
 
-    const keyResult = await generateKeys();
+    const keyResult = await generateKey();
     if (!keyResult) {
       setIsLoading(false);
       Alert.alert('Error', 'Failed to generate new keys. Please try again.');
       return;
     }
 
-    const success = await startGathering();
+    const signalingData = await startGathering();
     setIsLoading(false);
 
-    if (success) {
+    if (signalingData) {
+      setLocalSignalingData(signalingData);
       setStep('gathering');
       setPeerDataInput(''); // Clear old peer data
     } else {
@@ -399,7 +377,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
     return (
       <View style={styles.candidateSection}>
         <Text style={styles.sectionTitle}>Local Candidates ({candidates.length})</Text>
-        {candidates.map((c: Candidate, i: number) => (
+        {candidates.map((c: CandidateJSON, i: number) => (
           <View key={i} style={styles.candidateItem}>
             <Text style={styles.candidateType}>{c.type}</Text>
             <Text style={styles.candidateAddr}>{c.address}:{c.port}</Text>
@@ -486,7 +464,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       {renderNetworkState()}
 
       {/* Status Banner */}
-      <View style={[styles.statusBanner, styles[`status_${status}`]]}>
+      <View style={[styles.statusBanner, styles[`status_${status}` as keyof typeof styles] as object]}>
         <Text style={styles.statusText}>
           {status.charAt(0).toUpperCase() + status.slice(1)}
         </Text>
@@ -604,10 +582,10 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       {renderConnectionState()}
 
       {/* Connected State */}
-      {step === 'connected' && status === 'connected' && (
+      {step === 'connected' && isConnected && (
         <View style={styles.section}>
           <View style={styles.successBox}>
-            <Text style={styles.successText}>✓ Tunnel Active</Text>
+            <Text style={styles.successText}>Tunnel Active</Text>
           </View>
           <TouchableOpacity
             style={styles.button}
@@ -619,7 +597,7 @@ export default function ConnectionScreen({ navigation }: ConnectionScreenProps) 
       )}
 
       {/* Disconnected State - Show when previously connected but now disconnected */}
-      {wasConnected && (status === 'disconnected' || status === 'error') && (
+      {wasConnected && (phase === 'disconnected' || phase === 'error') && (
         <View style={styles.section}>
           <View style={styles.disconnectedBox}>
             <Text style={styles.disconnectedText}>Connection Lost</Text>

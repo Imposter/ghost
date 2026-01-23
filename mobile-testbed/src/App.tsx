@@ -3,9 +3,7 @@ import { SafeAreaView, StyleSheet, StatusBar } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
-import HomeScreen from './components/HomeScreen';
-import ConnectionScreen from './components/ConnectionScreen';
-import TestScreen from './components/TestScreen';
+import { HomeScreen, ConnectionScreen, TestScreen } from './screens';
 
 export type RootStackParamList = {
   Home: undefined;

@@ -8,23 +8,26 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { useGhostClient, HTTPResult, TunnelStats } from '../hooks/useGhostClient';
+import { useGhostConnection, HTTPResultJSON, TunnelStatsJSON } from '../ghost';
 
 export default function TestScreen() {
   const {
-    status,
-    connectionState,
-    error,
+    state,
+    phase,
+    isConnected,
     httpGet,
     httpPost,
     getTunnelStats,
     updateConnectionState,
-  } = useGhostClient();
+  } = useGhostConnection();
+
+  const connectionState = state.connectionState;
+  const error = state.error;
 
   const [url, setUrl] = useState('http://10.0.0.1:8080/test');
   const [postBody, setPostBody] = useState('{"message": "Hello from mobile!"}');
-  const [result, setResult] = useState<HTTPResult | null>(null);
-  const [stats, setStats] = useState<TunnelStats | null>(null);
+  const [result, setResult] = useState<HTTPResultJSON | null>(null);
+  const [stats, setStats] = useState<TunnelStatsJSON | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [testHistory, setTestHistory] = useState<Array<{
     type: string;
@@ -45,12 +48,12 @@ export default function TestScreen() {
     return () => clearInterval(interval);
   }, [getTunnelStats, updateConnectionState]);
 
-  const addToHistory = (type: string, url: string, result: HTTPResult) => {
+  const addToHistory = (type: string, url: string, result: HTTPResultJSON) => {
     setTestHistory(prev => [{
       type,
       url,
       success: result.success,
-      latency: result.latencyMs,
+      latency: result.latencyMs || 0,
       timestamp: new Date(),
     }, ...prev.slice(0, 9)]); // Keep last 10
   };
@@ -125,9 +128,9 @@ export default function TestScreen() {
       <View style={[styles.resultSection, result.success ? styles.resultSuccess : styles.resultError]}>
         <View style={styles.resultHeader}>
           <Text style={styles.resultStatus}>
-            {result.success ? '✓ Success' : '✗ Failed'}
+            {result.success ? 'Success' : 'Failed'}
           </Text>
-          <Text style={styles.resultLatency}>{result.latencyMs}ms</Text>
+          <Text style={styles.resultLatency}>{result.latencyMs || 0}ms</Text>
         </View>
         {result.statusCode && (
           <Text style={styles.resultCode}>Status: {result.statusCode}</Text>
@@ -150,9 +153,9 @@ export default function TestScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Connection Status */}
-      <View style={[styles.statusBanner, status === 'connected' ? styles.connected : styles.disconnected]}>
+      <View style={[styles.statusBanner, isConnected ? styles.connected : styles.disconnected]}>
         <Text style={styles.statusBannerText}>
-          {status === 'connected' ? 'Tunnel Active' : 'Not Connected'}
+          {isConnected ? 'Tunnel Active' : 'Not Connected'}
         </Text>
         {connectionState && (
           <Text style={styles.ipText}>
@@ -183,7 +186,7 @@ export default function TestScreen() {
                 setUrl(test.url);
                 handleGet();
               }}
-              disabled={isLoading || status !== 'connected'}
+              disabled={isLoading || !isConnected}
             >
               <Text style={styles.quickTestText}>{test.label}</Text>
             </TouchableOpacity>
@@ -205,7 +208,7 @@ export default function TestScreen() {
           <TouchableOpacity
             style={[styles.button, styles.getButton]}
             onPress={handleGet}
-            disabled={isLoading || status !== 'connected'}
+            disabled={isLoading || !isConnected}
           >
             {isLoading ? (
               <ActivityIndicator color="#fff" size="small" />
@@ -216,7 +219,7 @@ export default function TestScreen() {
           <TouchableOpacity
             style={[styles.button, styles.postButton]}
             onPress={handlePost}
-            disabled={isLoading || status !== 'connected'}
+            disabled={isLoading || !isConnected}
           >
             <Text style={styles.buttonText}>POST</Text>
           </TouchableOpacity>
@@ -259,7 +262,7 @@ export default function TestScreen() {
       )}
 
       {/* Warning if not connected */}
-      {status !== 'connected' && (
+      {!isConnected && (
         <View style={styles.warningBox}>
           <Text style={styles.warningText}>
             Connect to a peer first to test the tunnel.
