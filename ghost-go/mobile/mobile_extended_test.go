@@ -952,6 +952,322 @@ func TestConnect_StateErrorMessageFormat(t *testing.T) {
 }
 
 // =============================================================================
+// CancelGathering Tests
+// =============================================================================
+
+func TestCancelGathering_DuringGathering(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Wait a bit for gathering to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify we're in a gathering state
+	client.mu.RLock()
+	stateBeforeCancel := client.iceState
+	client.mu.RUnlock()
+
+	if stateBeforeCancel != ICEStateChecking {
+		t.Errorf("expected state %s before cancel, got %s", ICEStateChecking, stateBeforeCancel)
+	}
+
+	// Cancel gathering
+	result := client.CancelGathering()
+	if result != "" {
+		t.Errorf("CancelGathering failed: %s", result)
+	}
+
+	// Verify state is reset to new
+	client.mu.RLock()
+	stateAfterCancel := client.iceState
+	agentAfterCancel := client.iceAgent
+	candidatesAfterCancel := client.candidates
+	client.mu.RUnlock()
+
+	if stateAfterCancel != ICEStateNew {
+		t.Errorf("expected state %s after cancel, got %s", ICEStateNew, stateAfterCancel)
+	}
+	if agentAfterCancel != nil {
+		t.Error("ICE agent should be nil after cancel")
+	}
+	if candidatesAfterCancel != nil {
+		t.Error("candidates should be nil after cancel")
+	}
+}
+
+func TestCancelGathering_WhenNotGathering(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Cancel without starting gathering - should not error
+	result := client.CancelGathering()
+	if result != "" {
+		t.Errorf("CancelGathering should succeed when not gathering: %s", result)
+	}
+
+	// State should remain new
+	client.mu.RLock()
+	state := client.iceState
+	client.mu.RUnlock()
+
+	if state != ICEStateNew {
+		t.Errorf("expected state %s, got %s", ICEStateNew, state)
+	}
+}
+
+func TestCancelGathering_ThenStartGatheringAgain(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// First gathering
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel
+	result := client.CancelGathering()
+	if result != "" {
+		t.Errorf("CancelGathering failed: %s", result)
+	}
+
+	// Start gathering again - should work
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Errorf("StartGathering after cancel failed: %s", errStr)
+	}
+
+	// Verify new gathering started
+	client.mu.RLock()
+	state := client.iceState
+	agent := client.iceAgent
+	client.mu.RUnlock()
+
+	if state != ICEStateChecking {
+		t.Errorf("expected state %s after restart, got %s", ICEStateChecking, state)
+	}
+	if agent == nil {
+		t.Error("ICE agent should not be nil after restart")
+	}
+}
+
+func TestCancelGathering_AfterClose(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	// Close the client
+	client.Close()
+
+	// CancelGathering should return error for closed client
+	result := client.CancelGathering()
+
+	var errResult map[string]string
+	if err := json.Unmarshal([]byte(result), &errResult); err != nil {
+		t.Fatalf("failed to parse error JSON: %v", err)
+	}
+
+	if errResult["error"] == "" {
+		t.Error("expected error when cancelling gathering on closed client")
+	}
+}
+
+func TestCancelGathering_EmitsStateChange(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	events := make(chan string, 10)
+	callback := &testCallback{events: events}
+	client.SetEventCallback(callback)
+
+	// Start gathering
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Drain any existing events
+drainLoop:
+	for {
+		select {
+		case <-events:
+		default:
+			break drainLoop
+		}
+	}
+
+	// Cancel gathering
+	client.CancelGathering()
+
+	// Check for state_change event
+	timeout := time.After(500 * time.Millisecond)
+	hasStateChangeEvent := false
+
+	for {
+		select {
+		case event := <-events:
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(event), &parsed) == nil {
+				if parsed["type"] == "state_change" {
+					if data, ok := parsed["data"].(map[string]interface{}); ok {
+						if data["iceState"] == ICEStateNew {
+							hasStateChangeEvent = true
+						}
+					}
+				}
+			}
+		case <-timeout:
+			if !hasStateChangeEvent {
+				t.Error("expected state_change event with ICE state 'new' after cancel")
+			}
+			return
+		}
+	}
+}
+
+func TestCancelGathering_CleansUpContext(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Verify context was created
+	client.mu.RLock()
+	ctxBeforeCancel := client.gatherCtx
+	cancelBeforeCancel := client.gatherCancel
+	client.mu.RUnlock()
+
+	if ctxBeforeCancel == nil {
+		t.Error("gather context should be set during gathering")
+	}
+	if cancelBeforeCancel == nil {
+		t.Error("gather cancel func should be set during gathering")
+	}
+
+	// Cancel gathering
+	client.CancelGathering()
+
+	// Verify context was cleaned up
+	client.mu.RLock()
+	ctxAfterCancel := client.gatherCtx
+	cancelAfterCancel := client.gatherCancel
+	client.mu.RUnlock()
+
+	if ctxAfterCancel != nil {
+		t.Error("gather context should be nil after cancel")
+	}
+	if cancelAfterCancel != nil {
+		t.Error("gather cancel func should be nil after cancel")
+	}
+}
+
+func TestCancelGathering_MultipleCancels(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Multiple cancels should not panic or error
+	for i := 0; i < 5; i++ {
+		result := client.CancelGathering()
+		if result != "" {
+			t.Errorf("CancelGathering failed on iteration %d: %s", i, result)
+		}
+	}
+
+	// State should be new
+	client.mu.RLock()
+	state := client.iceState
+	client.mu.RUnlock()
+
+	if state != ICEStateNew {
+		t.Errorf("expected state %s after multiple cancels, got %s", ICEStateNew, state)
+	}
+}
+
+func TestResourceLeak_RepeatedGatheringAndCancel(t *testing.T) {
+	// Skip if we can't do networking
+	testClient, err := NewClient("")
+	if err != nil {
+		t.Skip("cannot create client")
+	}
+	if errStr := testClient.StartGathering(); errStr != "" {
+		testClient.Close()
+		t.Skip("cannot start gathering, skipping leak test")
+	}
+	testClient.Close()
+
+	// Force GC to get a clean baseline
+	runtime.GC()
+	time.Sleep(100 * time.Millisecond)
+
+	initialGoroutines := runtime.NumGoroutine()
+
+	// Create, gather, cancel, repeat multiple times
+	for i := 0; i < 5; i++ {
+		client, err := NewClient("")
+		if err != nil {
+			t.Fatalf("NewClient failed on iteration %d: %v", i, err)
+		}
+
+		if errStr := client.StartGathering(); errStr != "" {
+			client.Close()
+			continue
+		}
+
+		// Wait a bit for gathering
+		time.Sleep(50 * time.Millisecond)
+
+		// Cancel instead of just closing
+		client.CancelGathering()
+
+		client.Close()
+	}
+
+	// Force GC and wait for goroutines to clean up
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+
+	finalGoroutines := runtime.NumGoroutine()
+
+	leaked := finalGoroutines - initialGoroutines
+	if leaked > 10 {
+		t.Errorf("potential goroutine leak in gather/cancel: started with %d, ended with %d (leaked %d)",
+			initialGoroutines, finalGoroutines, leaked)
+	}
+}
+
+// =============================================================================
 // Memory Safety Tests
 // =============================================================================
 
@@ -997,6 +1313,7 @@ func TestMemorySafety_OperationsAfterClose(t *testing.T) {
 	_ = client.GetTunnelStats()
 	_ = client.GenerateWireGuardKey()
 	_ = client.StartGathering()
+	_ = client.CancelGathering()
 	_ = client.Connect(true)
 	_ = client.StartTunnel()
 	_ = client.HTTPGet("http://example.com")
