@@ -5,14 +5,18 @@
 //	go run ./cmd/mobile-demo -role server
 //
 // This application acts as the desktop peer in a mobile testbed setup.
-// It performs the following steps:
+// It supports multiple sequential clients - when one client disconnects,
+// it returns to pairing mode to accept a new client.
+//
+// Steps per session:
 //  1. Creates ICE agent and gathers candidates
-//  2. Generates WireGuard keys
+//  2. Uses provided or generates WireGuard keys (keys persist across sessions)
 //  3. Displays signaling data (for QR code or manual exchange)
 //  4. Waits for mobile peer's signaling data
 //  5. Establishes ICE connection (controlling role)
 //  6. Starts WireGuard tunnel with userspace networking
 //  7. Runs HTTP test server on 10.0.0.1:8080
+//  8. When client disconnects, returns to step 1
 package main
 
 import (
@@ -27,6 +31,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,6 +49,9 @@ const banner = `
 ║    This server runs on the desktop and connects                ║
 ║    to mobile apps using the ghost-go mobile SDK.               ║
 ║                                                                ║
+║    Supports multiple sequential clients.                       ║
+║    When a client disconnects, returns to pairing mode.         ║
+║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 `
 
@@ -57,6 +65,7 @@ type Config struct {
 	MTU               int
 	Keepalive         time.Duration
 	HTTPPort          int
+	PrivateKey        string // Base64-encoded private key (optional)
 }
 
 // SignalingData is used for signaling exchange with mobile peer.
@@ -75,6 +84,53 @@ type CandidateJSON struct {
 	Protocol   string `json:"protocol"`
 	Priority   uint32 `json:"priority"`
 	Foundation string `json:"foundation"`
+}
+
+// Session represents an active client session.
+type Session struct {
+	agent      ice.Agent
+	conn       net.Conn
+	device     *wireguard.Device
+	httpServer *HTTPTestServer
+	listener   net.Listener
+
+	// Cancellation
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Disconnect notification
+	disconnectCh chan struct{}
+	closeOnce    sync.Once
+}
+
+func (s *Session) Close() {
+	s.closeOnce.Do(func() {
+		s.cancel()
+
+		if s.httpServer != nil {
+			s.httpServer.Close()
+		}
+		if s.listener != nil {
+			s.listener.Close()
+		}
+		if s.device != nil {
+			s.device.Down()
+			s.device.Close()
+		}
+		if s.conn != nil {
+			s.conn.Close()
+		}
+		if s.agent != nil {
+			s.agent.Close()
+		}
+	})
+}
+
+func (s *Session) notifyDisconnect() {
+	select {
+	case s.disconnectCh <- struct{}{}:
+	default:
+	}
 }
 
 func main() {
@@ -105,13 +161,16 @@ func main() {
 		cancel()
 	}()
 
-	// Run server
-	if err := runServer(ctx, config, logger); err != nil {
-		logger.Error("Server failed", "error", err)
-		os.Exit(1)
+	// Run server loop
+	if err := runServerLoop(ctx, config, logger); err != nil {
+		if ctx.Err() != nil {
+			// Normal shutdown
+			logger.Info("Server stopped gracefully")
+		} else {
+			logger.Error("Server failed", "error", err)
+			os.Exit(1)
+		}
 	}
-
-	logger.Info("Server stopped gracefully")
 }
 
 func parseFlags() *Config {
@@ -125,6 +184,7 @@ func parseFlags() *Config {
 	flag.IntVar(&config.MTU, "mtu", mobile.DefaultMTU, "MTU size")
 	flag.DurationVar(&config.Keepalive, "keepalive", 25*time.Second, "WireGuard keepalive interval")
 	flag.IntVar(&config.HTTPPort, "http-port", mobile.HTTPTestPort, "HTTP test server port")
+	flag.StringVar(&config.PrivateKey, "private-key", "", "WireGuard private key (base64, optional - generates new if not provided)")
 
 	flag.Parse()
 
@@ -139,8 +199,100 @@ func setupLogger() *slog.Logger {
 	return slog.New(handler)
 }
 
-func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
+// runServerLoop runs the main server loop, accepting multiple sequential clients.
+func runServerLoop(ctx context.Context, config *Config, logger *slog.Logger) error {
 	fmt.Printf("\n=== Running as Desktop Server ===\n\n")
+
+	// Get or generate WireGuard keys (persist across sessions)
+	privateKey, publicKeyStr, err := getOrGenerateKeys(config)
+	if err != nil {
+		return err
+	}
+
+	sessionNum := 0
+	for {
+		sessionNum++
+
+		// Check if we should stop
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		fmt.Printf("\n%s\n", strings.Repeat("═", 60))
+		fmt.Printf("  SESSION #%d - Waiting for client...\n", sessionNum)
+		fmt.Printf("%s\n\n", strings.Repeat("═", 60))
+
+		// Run a single session
+		err := runSession(ctx, config, logger, privateKey, publicKeyStr, sessionNum)
+		if err != nil {
+			if ctx.Err() != nil {
+				// Main context cancelled - shutting down
+				return nil
+			}
+			logger.Error("Session failed", "session", sessionNum, "error", err)
+		}
+
+		// Small delay before starting new session
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(1 * time.Second):
+		}
+
+		fmt.Println("\n🔄 Returning to pairing mode...")
+	}
+}
+
+// getOrGenerateKeys gets WireGuard keys from config or generates new ones.
+func getOrGenerateKeys(config *Config) ([]byte, string, error) {
+	var privateKey []byte
+
+	if config.PrivateKey != "" {
+		fmt.Println("Using provided WireGuard private key...")
+		var err error
+		privateKey, err = wireguard.DecodeKey(config.PrivateKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid private key: %w", err)
+		}
+		if err := wireguard.ValidatePrivateKey(privateKey); err != nil {
+			return nil, "", fmt.Errorf("invalid private key: %w", err)
+		}
+		fmt.Println("✓ Using provided private key")
+	} else {
+		fmt.Println("Generating WireGuard keys...")
+		var err error
+		privateKey, err = wireguard.GeneratePrivateKey()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to generate private key: %w", err)
+		}
+		fmt.Println("✓ Generated new private key")
+	}
+
+	publicKey, err := wireguard.GetPublicKey(privateKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to derive public key: %w", err)
+	}
+
+	publicKeyStr := wireguard.EncodeKey(publicKey)
+	fmt.Printf("✓ Public key: %s\n", publicKeyStr)
+
+	return privateKey, publicKeyStr, nil
+}
+
+// runSession handles a single client session.
+func runSession(ctx context.Context, config *Config, logger *slog.Logger,
+	privateKey []byte, publicKeyStr string, sessionNum int) error {
+
+	// Create session context
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	session := &Session{
+		ctx:          sessionCtx,
+		cancel:       sessionCancel,
+		disconnectCh: make(chan struct{}, 1),
+	}
+	defer session.Close()
 
 	// Step 1: Create ICE agent
 	fmt.Println("Step 1: Creating ICE agent...")
@@ -153,29 +305,26 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to create ICE agent: %w", err)
 	}
-	defer agent.Close()
+	session.agent = agent
+
+	// Set up connection state monitoring
+	agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+		logger.Info("ICE connection state changed", "state", state, "session", sessionNum)
+
+		switch state {
+		case ice.ConnectionStateFailed, ice.ConnectionStateClosed, ice.ConnectionStateDisconnected:
+			fmt.Printf("\n⚠️  Client disconnected (ICE state: %s)\n", state)
+			session.notifyDisconnect()
+		}
+	})
+
 	fmt.Println("✓ ICE agent created")
 
-	// Step 2: Generate WireGuard keys
-	fmt.Println("\nStep 2: Generating WireGuard keys...")
-	privateKey, err := wireguard.GeneratePrivateKey()
-	if err != nil {
-		return fmt.Errorf("failed to generate private key: %w", err)
-	}
-
-	publicKey, err := wireguard.GetPublicKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to derive public key: %w", err)
-	}
-
-	publicKeyStr := wireguard.EncodeKey(publicKey)
-	fmt.Printf("✓ Public key: %s\n", publicKeyStr)
-
-	// Step 3: Gather ICE candidates
-	fmt.Println("\nStep 3: Gathering ICE candidates...")
+	// Step 2: Gather ICE candidates
+	fmt.Println("\nStep 2: Gathering ICE candidates...")
 	fmt.Println("   (This may take 10-15 seconds...)")
 
-	candChan, err := agent.GatherCandidates(ctx)
+	candChan, err := agent.GatherCandidates(sessionCtx)
 	if err != nil {
 		return fmt.Errorf("failed to start gathering: %w", err)
 	}
@@ -192,8 +341,8 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 
 	fmt.Printf("✓ Gathered %d candidates\n", len(candidates))
 
-	// Step 4: Prepare signaling data
-	fmt.Println("\nStep 4: Preparing signaling data...")
+	// Step 3: Prepare and display signaling data
+	fmt.Println("\nStep 3: Preparing signaling data...")
 	ufrag, pwd := agent.LocalCredentials()
 
 	localData := &SignalingData{
@@ -226,21 +375,38 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	fmt.Println(string(localJSON))
 	fmt.Println(strings.Repeat("═", 60))
 
-	// Step 5: Wait for mobile peer's signaling data
-	fmt.Println("\nStep 5: Waiting for mobile peer's signaling data...")
+	// Step 4: Wait for mobile peer's signaling data
+	fmt.Println("\nStep 4: Waiting for mobile peer's signaling data...")
 	fmt.Println("Paste the mobile app's JSON data below, then press Enter twice:")
 	fmt.Println()
 
-	remoteData, err := readSignalingData()
-	if err != nil {
+	// Read signaling data with context cancellation support
+	remoteDataCh := make(chan *SignalingData, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		data, err := readSignalingData()
+		if err != nil {
+			errCh <- err
+		} else {
+			remoteDataCh <- data
+		}
+	}()
+
+	var remoteData *SignalingData
+	select {
+	case <-sessionCtx.Done():
+		return sessionCtx.Err()
+	case err := <-errCh:
 		return fmt.Errorf("failed to read remote data: %w", err)
+	case remoteData = <-remoteDataCh:
 	}
 
 	fmt.Printf("✓ Received remote data (ufrag: %s, %d candidates)\n",
 		remoteData.Ufrag, len(remoteData.Candidates))
 
-	// Step 6: Add remote candidates
-	fmt.Println("\nStep 6: Adding remote candidates...")
+	// Step 5: Add remote candidates
+	fmt.Println("\nStep 5: Adding remote candidates...")
 	for _, candJSON := range remoteData.Candidates {
 		cand := &ice.Candidate{
 			Type:       ice.CandidateType(candJSON.Type),
@@ -256,26 +422,26 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	}
 	fmt.Printf("✓ Added %d remote candidates\n", len(remoteData.Candidates))
 
-	// Step 7: Set remote credentials
-	fmt.Println("\nStep 7: Setting remote credentials...")
+	// Step 6: Set remote credentials
+	fmt.Println("\nStep 6: Setting remote credentials...")
 	if err := agent.SetRemoteCredentials(remoteData.Ufrag, remoteData.Pwd); err != nil {
 		return fmt.Errorf("failed to set credentials: %w", err)
 	}
 	fmt.Println("✓ Remote credentials set")
 
-	// Step 8: Establish ICE connection
-	fmt.Println("\nStep 8: Establishing ICE connection...")
+	// Step 7: Establish ICE connection
+	fmt.Println("\nStep 7: Establishing ICE connection...")
 	fmt.Println("   Role: Controlling (initiating connection)")
 	fmt.Println("   (This may take 5-30 seconds...)")
 
-	connCtx, connCancel := context.WithTimeout(ctx, config.ConnectionTimeout)
+	connCtx, connCancel := context.WithTimeout(sessionCtx, config.ConnectionTimeout)
 	defer connCancel()
 
 	conn, err := agent.Connect(connCtx, true)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	defer conn.Close()
+	session.conn = conn
 
 	fmt.Println("✓ ICE connection established!")
 
@@ -284,12 +450,10 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 		fmt.Printf("   Remote: %s\n", pair.Remote.String())
 	}
 
-	// Step 9: Create ICEBind and TUN device
-	fmt.Println("\nStep 9: Creating WireGuard tunnel...")
+	// Step 8: Create ICEBind and TUN device
+	fmt.Println("\nStep 8: Creating WireGuard tunnel...")
 
 	// Create ICEBind
-	// Note: bind.Close() is called by device.Close() internally.
-	// We close conn separately (ownership pattern - caller closes what they created)
 	bind := ice.NewICEBind(conn, logger)
 
 	// Parse local IP
@@ -321,7 +485,7 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to create device: %w", err)
 	}
-	defer device.Close()
+	session.device = device
 
 	// Configure device
 	if err := device.Configure(privateKey); err != nil {
@@ -334,8 +498,6 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 		return fmt.Errorf("invalid peer public key: %w", err)
 	}
 
-	// The endpoint must be set for WireGuard to know where to send packets.
-	// For ICEBind, we use the ICE connection's remote address.
 	peerEndpoint := conn.RemoteAddr().String()
 
 	peerConfig := &wireguard.PeerConfig{
@@ -356,11 +518,9 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 
 	fmt.Println("✓ WireGuard tunnel established!")
 
-	// Step 10: Start HTTP server
-	fmt.Println("\nStep 10: Starting HTTP test server...")
+	// Step 9: Start HTTP server
+	fmt.Println("\nStep 9: Starting HTTP test server...")
 
-	// Create TCP listener through the tunnel
-	// The netstack.Net provides ListenTCP which creates a listener on the virtual network
 	tcpAddr := &net.TCPAddr{
 		IP:   net.ParseIP(config.LocalIP),
 		Port: config.HTTPPort,
@@ -369,14 +529,18 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
-	defer listener.Close()
+	session.listener = listener
 
 	httpServer := NewHTTPTestServer(listener, logger)
+	session.httpServer = httpServer
 
 	// Start server in background
 	go func() {
 		if err := httpServer.Start(); err != nil {
-			logger.Error("HTTP server error", "error", err)
+			// Ignore error if we're shutting down
+			if sessionCtx.Err() == nil {
+				logger.Error("HTTP server error", "error", err)
+			}
 		}
 	}()
 
@@ -384,28 +548,29 @@ func runServer(ctx context.Context, config *Config, logger *slog.Logger) error {
 
 	// Success!
 	fmt.Println("\n" + strings.Repeat("═", 60))
-	fmt.Println("🎉 SUCCESS! Desktop server is ready!")
+	fmt.Printf("🎉 SESSION #%d CONNECTED!\n", sessionNum)
 	fmt.Println(strings.Repeat("═", 60))
 	fmt.Printf("\nServer Information:\n")
 	fmt.Printf("  Virtual IP:  %s\n", config.LocalIP)
 	fmt.Printf("  HTTP Port:   %d\n", config.HTTPPort)
-	fmt.Printf("  MTU:         %d\n", config.MTU)
-	fmt.Printf("  Keepalive:   %s\n", config.Keepalive)
+	fmt.Printf("  Peer Key:    %s\n", remoteData.PublicKey[:16]+"...")
 	fmt.Printf("\nTest Endpoints:\n")
 	fmt.Printf("  GET  http://%s:%d/test    - JSON test response\n", config.LocalIP, config.HTTPPort)
 	fmt.Printf("  POST http://%s:%d/echo    - Echo request body\n", config.LocalIP, config.HTTPPort)
 	fmt.Printf("  GET  http://%s:%d/health  - Health check\n", config.LocalIP, config.HTTPPort)
 	fmt.Printf("  GET  http://%s:%d/info    - Server info\n", config.LocalIP, config.HTTPPort)
-	fmt.Println("\nPress Ctrl+C to stop the server...")
+	fmt.Println("\nWaiting for client activity or disconnect...")
+	fmt.Println("Press Ctrl+C to stop the server completely.")
 
-	// Wait for shutdown signal
-	<-ctx.Done()
-
-	fmt.Println("\nShutting down...")
-	httpServer.Close()
-	device.Down()
-
-	return nil
+	// Wait for disconnect or shutdown
+	select {
+	case <-sessionCtx.Done():
+		fmt.Println("\nSession cancelled...")
+		return nil
+	case <-session.disconnectCh:
+		fmt.Println("\nClient disconnected, cleaning up session...")
+		return nil
+	}
 }
 
 func readSignalingData() (*SignalingData, error) {
