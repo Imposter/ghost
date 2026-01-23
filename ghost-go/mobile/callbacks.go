@@ -8,16 +8,40 @@ import (
 // EventCallback is the interface that native code (Kotlin/Swift) must implement
 // to receive events from the GhostClient.
 //
-// gomobile will generate platform-specific interfaces:
-// - Kotlin: interface EventCallback { fun onEvent(eventJSON: String) }
-// - Swift: protocol EventCallback { func onEvent(_ eventJSON: String) }
+// # Thread Safety
+//
+// OnEvent may be called from any goroutine. Implementations MUST:
+//   - Return quickly (do not block - dispatch to main thread internally if needed)
+//   - Be safe for concurrent calls (events may fire from different goroutines)
+//   - Not panic (panics will propagate and may crash the app)
+//
+// # Platform Bindings
+//
+// gomobile generates platform-specific interfaces:
+//   - Kotlin: interface EventCallback { fun onEvent(eventJSON: String) }
+//   - Swift: protocol EventCallback { func onEvent(_ eventJSON: String) }
+//
+// # Event Types
+//
+// The eventJSON parameter is a JSON-encoded EventJSON struct. Event types:
+//   - "candidate": New ICE candidate discovered (during gathering)
+//   - "state_change": ICE or tunnel state changed
+//   - "connected": ICE connection established
+//   - "disconnected": Peer disconnected
+//   - "tunnel_up": WireGuard tunnel is active
+//   - "tunnel_down": WireGuard tunnel is inactive
+//   - "error": An error occurred
 type EventCallback interface {
 	// OnEvent is called when an event occurs.
 	// The eventJSON parameter is a JSON-encoded EventJSON struct.
+	// IMPORTANT: This method must return quickly and not block.
 	OnEvent(eventJSON string)
 }
 
 // eventDispatcher handles event callbacks in a thread-safe manner.
+//
+// Thread-safe: All methods can be called from any goroutine.
+// The callback is invoked synchronously - it MUST return quickly.
 type eventDispatcher struct {
 	mu       sync.RWMutex
 	callback EventCallback
@@ -36,6 +60,7 @@ func (d *eventDispatcher) setCallback(callback EventCallback) {
 }
 
 // emit sends an event to the registered callback.
+// The callback is invoked synchronously and must return quickly.
 func (d *eventDispatcher) emit(event *EventJSON) {
 	d.mu.RLock()
 	callback := d.callback
@@ -50,8 +75,8 @@ func (d *eventDispatcher) emit(event *EventJSON) {
 		return
 	}
 
-	// Call callback in a goroutine to avoid blocking
-	go callback.OnEvent(string(data))
+	// Call callback synchronously - it must return quickly
+	callback.OnEvent(string(data))
 }
 
 // emitCandidate emits a candidate event.

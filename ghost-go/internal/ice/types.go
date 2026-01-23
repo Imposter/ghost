@@ -32,30 +32,72 @@ const (
 type ConnectionStateChangeCallback func(state ConnectionState)
 
 // Candidate represents an ICE candidate.
+//
+// ICE candidates are network paths that can be used to establish connectivity.
+// There are four types:
+//   - host: Direct local interface address
+//   - srflx (server-reflexive): Public address discovered via STUN
+//   - prflx (peer-reflexive): Address discovered during connectivity checks
+//   - relay: TURN server relay address
+//
+// Candidates are exchanged between peers during the signaling phase.
 type Candidate struct {
 	// Type is the type of candidate (host, srflx, prflx, relay)
 	Type CandidateType
 
-	// Address is the transport address (IP and port)
+	// Address is the IP address (e.g., "192.168.1.100" or "2001:db8::1")
 	Address string
 
-	// Port is the port number
+	// Port is the port number (1-65535)
 	Port int
 
-	// Protocol is the transport protocol (udp, tcp)
+	// Protocol is the transport protocol ("udp" or "tcp")
 	Protocol string
 
-	// Priority is the candidate priority
+	// Priority is the candidate priority (higher = preferred)
+	// Calculated based on type, local preferences, and component ID.
 	Priority uint32
 
-	// Foundation is the candidate foundation
+	// Foundation is a string that groups candidates that share a base.
+	// Candidates with the same foundation will likely succeed/fail together.
 	Foundation string
 
-	// RelatedAddress is the related address for srflx and relay candidates
+	// RelatedAddress is the related address for srflx and relay candidates.
+	// For host candidates, this is empty.
+	// For srflx, this is the local address.
+	// For relay, this is the server-reflexive address.
 	RelatedAddress string
 
-	// RelatedPort is the related port for srflx and relay candidates
+	// RelatedPort is the related port for srflx and relay candidates.
 	RelatedPort int
+}
+
+// Validate checks if the candidate has valid fields.
+func (c *Candidate) Validate() error {
+	if c == nil {
+		return ErrInvalidCandidate
+	}
+
+	if c.Address == "" {
+		return fmt.Errorf("%w: address is empty", ErrInvalidCandidate)
+	}
+
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("%w: invalid port %d", ErrInvalidCandidate, c.Port)
+	}
+
+	if c.Protocol != ProtocolUDP && c.Protocol != ProtocolTCP {
+		return fmt.Errorf("%w: invalid protocol %q", ErrInvalidCandidate, c.Protocol)
+	}
+
+	switch c.Type {
+	case CandidateTypeHost, CandidateTypeSrflx, CandidateTypePrflx, CandidateTypeRelay:
+		// Valid
+	default:
+		return fmt.Errorf("%w: unknown type %q", ErrInvalidCandidate, c.Type)
+	}
+
+	return nil
 }
 
 // String returns a string representation of the candidate.

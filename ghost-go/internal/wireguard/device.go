@@ -29,6 +29,41 @@ const (
 )
 
 // Device wraps a WireGuard device with lifecycle management.
+//
+// # Thread Safety
+//
+// Device is thread-safe. All public methods can be called from multiple
+// goroutines concurrently. This differs from ice.Agent which is NOT thread-safe.
+// The reason for this design difference:
+//
+//   - Device manages mutable state (peers map, isUp, closed) that may be accessed
+//     concurrently by application code checking status while configuring
+//   - Device is typically used directly by applications, not just as a building block
+//   - The overhead of mutex locking is negligible compared to network I/O
+//
+// # Resource Management
+//
+// Device manages the following resources:
+//   - WireGuard device (goroutines for encryption/decryption, packet handling)
+//   - TUN device reference (passed by caller, closed when device closes)
+//   - Bind reference (passed by caller, closed when device closes)
+//   - Peer tracking map (local state)
+//
+// IMPORTANT: You MUST call Close() when done with the device to release resources.
+// The Close() method:
+//   - Stops all WireGuard device goroutines
+//   - Closes the TUN device (via device.Close())
+//   - Closes the bind (via device.Close())
+//
+// Note: Close() does NOT close the underlying network connection if using ICEBind.
+// ICEBind follows the ownership pattern where the caller who created the connection
+// is responsible for closing it. See ICEBind documentation for cleanup order.
+//
+// # Cleanup Order (when using with ICE)
+//
+//	device.Close()   // Stops WireGuard, closes bind's receive loop
+//	iceConn.Close()  // Caller closes the connection they created
+//	agent.Close()    // Caller closes the ICE agent they created
 type Device struct {
 	device *device.Device
 	tun    tun.Device
@@ -36,6 +71,7 @@ type Device struct {
 	config *WireGuardConfig
 	logger *slog.Logger
 
+	// mu protects all fields below. Device is thread-safe.
 	mu     sync.RWMutex
 	peers  map[string]*PeerConfig // keyed by base64 public key
 	isUp   bool
@@ -43,7 +79,17 @@ type Device struct {
 }
 
 // NewDevice creates a new WireGuard device.
-// The TUN device and bind must be provided by the caller.
+//
+// The caller provides the TUN device and bind, which become owned by the Device.
+// When Close() is called, both will be closed via the underlying WireGuard device.
+//
+// Parameters:
+//   - tunDev: A TUN device (from CreateTUN, CreateNetTUN, or CreateTUNFromFD)
+//   - bind: A conn.Bind implementation (typically ICEBind for NAT traversal)
+//   - config: WireGuard configuration (validated before use)
+//   - logger: Optional logger (defaults to slog.Default() if nil)
+//
+// The returned Device must have Configure() called before use.
 func NewDevice(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Device, error) {
 	if tunDev == nil {
 		return nil, fmt.Errorf("TUN device cannot be nil")

@@ -8,6 +8,16 @@ import (
 
 // connPool manages active connections created through the tunnel.
 // This allows the mobile API to track connections by ID for explicit close operations.
+//
+// # Thread Safety
+//
+// All methods are thread-safe and can be called from any goroutine.
+//
+// # Resource Management
+//
+// connPool owns the connections it manages. When closeAll() is called,
+// all connections are closed and the pool is marked as closed. Any new
+// connections added after closeAll() are immediately closed.
 type connPool struct {
 	mu     sync.RWMutex
 	conns  map[int64]net.Conn
