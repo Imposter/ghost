@@ -66,6 +66,7 @@ type Config struct {
 	Keepalive         time.Duration
 	HTTPPort          int
 	PrivateKey        string // Base64-encoded private key (optional)
+	UDPPort           int    // Fixed UDP port for ICE (0 = random)
 }
 
 // SignalingData is used for signaling exchange with mobile peer.
@@ -185,6 +186,7 @@ func parseFlags() *Config {
 	flag.DurationVar(&config.Keepalive, "keepalive", 25*time.Second, "WireGuard keepalive interval")
 	flag.IntVar(&config.HTTPPort, "http-port", mobile.HTTPTestPort, "HTTP test server port")
 	flag.StringVar(&config.PrivateKey, "private-key", "", "WireGuard private key (base64, optional - generates new if not provided)")
+	flag.IntVar(&config.UDPPort, "udp-port", 0, "Fixed UDP port for ICE (0 = random, useful for firewall rules)")
 
 	flag.Parse()
 
@@ -300,6 +302,13 @@ func runSession(ctx context.Context, config *Config, logger *slog.Logger,
 	iceConfig.STUNServers = []string{config.STUNServer}
 	iceConfig.GatherTimeout = config.GatherTimeout
 	iceConfig.ConnectionTimeout = config.ConnectionTimeout
+
+	// Set fixed port if specified (useful for firewall rules)
+	if config.UDPPort > 0 {
+		iceConfig.PortMin = uint16(config.UDPPort)
+		iceConfig.PortMax = uint16(config.UDPPort)
+		fmt.Printf("   Using fixed UDP port: %d\n", config.UDPPort)
+	}
 
 	agent, err := ice.NewAgent(iceConfig, logger)
 	if err != nil {

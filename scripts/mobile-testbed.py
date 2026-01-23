@@ -474,10 +474,16 @@ def run_desktop_server() -> bool:
     # Load or generate test keys
     keys = load_or_generate_test_keys()
 
+    # Default fixed port for easier firewall configuration
+    DEFAULT_UDP_PORT = 51820
+
     print()
     print("Using consistent test keys:")
     print(f"  Server Public Key:  {keys['serverPublicKey']}")
     print(f"  Mobile Public Key:  {keys['mobilePublicKey']}")
+    print()
+    print(f"Using fixed UDP port: {DEFAULT_UDP_PORT}")
+    print(f"  (Add firewall rule: allow UDP port {DEFAULT_UDP_PORT})")
     print()
     print_step("Starting desktop peer (server role)...")
     print_warning("Press Ctrl+C to stop")
@@ -487,7 +493,8 @@ def run_desktop_server() -> bool:
         run_command([
             "go", "run", "./cmd/mobile-demo",
             "-role", "server",
-            "-private-key", keys["serverPrivateKey"]
+            "-private-key", keys["serverPrivateKey"],
+            "-udp-port", str(DEFAULT_UDP_PORT),
         ], cwd=ghost_go, check=False)
         return True
     except KeyboardInterrupt:
