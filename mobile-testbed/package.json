@@ -14,6 +14,7 @@
     "detox:test:android": "detox test --configuration android.emu.debug"
   },
   "dependencies": {
+    "@react-native-community/netinfo": "^11.4.1",
     "@react-navigation/native": "^6.1.9",
     "@react-navigation/native-stack": "^6.9.17",
     "expo": "^54.0.32",
