@@ -1150,6 +1150,42 @@ npm test -- --updateSnapshot
 
 ---
 
+## Reconnection Behavior
+
+ICE agents have different states that determine what action is required when a connection is lost:
+
+### ICE States
+
+| State | Description | Recovery Action |
+|-------|-------------|-----------------|
+| `disconnected` | Temporary loss (network hiccup) | Try `Connect()` - may recover |
+| `failed` | Terminal failure | Must call `StartGathering()` |
+| `closed` | Agent explicitly closed | Must call `StartGathering()` |
+
+### Connect() State Validation
+
+The `Connect()` method validates the ICE state before attempting connection:
+- **Allowed**: `new`, `checking`, `connected`, `completed`, `disconnected`
+- **Blocked**: `failed`, `closed` (returns error with message to call `StartGathering()`)
+
+This prevents using a broken agent and provides clear guidance to the user.
+
+### Mobile App Reconnection Flow
+
+The mobile testbed implements a two-step reconnection strategy:
+
+1. **Quick Reconnect** (try first):
+   - Attempts to reconnect using the existing ICE agent
+   - Works if the disconnect was temporary (e.g., brief WiFi interruption)
+   - No need to re-exchange signaling data
+
+2. **Start New Session** (when quick reconnect fails):
+   - Creates a new ICE agent via `StartGathering()`
+   - Generates new WireGuard keys
+   - Requires re-exchanging signaling data with the peer
+
+---
+
 ## Known Limitations (Deferred to Phase 5)
 
 1. **No System VPN Integration**
@@ -1175,6 +1211,11 @@ npm test -- --updateSnapshot
    - No internet routing through tunnel
    - No split tunneling
    - Application must explicitly use tunnel APIs
+
+6. **No Automatic Reconnection**
+   - Application must handle reconnection manually
+   - Quick reconnect may work for temporary disconnects
+   - Full new session required for terminal failures
 
 ---
 

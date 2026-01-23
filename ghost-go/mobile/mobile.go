@@ -535,12 +535,25 @@ func (c *GhostClient) AddRemoteCandidate(jsonStr string) string {
 //   - Close() is called
 //   - The peer disconnects (detected via ICE state change callbacks)
 //   - Connect() is called again
+//
+// # Error: Agent Not Usable
+//
+// If the ICE agent has entered a failed or disconnected state (e.g., due to network
+// loss), this method will return an error. You must call StartGathering() to create
+// a new ICE agent before reconnecting.
 func (c *GhostClient) Connect(isControlling bool) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.iceAgent == nil {
 		return toErrorJSON(ErrGatheringNotStarted)
+	}
+
+	// Check if the ICE agent is in a usable state
+	// Failed/Closed states are terminal - a new agent must be created via StartGathering()
+	// Disconnected is temporary and the agent may recover, so we allow reconnection attempts
+	if c.iceState == ICEStateFailed || c.iceState == ICEStateClosed {
+		return toErrorJSON(fmt.Errorf("ICE agent is not usable (state: %s). Call StartGathering() to create a new agent", c.iceState))
 	}
 
 	// Clean up any existing connection before creating a new one

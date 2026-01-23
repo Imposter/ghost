@@ -3,6 +3,7 @@ package mobile
 import (
 	"encoding/json"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -805,6 +806,149 @@ func TestLoggerFunctions(t *testing.T) {
 	LogDebug("test debug message")
 	LogError("test error", ErrNotConnected)
 	LogStackTrace("test stack trace")
+}
+
+// =============================================================================
+// Connect() State Validation Tests
+// =============================================================================
+
+func TestConnect_BlockedInFailedState(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering first
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Manually set ICE state to failed
+	client.mu.Lock()
+	client.iceState = ICEStateFailed
+	client.mu.Unlock()
+
+	// Connect should return error for failed state
+	result := client.Connect(true)
+
+	var errResult map[string]string
+	if err := json.Unmarshal([]byte(result), &errResult); err != nil {
+		t.Fatalf("failed to parse error JSON: %v", err)
+	}
+
+	if errResult["error"] == "" {
+		t.Error("expected error when connecting with failed ICE state")
+	}
+
+	// Verify error message mentions the state
+	if !strings.Contains(errResult["error"], "failed") {
+		t.Errorf("error message should mention failed state: %s", errResult["error"])
+	}
+}
+
+func TestConnect_BlockedInClosedState(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering first
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Manually set ICE state to closed
+	client.mu.Lock()
+	client.iceState = ICEStateClosed
+	client.mu.Unlock()
+
+	// Connect should return error for closed state
+	result := client.Connect(true)
+
+	var errResult map[string]string
+	if err := json.Unmarshal([]byte(result), &errResult); err != nil {
+		t.Fatalf("failed to parse error JSON: %v", err)
+	}
+
+	if errResult["error"] == "" {
+		t.Error("expected error when connecting with closed ICE state")
+	}
+
+	// Verify error message mentions the state
+	if !strings.Contains(errResult["error"], "closed") {
+		t.Errorf("error message should mention closed state: %s", errResult["error"])
+	}
+}
+
+func TestConnect_AllowedInDisconnectedState(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering first
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Manually set ICE state to disconnected (temporary state, should allow reconnect)
+	client.mu.Lock()
+	client.iceState = ICEStateDisconnected
+	client.mu.Unlock()
+
+	// Connect should NOT return the "not usable" error for disconnected state
+	// (it may fail for other reasons like no remote credentials, but not due to state)
+	result := client.Connect(true)
+
+	var errResult map[string]string
+	if err := json.Unmarshal([]byte(result), &errResult); err != nil {
+		t.Fatalf("failed to parse error JSON: %v", err)
+	}
+
+	// Should not contain "not usable" error (may have other errors)
+	if strings.Contains(errResult["error"], "not usable") {
+		t.Error("disconnected state should not trigger 'not usable' error")
+	}
+}
+
+func TestConnect_StateErrorMessageFormat(t *testing.T) {
+	client, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Start gathering first
+	if errStr := client.StartGathering(); errStr != "" {
+		t.Skip("could not start gathering, skipping test")
+	}
+
+	// Manually set ICE state to failed
+	client.mu.Lock()
+	client.iceState = ICEStateFailed
+	client.mu.Unlock()
+
+	result := client.Connect(true)
+
+	var errResult map[string]string
+	if err := json.Unmarshal([]byte(result), &errResult); err != nil {
+		t.Fatalf("failed to parse error JSON: %v", err)
+	}
+
+	// Error message should:
+	// 1. Mention the agent is not usable
+	// 2. Include the current state
+	// 3. Suggest calling StartGathering()
+	errorMsg := errResult["error"]
+	if !strings.Contains(errorMsg, "not usable") {
+		t.Errorf("error should mention 'not usable': %s", errorMsg)
+	}
+	if !strings.Contains(errorMsg, "StartGathering") {
+		t.Errorf("error should suggest StartGathering(): %s", errorMsg)
+	}
 }
 
 // =============================================================================
