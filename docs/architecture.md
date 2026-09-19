@@ -75,7 +75,11 @@ control-plane one; `ghost/direct` produces the same events locally.
    `relay` > `exit` > `node`, with ties going to the smaller peer id) is the
    ICE controlling agent and sends the offer. Both sides trickle candidates
    through the server. When ICE connects, the connection is registered in the
-   `MultiBind` and the WireGuard peer is configured. The member then emits
+   `MultiBind` and the WireGuard peer is configured. Only the controlling
+   side starts the WireGuard handshake (its persistent keepalive fires when
+   the peer is added); the controlled side only responds, since crossing
+   initiations from both ends cancel each other out until WireGuard's 5s
+   retry. Once the first handshake completes, the member emits
    `EventPeerConnected`.
 5. **Traffic.** `DialContext` and `Listen` run on the netstack. `Listen`
    applies the netmap's packet filter: a connection from a source the ACLs
