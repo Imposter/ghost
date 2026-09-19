@@ -201,6 +201,10 @@ type PeerInfo struct {
 	Address string   `json:"address"`
 	Roles   []Role   `json:"roles"`
 	Tags    []string `json:"tags,omitempty"`
+	// Labels are the peer's free-form key/value labels from the control
+	// plane (for example geo or ASN labels a hub selects exits by). Absent
+	// when the peer has none.
+	Labels map[string]string `json:"labels,omitempty"`
 	// Endpoints are the peer's last known public endpoints (host:port or
 	// host), for diagnostics and future direct paths.
 	Endpoints []string `json:"endpoints,omitempty"`

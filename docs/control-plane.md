@@ -40,7 +40,7 @@ revision.
 | `address`    | A `/32` from the pool, assigned on first join and kept across sessions. A move releases it. |
 | `roles`      | Any of `hub`, `node`, `exit`, `relay`, assigned by the control plane, never self-declared. The default is `node`. |
 | `tags`       | `tag:…` names the network's policy defines. |
-| `labels`     | Free-form key/value pairs (at most 32). |
+| `labels`     | Free-form key/value pairs (at most 32). They are sent in netmaps, so a hub can pick peers by them. |
 | `status`     | `active`, `expired` or `revoked`. |
 | `endpoints`  | The candidate addresses the peer last reported. |
 | `last_seen`, `expires_at`, `revoked_at` | Timestamps. |
@@ -175,7 +175,8 @@ for infrastructure such as hubs.
 After `joined`, each peer receives a **netmap snapshot**, then **deltas**
 whenever anything it can see changes:
 
-- a visible peer's online state, key, address, roles, tags or endpoints;
+- a visible peer's online state, key, address, roles, tags, labels or
+  endpoints;
 - its own entry;
 - its exit policy;
 - its packet filter;

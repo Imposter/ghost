@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -372,9 +373,14 @@ func buildNetmap(n store.Network, self store.Peer, peers []store.Peer, online ma
 }
 
 func peerInfo(p store.Peer, online bool) proto.PeerInfo {
+	var labels map[string]string
+	if len(p.Labels) > 0 {
+		labels = maps.Clone(p.Labels)
+	}
 	return proto.PeerInfo{
 		PeerID: p.ID, Name: p.Name, PublicKey: p.PublicKey, Address: p.Address,
-		Roles: slices.Clone(p.Roles), Tags: slices.Clone(p.Tags), Endpoints: slices.Clone(p.Endpoints), Online: online,
+		Roles: slices.Clone(p.Roles), Tags: slices.Clone(p.Tags), Labels: labels,
+		Endpoints: slices.Clone(p.Endpoints), Online: online,
 	}
 }
 

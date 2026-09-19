@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -311,6 +312,34 @@ func TestPolicyPush(t *testing.T) {
 	h.ctl("PUT", "/control/networks/testnet/exit-policies/bad", map[string]any{
 		"target": []string{"*"}, "allow": []string{"*:443"},
 	}, nil, http.StatusBadRequest)
+}
+
+// TestNetmapCarriesLabels: a peer's labels reach the peers that see it, and
+// a label change is pushed as a delta.
+func TestNetmapCarriesLabels(t *testing.T) {
+	h := newHarness(t, nil)
+	var exitC control.Credentials
+	h.ctl("POST", "/control/networks/testnet/peers", map[string]any{
+		"name": "exit", "roles": exitRoles, "labels": map[string]string{"geo": "ca-on", "asn": "577"},
+	}, &exitC, http.StatusCreated)
+	hub := h.joined(h.peer("testnet", "hub", hubRoles))
+	exit := h.joined(exitC)
+	if !maps.Equal(exit.netmap.Self.Labels, map[string]string{"geo": "ca-on", "asn": "577"}) {
+		t.Fatalf("self labels: %+v", exit.netmap.Self.Labels)
+	}
+	hub.waitNetmap("labelled exit", func(n proto.Netmap) bool {
+		p, ok := netmapPeer(n, exitC.PeerID)
+		return ok && p.Labels["geo"] == "ca-on" && p.Labels["asn"] == "577"
+	})
+	if p, _ := netmapPeer(*exit.netmap, hub.id); p.Labels != nil {
+		t.Fatalf("an unlabelled peer carries labels: %+v", p.Labels)
+	}
+
+	h.ctl("PATCH", "/control/peers/"+exitC.PeerID, map[string]any{"labels": map[string]string{"geo": "us-ny"}}, nil, http.StatusOK)
+	hub.waitNetmap("relabelled exit", func(n proto.Netmap) bool {
+		p, ok := netmapPeer(n, exitC.PeerID)
+		return ok && maps.Equal(p.Labels, map[string]string{"geo": "us-ny"})
+	})
 }
 
 func TestRevokeDisconnects(t *testing.T) {

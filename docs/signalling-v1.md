@@ -102,7 +102,8 @@ A newer session for the same peer replaces the older one, which is closed.
   "self":  { "peer_id": "peer_a", "public_key": "…", "address": "100.64.0.5/32",
              "roles": ["exit", "node"], "tags": ["tag:exit"], "endpoints": [], "online": true },
   "peers": [ { "peer_id": "peer_h", "name": "hub-1", "public_key": "…", "address": "100.64.0.1/32",
-               "roles": ["hub"], "tags": [], "endpoints": ["203.0.113.7:51820"], "online": true } ],
+               "roles": ["hub"], "tags": [], "labels": { "geo": "ca-on" },
+               "endpoints": ["203.0.113.7:51820"], "online": true } ],
   "policy": { "network": "pool", "allow": ["api.example.com:443"], "daily_bytes": 0,
               "bytes_per_second": 0, "paused": false, "labels": {}, "revision": 7 },
   "filter": { "rules": [ { "src": ["100.64.0.1/32"], "ports": [1080, 9464] } ] }
@@ -115,6 +116,10 @@ A newer session for the same peer replaces the older one, which is closed.
   and carries its online state.
   - Nothing about other peers is sent: no ids, keys or counts. Under
     `hub-only`, a peer without the hub role sees only hubs.
+- **`labels`**, on `self` and on each peer, are the peer's control-plane
+  labels (see [control-plane.md](control-plane.md#model)), for example the
+  geo or ASN labels a hub picks exits by. The field is absent when a peer has
+  none. Labels are informational: the ACLs and isolation never read them.
 - **`policy`** is this peer's exit policy. An empty `allow` denies
   everything. `revision` is the network's policy revision.
 - **`filter`** is this peer's inbound packet filter. Traffic from a source
@@ -136,7 +141,7 @@ A newer session for the same peer replaces the older one, which is closed.
 - `seq` increases by one per netmap or delta in the session.
   `proto.Netmap.Apply` implements the merge.
 - The server sends a delta when a visible peer comes online, goes offline, or
-  changes key, roles, tags, address or endpoints. It also sends one when a
+  changes key, roles, tags, labels, address or endpoints. It also sends one when a
   peer becomes visible or invisible (enrolment, revocation, expiry, deletion,
   move, ACL or isolation change), and when this peer's own entry, exit policy
   or filter changes.
