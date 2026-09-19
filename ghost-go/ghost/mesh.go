@@ -74,16 +74,16 @@ type Event struct {
 // healthInterval is how often a member reports tunnel health.
 const healthInterval = 30 * time.Second
 
-// mesh is the shared machinery behind Node and Hub: a signalling client, one
+// mesh is the shared machinery behind Node and Hub: a Signaller, one
 // netstack-backed WireGuard tunnel, a MultiBind, and one ICE agent per peer.
-// Which peers it connects to follows the netmap the control plane sends.
+// Which peers it connects to follows the netmap its Signaller sends.
 type mesh struct {
 	cfg       Config
 	keys      *Keys
 	log       *slog.Logger
 	wantRoles []proto.Role // roles the constructor expects this peer to hold
 
-	sig  *signal.Client
+	sig  Signaller
 	bind *ice.MultiBind
 	wg   *wireguard.Tunnel
 	net  *wireguard.Net
@@ -221,18 +221,21 @@ func (m *mesh) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.mu.Unlock()
 
-	sigCfg := signal.Config{
-		URL:       m.cfg.SignalURL,
-		Dialer:    m.cfg.SignalDialer,
-		PeerToken: m.cfg.PeerToken,
-		PeerID:    m.cfg.PeerID,
-		PublicKey: m.keys.PublicKey(),
-		Roles:     m.wantRoles,
-		Logger:    m.log,
-		Health:    m.healthSummary,
+	sig := m.cfg.Signaller
+	if sig == nil {
+		sig = &controlPlane{cfg: m.cfg}
 	}
-	m.sig = signal.New(sigCfg, signal.Handlers{})
-	m.sig.Start(m.ctx)
+	if err := sig.Start(m.ctx, SignalSelf{
+		PublicKey: m.keys.PublicKey(),
+		Roles:     slices.Clone(m.wantRoles),
+		Health:    m.healthSummary,
+	}); err != nil {
+		m.cancel()
+		return fmt.Errorf("start signaller: %w", err)
+	}
+	m.mu.Lock()
+	m.sig = sig
+	m.mu.Unlock()
 
 	if err := m.registerMetrics(); err != nil {
 		m.log.Warn("ghost: metrics registration failed", "error", err)
@@ -415,16 +418,26 @@ func (m *mesh) reconcile() {
 	self := m.netmap.Self
 	want := make(map[string]proto.PeerInfo, len(m.netmap.Peers))
 	for _, p := range m.netmap.Peers {
-		if p.Online && p.PublicKey != "" && m.linkableLocked(p) {
+		// A peer may be listed without a key when this member's ICE
+		// description must exist before the remote side is known (a
+		// ghost/direct invite). The link then waits for the key, and WireGuard
+		// is configured only once it arrives. The control plane never lists
+		// keyless peers.
+		if p.Online && m.linkableLocked(p) {
 			want[p.PeerID] = p
 		}
 	}
 	var stale []*peerLink
 	for id, l := range m.links {
 		p, ok := want[id]
-		if !ok || p.PublicKey != l.publicKey || l.failed {
+		switch {
+		case !ok || l.failed || (l.publicKey != "" && p.PublicKey != l.publicKey):
 			stale = append(stale, l)
 			delete(m.links, id)
+		case l.publicKey == "":
+			// A pending link learns its peer's key and address once the
+			// remote side answers.
+			l.publicKey, l.address = p.PublicKey, p.Address
 		}
 	}
 	var connect []proto.PeerInfo
@@ -442,7 +455,12 @@ func (m *mesh) reconcile() {
 		}
 	}
 	for _, p := range connect {
-		m.connectToPeer(p, proto.Controlling(self.PeerID, self.Roles, p.PeerID, p.Roles))
+		plan, err := m.sig.Link(self, p)
+		if err != nil {
+			m.emit(Event{Kind: EventError, PeerID: p.PeerID, Err: fmt.Errorf("link to %s: %w", p.PeerID, err)})
+			continue
+		}
+		m.connectToPeer(p, plan)
 	}
 	if len(stale) > 0 {
 		m.reportHealth()
@@ -469,10 +487,12 @@ func (m *mesh) netmapPeerLocked(id string) (proto.PeerInfo, bool) {
 	return proto.PeerInfo{}, false
 }
 
-// connectToPeer creates (idempotently) a link to peer and drives ICE. When
+// connectToPeer creates (idempotently) a link to peer. With plan.Conn it runs
+// WireGuard over that connection directly; otherwise it drives ICE. When
 // controlling, it sends an Offer; otherwise it waits for one but starts
 // gathering immediately so candidates can trickle.
-func (m *mesh) connectToPeer(peer proto.PeerInfo, controlling bool) {
+func (m *mesh) connectToPeer(peer proto.PeerInfo, plan LinkPlan) {
+	controlling := plan.Controlling
 	m.mu.Lock()
 	if m.closed || m.wg == nil {
 		m.mu.Unlock()
@@ -491,6 +511,13 @@ func (m *mesh) connectToPeer(peer proto.PeerInfo, controlling bool) {
 		controlling: controlling,
 	}
 	m.links[peer.PeerID] = l
+	if plan.Conn != nil {
+		l.conn = plan.Conn
+		l.candType = "static"
+		m.mu.Unlock()
+		m.wireUpPeer(l)
+		return
+	}
 	m.mu.Unlock()
 
 	agent, err := ice.NewAgent(m.iceConfig(), m.log)
@@ -505,7 +532,7 @@ func (m *mesh) connectToPeer(peer proto.PeerInfo, controlling bool) {
 
 	if controlling {
 		ufrag, pwd := agent.LocalCredentials()
-		_ = m.sig.SendOffer(m.ctx, proto.Signal{Network: m.network, To: peer.PeerID, Ufrag: ufrag, Pwd: pwd})
+		_ = m.sig.Send(m.ctx, proto.TypeOffer, proto.Signal{Network: m.network, To: peer.PeerID, Ufrag: ufrag, Pwd: pwd})
 	}
 }
 
@@ -516,12 +543,14 @@ func (m *mesh) gather(l *peerLink) {
 		return
 	}
 	for cand := range ch {
-		_ = m.sig.SendCandidate(m.ctx, proto.Signal{
+		_ = m.sig.Send(m.ctx, proto.TypeCandidate, proto.Signal{
 			Network:   m.network,
 			To:        l.peerID,
 			Candidate: candidateToProto(cand),
 		})
 	}
+	// End of candidates.
+	_ = m.sig.Send(m.ctx, proto.TypeCandidate, proto.Signal{Network: m.network, To: l.peerID})
 }
 
 func (m *mesh) handleSignal(t proto.Type, s proto.Signal) {
@@ -546,7 +575,10 @@ func (m *mesh) handleSignal(t proto.Type, s proto.Signal) {
 				m.refuseLink(p.PeerID)
 				return
 			}
-			m.connectToPeer(p, false)
+			if p.PublicKey == "" {
+				return
+			}
+			m.connectToPeer(p, LinkPlan{})
 			m.mu.Lock()
 			l = m.links[s.From]
 			m.mu.Unlock()
@@ -557,7 +589,7 @@ func (m *mesh) handleSignal(t proto.Type, s proto.Signal) {
 		_ = l.agent.SetRemoteCredentials(s.Ufrag, s.Pwd)
 		l.remoteSet = true
 		uf, pw := l.agent.LocalCredentials()
-		_ = m.sig.SendAnswer(m.ctx, proto.Signal{Network: m.network, To: s.From, Ufrag: uf, Pwd: pw})
+		_ = m.sig.Send(m.ctx, proto.TypeAnswer, proto.Signal{Network: m.network, To: s.From, Ufrag: uf, Pwd: pw})
 		m.startConnect(l)
 	case proto.TypeAnswer:
 		if l == nil || l.agent == nil {
@@ -622,6 +654,11 @@ func (m *mesh) wireUpPeer(l *peerLink) {
 		m.refuseLink(l.peerID)
 		return
 	}
+	if l.publicKey == "" {
+		m.mu.Unlock()
+		m.emit(Event{Kind: EventError, PeerID: l.peerID, Err: fmt.Errorf("peer %s has no public key yet", l.peerID)})
+		return
+	}
 	m.bind.SetConn(l.epKey, l.conn)
 
 	pubKey, err := wireguard.DecodeKey(l.publicKey)
@@ -642,8 +679,9 @@ func (m *mesh) wireUpPeer(l *peerLink) {
 		return
 	}
 	l.added = true
+	addr, candType := l.address, l.candType
 	m.mu.Unlock()
-	m.emit(Event{Kind: EventPeerConnected, PeerID: l.peerID, Address: l.address, CandidateType: l.candType})
+	m.emit(Event{Kind: EventPeerConnected, PeerID: l.peerID, Address: addr, CandidateType: candType})
 	m.reportHealth()
 }
 
@@ -695,7 +733,7 @@ func (m *mesh) reportHealth() {
 	if m.sig == nil || m.sig.State() != signal.StateConnected {
 		return
 	}
-	_ = m.sig.SendHeartbeat(m.ctx)
+	_ = m.sig.ReportHealth(m.ctx)
 }
 
 // healthSummary builds the compact health summary carried by heartbeats: one
@@ -755,9 +793,9 @@ func (m *mesh) iceConfig() *ice.ICEConfig {
 	for _, t := range m.cfg.TURNServers {
 		c.TURNServers = append(c.TURNServers, ice.TURNServer{URLs: t.URLs, Username: t.Username, Password: t.Password})
 	}
-	// Merge TURN servers advertised by the signalling Welcome.
+	// Merge the STUN/TURN servers the signaller advertises.
 	if m.sig != nil {
-		for _, s := range m.sig.Welcome().ICEServers {
+		for _, s := range m.sig.ICEServers() {
 			if s.Username != "" {
 				c.TURNServers = append(c.TURNServers, ice.TURNServer{URLs: s.URLs, Username: s.Username, Password: s.Credential})
 			} else {

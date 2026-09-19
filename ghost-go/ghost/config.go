@@ -38,8 +38,14 @@ type TURNServer struct {
 }
 
 // Config configures a Node or Hub. The zero value is not usable; set at least
-// SignalURL and PeerToken (or SignalDialer for in-memory tests), and Network.
+// SignalURL and PeerToken (or SignalDialer for in-memory tests), and Network,
+// or set Signaller to run without the control plane.
 type Config struct {
+	// Signaller, when set, replaces the control-plane signalling client
+	// (SignalURL, SignalDialer, PeerToken and PeerID are then ignored). See
+	// package ghost/direct for peer-to-peer use with no server.
+	Signaller Signaller
+
 	// SignalURL is the signalling server WebSocket URL.
 	SignalURL string
 	// SignalDialer, if set, overrides the WebSocket dialer. Tests set this to

@@ -1,6 +1,7 @@
 // Package ghost is the public API of the ghost library: a Node or Hub joins a
-// network through the ghost-server control plane, links to the peers its
-// netmap lists over ICE, and runs WireGuard end to end on a userspace
+// network through a Signaller (by default the ghost-server control plane; see
+// package ghost/direct for peer to peer with no server), links to the peers
+// its netmap lists over ICE, and runs WireGuard end to end on a userspace
 // netstack. DialContext and Listen work on that netstack; no OS TUN device or
 // privileges are needed.
 package ghost
