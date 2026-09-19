@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"ghost-go/mobile"
+	"github.com/Imposter/ghost/ghost-go/mobile"
 )
 
 // TestKeyGeneration verifies that both peers can generate valid WireGuard keys.

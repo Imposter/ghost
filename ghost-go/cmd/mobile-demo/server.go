@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"ghost-go/mobile"
+	"github.com/Imposter/ghost/ghost-go/mobile"
 )
 
 // HTTPTestServer provides HTTP endpoints for testing tunnel connectivity.

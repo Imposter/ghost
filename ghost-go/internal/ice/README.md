@@ -198,7 +198,7 @@ type ICEEndpoint struct {
 import (
     "context"
     "time"
-    "ghost-go/internal/ice"
+    "github.com/Imposter/ghost/ghost-go/internal/ice"
 )
 
 // Configure
@@ -299,7 +299,7 @@ go test ./internal/ice -run "TestICEConnection_LocalOnly" -v
 
 For testing, use `testutil.MockSignalingChannel`:
 ```go
-import "ghost-go/internal/testutil"
+import "github.com/Imposter/ghost/ghost-go/internal/testutil"
 
 signaling := testutil.NewMockSignalingChannel(logger)
 

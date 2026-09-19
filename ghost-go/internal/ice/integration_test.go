@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"ghost-go/internal/ice"
-	"ghost-go/internal/testutil"
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"github.com/Imposter/ghost/ghost-go/internal/testutil"
 )
 
 // TestICEConnection_TwoPeers tests a complete ICE connection between two peers.

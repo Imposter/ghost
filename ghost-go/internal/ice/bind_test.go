@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"ghost-go/internal/testutil"
+	"github.com/Imposter/ghost/ghost-go/internal/testutil"
 )
 
 // =============================================================================

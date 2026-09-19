@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"ghost-go/internal/ice"
-	"ghost-go/mobile"
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"github.com/Imposter/ghost/ghost-go/mobile"
 )
 
 // TestHarness runs two GhostClients in the same process for automated testing.

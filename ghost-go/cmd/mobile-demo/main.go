@@ -35,9 +35,9 @@ import (
 	"syscall"
 	"time"
 
-	"ghost-go/internal/ice"
-	"ghost-go/internal/wireguard"
-	"ghost-go/mobile"
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
+	"github.com/Imposter/ghost/ghost-go/mobile"
 )
 
 const banner = `

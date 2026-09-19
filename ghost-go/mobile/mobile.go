@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"ghost-go/internal/ice"
-	"ghost-go/internal/wireguard"
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
 )
 
 // GhostClient is the main entry point for mobile applications.

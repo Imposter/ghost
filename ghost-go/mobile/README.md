@@ -73,7 +73,7 @@ defer client.Close()  // ALWAYS do this
 package main
 
 import (
-    "ghost-go/mobile"
+    "github.com/Imposter/ghost/ghost-go/mobile"
 )
 
 func main() {

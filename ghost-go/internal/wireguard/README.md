@@ -170,8 +170,8 @@ func ValidatePublicKey(key []byte) error
 
 ```go
 import (
-    "ghost-go/internal/wireguard"
-    "ghost-go/internal/ice"
+    "github.com/Imposter/ghost/ghost-go/internal/wireguard"
+    "github.com/Imposter/ghost/ghost-go/internal/ice"
 )
 
 // 1. Generate keys

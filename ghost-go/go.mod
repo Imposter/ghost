@@ -1,4 +1,4 @@
-module ghost-go
+module github.com/Imposter/ghost/ghost-go
 
 go 1.25
 

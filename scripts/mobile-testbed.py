@@ -138,7 +138,7 @@ package main
 import (
     "encoding/json"
     "fmt"
-    "ghost-go/internal/wireguard"
+    "github.com/Imposter/ghost/ghost-go/internal/wireguard"
 )
 
 func main() {
