@@ -36,7 +36,7 @@ type newPeer struct {
 	ephemeral bool
 	authKeyID string
 	ttl       time.Duration
-	via       string // "auth_key" or "interactive", for the audit log
+	via       string // "auth_key", "interactive" or "control", for the audit log
 }
 
 // authorizeEnroll consults the authorizer; the decision's tags and labels are
@@ -88,6 +88,48 @@ func (s *Service) createPeer(ctx context.Context, np newPeer) (Credentials, erro
 		PeerID: p.ID, PeerToken: token, Network: p.Network, Roles: p.Roles, Tags: p.Tags,
 		Ephemeral: p.Ephemeral, ExpiresAt: p.ExpiresAt,
 	}, nil
+}
+
+// PeerInput creates a peer directly through the control API (no pre-auth key
+// or interactive approval).
+type PeerInput struct {
+	Name      string            `json:"name"`
+	PublicKey string            `json:"public_key"`
+	Roles     []proto.Role      `json:"roles"`
+	Tags      []string          `json:"tags"`
+	Labels    map[string]string `json:"labels"`
+	Ephemeral bool              `json:"ephemeral"`
+	// TTL, when positive, expires the peer after this long.
+	TTL time.Duration `json:"-"`
+}
+
+// CreatePeer creates a peer in network and returns its credentials. The
+// authorizer is consulted as for any enrolment.
+func (s *Service) CreatePeer(ctx context.Context, network string, in PeerInput) (Credentials, error) {
+	roles, err := normalizeRoles(in.Roles)
+	if err != nil {
+		return Credentials{}, err
+	}
+	if err := validLabels(in.Labels); err != nil {
+		return Credentials{}, err
+	}
+	if in.TTL < 0 {
+		return Credentials{}, invalidf("ttl must not be negative")
+	}
+	if _, err := s.Network(ctx, network); err != nil {
+		return Credentials{}, err
+	}
+	if err := s.checkTags(ctx, network, in.Tags); err != nil {
+		return Credentials{}, err
+	}
+	np := newPeer{
+		network: network, name: in.Name, publicKey: in.PublicKey, roles: roles, tags: in.Tags,
+		labels: in.Labels, ephemeral: in.Ephemeral, ttl: in.TTL, via: "control",
+	}
+	if err := s.authorizeEnroll(ctx, &np); err != nil {
+		return Credentials{}, err
+	}
+	return s.createPeer(ctx, np)
 }
 
 // ---- pre-auth keys ----
@@ -280,7 +322,7 @@ func (s *Service) StartEnrollment(ctx context.Context, in StartEnrollmentInput) 
 			return StartedEnrollment{}, err
 		}
 		s.Audit(ctx, in.Network, "enrollment.started", "", map[string]any{"name": in.Name})
-		s.bus.Publish(events.Event{Type: "enrollment.pending", Network: in.Network, Data: map[string]any{
+		s.bus.Publish(events.Event{Type: events.EnrollmentPending, Network: in.Network, Data: map[string]any{
 			"name": in.Name, "labels": in.Labels, "expires_at": e.ExpiresAt,
 		}})
 		return StartedEnrollment{Code: code, PollToken: poll, ExpiresAt: e.ExpiresAt,

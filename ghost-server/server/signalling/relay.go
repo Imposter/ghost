@@ -597,19 +597,19 @@ func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig 
 	r.mu.RLock()
 	peer, joined, nm := s.peer, s.joined, s.netmap
 	target := r.sessions[sig.To]
+	var targetNM *proto.Netmap
+	if target != nil {
+		targetNM = target.netmap
+	}
 	r.mu.RUnlock()
 
 	if !joined || nm == nil {
 		s.sendError(proto.ErrCodeBadRequest, "join a network before signalling")
 		return
 	}
-	allowed := false
-	for _, p := range nm.Peers {
-		if p.PeerID == sig.To {
-			allowed = true
-			break
-		}
-	}
+	// The pair must be in each other's netmap: the netmaps are where the
+	// isolation mode and the ACLs are applied.
+	allowed := inNetmap(nm, sig.To) && (targetNM == nil || inNetmap(targetNM, peer.ID))
 	if !allowed {
 		if s.firstDenial(sig.To) {
 			r.svc.Audit(ctx, peer.Network, "signal.denied", peer.ID, map[string]any{"to": sig.To, "type": t})
@@ -635,6 +635,15 @@ func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig 
 	sig.From = peer.ID
 	sig.Network = peer.Network
 	target.send(t, sig)
+}
+
+func inNetmap(nm *proto.Netmap, peerID string) bool {
+	for _, p := range nm.Peers {
+		if p.PeerID == peerID {
+			return true
+		}
+	}
+	return false
 }
 
 // handleHeartbeat answers a heartbeat and records its health summary.

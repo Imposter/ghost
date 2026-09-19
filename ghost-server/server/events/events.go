@@ -26,7 +26,9 @@ const (
 	NetmapUpdated  = "netmap.updated"
 	PolicyUpdated  = "policy.updated"
 	NetworkUpdated = "network.updated"
-	Audit          = "audit"
+	// EnrollmentPending: an interactive enrolment awaits approval.
+	EnrollmentPending = "enrollment.pending"
+	Audit             = "audit"
 )
 
 // Event is one published event.

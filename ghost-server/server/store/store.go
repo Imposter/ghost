@@ -120,7 +120,8 @@ const (
 	EnrollmentExpired  EnrollmentStatus = "expired"
 )
 
-// Enrollment is an interactive (device-code style) enrolment request. The
+// Enrollment is an interactive enrolment request: the enrolling peer shows a
+// short code to a person, who approves it through the control API. The
 // user-facing code and the peer's poll token are stored only as hashes.
 type Enrollment struct {
 	CodeHash  string

@@ -76,6 +76,7 @@ func (a *ControlAPI) Register(mux *http.ServeMux) {
 	h("POST /control/enrollments/{code}/approve", control.ScopeKeysWrite, a.approveEnrollment)
 	h("POST /control/enrollments/{code}/deny", control.ScopeKeysWrite, a.denyEnrollment)
 	// Peers.
+	h("POST /control/networks/{net}/peers", control.ScopePeersWrite, a.createPeer)
 	h("GET /control/peers", control.ScopePeersRead, a.listPeers)
 	h("GET /control/peers/{id}", control.ScopePeersRead, a.getPeer)
 	h("PATCH /control/peers/{id}", control.ScopePeersWrite, a.patchPeer)
@@ -614,6 +615,28 @@ func (a *ControlAPI) listPeers(w http.ResponseWriter, r *http.Request, p control
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": out})
+}
+
+func (a *ControlAPI) createPeer(w http.ResponseWriter, r *http.Request, p control.Principal) {
+	name, ok := a.network(w, r, p)
+	if !ok {
+		return
+	}
+	var in struct {
+		control.PeerInput
+		TTLSeconds int64 `json:"ttl_seconds"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	pi := in.PeerInput
+	pi.TTL = time.Duration(in.TTLSeconds) * time.Second
+	creds, err := a.svc.CreatePeer(r.Context(), name, pi)
+	if err != nil {
+		writeServiceError(w, a.log, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, creds)
 }
 
 func (a *ControlAPI) getPeer(w http.ResponseWriter, r *http.Request, p control.Principal) {
