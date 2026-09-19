@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -277,6 +278,19 @@ func newEnrollmentCode() string {
 	return b.String()
 }
 
+// interactiveAllowed returns ErrNotFound for an unknown network and
+// ErrInteractiveEnrollmentDisabled when the network's switch is off.
+func (s *Service) interactiveAllowed(ctx context.Context, network string) error {
+	n, err := s.Network(ctx, network)
+	if err != nil {
+		return err
+	}
+	if !n.InteractiveEnrollment {
+		return fmt.Errorf("%w for network %s", ErrInteractiveEnrollmentDisabled, network)
+	}
+	return nil
+}
+
 // StartEnrollmentInput begins an interactive enrolment.
 type StartEnrollmentInput struct {
 	Network   string            `json:"network"`
@@ -302,7 +316,7 @@ func (s *Service) StartEnrollment(ctx context.Context, in StartEnrollmentInput) 
 	if in.PublicKey != "" && !ValidWireGuardKey(in.PublicKey) {
 		return StartedEnrollment{}, invalidf("public_key must be a base64 32-byte key")
 	}
-	if _, err := s.Network(ctx, in.Network); err != nil {
+	if err := s.interactiveAllowed(ctx, in.Network); err != nil {
 		return StartedEnrollment{}, err
 	}
 	now := s.now().UTC()
@@ -385,7 +399,8 @@ type ApproveInput struct {
 }
 
 // ApproveEnrollment approves a pending enrolment. The peer is created when the
-// enrolling side next polls.
+// enrolling side next polls. It is refused while the network's interactive
+// enrolment is disabled.
 func (s *Service) ApproveEnrollment(ctx context.Context, code string, in ApproveInput) (EnrollmentView, error) {
 	roles, err := normalizeRoles(in.Roles)
 	if err != nil {
@@ -394,10 +409,20 @@ func (s *Service) ApproveEnrollment(ctx context.Context, code string, in Approve
 	if err := validLabels(in.Labels); err != nil {
 		return EnrollmentView{}, err
 	}
+	// The network checks read the store, so they run before decide's
+	// transaction (SQLite has a single connection). An enrolment never changes
+	// network, and PollEnrollment re-checks the switch before minting a peer.
+	pending, err := s.st.GetEnrollmentByCode(ctx, hashCode(code))
+	if err != nil {
+		return EnrollmentView{}, mapStoreErr(err)
+	}
+	if err := s.interactiveAllowed(ctx, pending.Network); err != nil {
+		return EnrollmentView{}, err
+	}
+	if err := s.checkTags(ctx, pending.Network, in.Tags); err != nil {
+		return EnrollmentView{}, err
+	}
 	e, err := s.decide(ctx, code, func(e *store.Enrollment) error {
-		if err := s.checkTags(ctx, e.Network, in.Tags); err != nil {
-			return err
-		}
 		e.Status, e.Roles, e.Tags = store.EnrollmentApproved, roles, unionTags(in.Tags)
 		e.Labels = mergeLabels(e.Labels, in.Labels)
 		if in.Name != "" {
@@ -453,7 +478,9 @@ type PollResult struct {
 }
 
 // PollEnrollment reports an enrolment's status. The first poll after approval
-// consults the authorizer, creates the peer and returns its credentials.
+// consults the authorizer, creates the peer and returns its credentials. An
+// approved enrolment is not claimed while the network's interactive enrolment
+// is disabled; it stays approved until the switch is back on or it is swept.
 func (s *Service) PollEnrollment(ctx context.Context, pollToken string) (PollResult, error) {
 	e, err := s.st.GetEnrollmentByPoll(ctx, HashSecret(pollToken))
 	if err != nil {
@@ -462,6 +489,9 @@ func (s *Service) PollEnrollment(ctx context.Context, pollToken string) (PollRes
 	view := s.enrollmentView(e)
 	if view.Status != store.EnrollmentApproved {
 		return PollResult{Status: view.Status, Reason: view.Reason}, nil
+	}
+	if err := s.interactiveAllowed(ctx, e.Network); err != nil {
+		return PollResult{}, err
 	}
 	// Claim atomically so two concurrent polls cannot both mint a peer.
 	claimed, err := s.st.UpdateEnrollment(ctx, e.CodeHash, func(e *store.Enrollment) error {

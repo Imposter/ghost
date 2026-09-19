@@ -3,6 +3,37 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## Per-network interactive enrolment switch
+
+Networks gain `interactive_enrollment` (default `true`). Existing networks
+are migrated to `true` (migration `0002_network_interactive_enrollment.sql`,
+shared by SQLite and PostgreSQL), so behaviour is unchanged until it is
+turned off. See
+[control-plane.md](control-plane.md#turning-interactive-enrolment-off).
+
+**HTTP API**
+
+- `POST /control/networks` accepts `interactive_enrollment`.
+- `PATCH /control/networks/{net}` takes `{isolation?, interactive_enrollment?}`.
+  Both fields are optional, but at least one is required: an empty body is
+  now `400` (it used to fail isolation validation, also `400`). Changing only
+  `interactive_enrollment` does not bump the policy revision.
+- `NetworkView` has `interactive_enrollment`.
+- While the switch is off, `POST /v1/enroll/interactive`,
+  `POST /control/enrollments/{code}/approve` and claiming an approved
+  enrolment through `POST /v1/enroll/poll` answer `403`.
+- New audit action `network.interactive_enrollment`. `network.updated`
+  events carry `interactive_enrollment` when it changes.
+
+**ghost-server (Go)**
+
+| Old | New |
+| --- | --- |
+| `control.Service.SetIsolation(ctx, net, iso)` | `control.Service.UpdateNetwork(ctx, net, control.NetworkPatch{Isolation: &iso})` |
+| `store.Store.SetNetworkIsolation(ctx, net, iso)` | `store.Store.UpdateNetwork(ctx, net, store.NetworkUpdate{Isolation: &iso})` |
+| — | `store.Network.InteractiveEnrollment`, `control.NetworkInput.InteractiveEnrollment` (`*bool`) |
+| — | `control.ErrForbidden` (`403`), `control.ErrInteractiveEnrollmentDisabled` |
+
 ## Peer to peer without the control plane
 
 Additions only; existing code keeps working unchanged.
