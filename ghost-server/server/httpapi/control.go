@@ -152,12 +152,13 @@ func (a *ControlAPI) peer(w http.ResponseWriter, r *http.Request, p control.Prin
 
 // NetworkView is the control API form of a network.
 type NetworkView struct {
-	Name           string           `json:"name"`
-	Pool           string           `json:"pool"`
-	Isolation      policy.Isolation `json:"isolation"`
-	PolicyRevision int64            `json:"policy_revision"`
-	CreatedAt      time.Time        `json:"created_at"`
-	Online         int              `json:"online"`
+	Name                  string           `json:"name"`
+	Pool                  string           `json:"pool"`
+	Isolation             policy.Isolation `json:"isolation"`
+	InteractiveEnrollment bool             `json:"interactive_enrollment"`
+	PolicyRevision        int64            `json:"policy_revision"`
+	CreatedAt             time.Time        `json:"created_at"`
+	Online                int              `json:"online"`
 }
 
 func (a *ControlAPI) networkView(n store.Network) NetworkView {
@@ -167,8 +168,8 @@ func (a *ControlAPI) networkView(n store.Network) NetworkView {
 			online++
 		}
 	}
-	return NetworkView{Name: n.Name, Pool: n.Pool, Isolation: n.Isolation, PolicyRevision: n.PolicyRevision,
-		CreatedAt: n.CreatedAt, Online: online}
+	return NetworkView{Name: n.Name, Pool: n.Pool, Isolation: n.Isolation, InteractiveEnrollment: n.InteractiveEnrollment,
+		PolicyRevision: n.PolicyRevision, CreatedAt: n.CreatedAt, Online: online}
 }
 
 // PolicyView is a network's policy document with its revision.
@@ -325,13 +326,11 @@ func (a *ControlAPI) patchNetwork(w http.ResponseWriter, r *http.Request, p cont
 	if !ok {
 		return
 	}
-	var in struct {
-		Isolation policy.Isolation `json:"isolation"`
-	}
-	if !decodeJSON(w, r, &in) {
+	var patch control.NetworkPatch
+	if !decodeJSON(w, r, &patch) {
 		return
 	}
-	n, err := a.svc.SetIsolation(r.Context(), name, in.Isolation)
+	n, err := a.svc.UpdateNetwork(r.Context(), name, patch)
 	if err != nil {
 		writeServiceError(w, a.log, err)
 		return

@@ -37,6 +37,11 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrConflict     = errors.New("conflict")
 	ErrUnauthorized = errors.New("unauthorized")
+	// ErrForbidden refuses an operation the network's settings do not allow.
+	ErrForbidden = errors.New("forbidden")
+	// ErrInteractiveEnrollmentDisabled refines ErrForbidden for a network
+	// whose interactive_enrollment switch is off.
+	ErrInteractiveEnrollmentDisabled = fmt.Errorf("%w: interactive enrolment is disabled", ErrForbidden)
 	// ErrPeerRevoked and ErrPeerExpired refine ErrUnauthorized for peers.
 	ErrPeerRevoked = fmt.Errorf("%w: peer revoked", ErrUnauthorized)
 	ErrPeerExpired = fmt.Errorf("%w: peer credentials expired", ErrUnauthorized)

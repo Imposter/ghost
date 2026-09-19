@@ -26,6 +26,9 @@ type NetworkInput struct {
 	Pool string `json:"pool"`
 	// Isolation defaults to "none".
 	Isolation policy.Isolation `json:"isolation"`
+	// InteractiveEnrollment allows interactive enrolment codes; it defaults to
+	// true. Pre-auth keys work either way.
+	InteractiveEnrollment *bool `json:"interactive_enrollment"`
 }
 
 // CreateNetwork creates a network with the default policy.
@@ -46,14 +49,20 @@ func (s *Service) CreateNetwork(ctx context.Context, in NetworkInput) (store.Net
 	if err != nil {
 		return store.Network{}, invalidf("%v", err)
 	}
+	interactive := true
+	if in.InteractiveEnrollment != nil {
+		interactive = *in.InteractiveEnrollment
+	}
 	n := store.Network{
-		Name: in.Name, Pool: p.String(), Isolation: in.Isolation,
+		Name: in.Name, Pool: p.String(), Isolation: in.Isolation, InteractiveEnrollment: interactive,
 		Policy: policy.Default(), CreatedAt: s.now().UTC(),
 	}
 	if err := s.st.CreateNetwork(ctx, n); err != nil {
 		return store.Network{}, mapStoreErr(err)
 	}
-	s.Audit(ctx, n.Name, "network.created", n.Name, map[string]any{"pool": n.Pool, "isolation": n.Isolation})
+	s.Audit(ctx, n.Name, "network.created", n.Name, map[string]any{
+		"pool": n.Pool, "isolation": n.Isolation, "interactive_enrollment": n.InteractiveEnrollment,
+	})
 	s.bus.Publish(events.Event{Type: events.NetworkUpdated, Network: n.Name, Data: map[string]any{"created": true}})
 	return n, nil
 }
@@ -95,19 +104,38 @@ func (s *Service) DeleteNetwork(ctx context.Context, name string) error {
 	return nil
 }
 
-// SetIsolation changes a network's isolation mode and pushes the resulting
-// netmaps.
-func (s *Service) SetIsolation(ctx context.Context, name string, iso policy.Isolation) (store.Network, error) {
-	if !iso.Valid() {
+// NetworkPatch changes a network's settings; nil fields are left unchanged.
+type NetworkPatch struct {
+	Isolation             *policy.Isolation `json:"isolation"`
+	InteractiveEnrollment *bool             `json:"interactive_enrollment"`
+}
+
+// UpdateNetwork applies a patch to a network. Changing the isolation mode
+// bumps the policy revision and pushes the resulting netmaps.
+func (s *Service) UpdateNetwork(ctx context.Context, name string, patch NetworkPatch) (store.Network, error) {
+	if patch.Isolation == nil && patch.InteractiveEnrollment == nil {
+		return store.Network{}, invalidf("nothing to update: set isolation or interactive_enrollment")
+	}
+	if patch.Isolation != nil && !patch.Isolation.Valid() {
 		return store.Network{}, invalidf("isolation must be %q or %q", policy.IsolationNone, policy.IsolationHubOnly)
 	}
-	n, err := s.st.SetNetworkIsolation(ctx, name, iso)
+	n, err := s.st.UpdateNetwork(ctx, name, store.NetworkUpdate{
+		Isolation: patch.Isolation, InteractiveEnrollment: patch.InteractiveEnrollment,
+	})
 	if err != nil {
 		return n, mapStoreErr(err)
 	}
-	s.Audit(ctx, name, "network.isolation", name, map[string]any{"isolation": iso, "revision": n.PolicyRevision})
-	s.bus.Publish(events.Event{Type: events.NetworkUpdated, Network: name, Data: map[string]any{"isolation": iso}})
-	if l := s.live(); l != nil {
+	data := map[string]any{}
+	if patch.Isolation != nil {
+		data["isolation"] = n.Isolation
+		s.Audit(ctx, name, "network.isolation", name, map[string]any{"isolation": n.Isolation, "revision": n.PolicyRevision})
+	}
+	if patch.InteractiveEnrollment != nil {
+		data["interactive_enrollment"] = n.InteractiveEnrollment
+		s.Audit(ctx, name, "network.interactive_enrollment", name, map[string]any{"enabled": n.InteractiveEnrollment})
+	}
+	s.bus.Publish(events.Event{Type: events.NetworkUpdated, Network: name, Data: data})
+	if l := s.live(); l != nil && patch.Isolation != nil {
 		l.PolicyChanged(ctx, name)
 	}
 	return n, nil

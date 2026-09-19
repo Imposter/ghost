@@ -47,6 +47,8 @@ func writeServiceError(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, control.ErrUnauthorized):
 		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, control.ErrForbidden):
+		writeError(w, http.StatusForbidden, err.Error())
 	default:
 		log.Error("httpapi: internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

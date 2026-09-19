@@ -325,22 +325,23 @@ func fromJSON[T any](s string, dst *T) error {
 
 // ---- networks ----
 
-const networkCols = `name, pool, isolation, policy, policy_revision, created_at`
+const networkCols = `name, pool, isolation, interactive_enrollment, policy, policy_revision, created_at`
 
 func scanNetwork(sc scanner) (Network, error) {
 	var (
-		n       Network
-		iso     string
-		doc     string
-		created int64
+		n                    Network
+		iso                  string
+		interactive, created int64
+		doc                  string
 	)
-	if err := sc.Scan(&n.Name, &n.Pool, &iso, &doc, &n.PolicyRevision, &created); err != nil {
+	if err := sc.Scan(&n.Name, &n.Pool, &iso, &interactive, &doc, &n.PolicyRevision, &created); err != nil {
 		return n, err
 	}
 	if err := fromJSON(doc, &n.Policy); err != nil {
 		return n, fmt.Errorf("store: network %s policy: %w", n.Name, err)
 	}
 	n.Isolation = policy.Isolation(iso)
+	n.InteractiveEnrollment = interactive != 0
 	n.Policy = n.Policy.Normalize()
 	n.CreatedAt = fromMs(created)
 	return n, nil
@@ -350,8 +351,9 @@ func (s *SQL) CreateNetwork(ctx context.Context, n Network) error {
 	if n.Isolation == "" {
 		n.Isolation = policy.IsolationNone
 	}
-	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO networks (`+networkCols+`) VALUES (?, ?, ?, ?, ?, ?)`),
-		n.Name, n.Pool, string(n.Isolation), mustJSON(n.Policy.Normalize()), n.PolicyRevision, ms(n.CreatedAt))
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO networks (`+networkCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		n.Name, n.Pool, string(n.Isolation), b2i(n.InteractiveEnrollment), mustJSON(n.Policy.Normalize()),
+		n.PolicyRevision, ms(n.CreatedAt))
 	return mapWriteErr(err)
 }
 
@@ -402,19 +404,21 @@ func (s *SQL) DeleteNetwork(ctx context.Context, name string) error {
 	})
 }
 
-// updateNetwork reads a network under lock, applies fn, bumps the revision and
-// writes the policy fields back.
-func (s *SQL) updateNetwork(ctx context.Context, name string, fn func(*Network)) (Network, error) {
+// updateNetwork reads a network under lock, applies fn, bumps the policy
+// revision if fn reports a policy change, and writes the settings back.
+func (s *SQL) updateNetwork(ctx context.Context, name string, fn func(*Network) (policyChanged bool)) (Network, error) {
 	var out Network
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		n, err := scanNetwork(tx.QueryRowContext(ctx, s.q(`SELECT `+networkCols+` FROM networks WHERE name = ?`+s.forUpdate()), name))
 		if err != nil {
 			return notFound(err)
 		}
-		fn(&n)
-		n.PolicyRevision++
-		if _, err := tx.ExecContext(ctx, s.q(`UPDATE networks SET isolation = ?, policy = ?, policy_revision = ? WHERE name = ?`),
-			string(n.Isolation), mustJSON(n.Policy.Normalize()), n.PolicyRevision, name); err != nil {
+		if fn(&n) {
+			n.PolicyRevision++
+		}
+		if _, err := tx.ExecContext(ctx, s.q(`UPDATE networks SET isolation = ?, interactive_enrollment = ?, policy = ?,
+			policy_revision = ? WHERE name = ?`),
+			string(n.Isolation), b2i(n.InteractiveEnrollment), mustJSON(n.Policy.Normalize()), n.PolicyRevision, name); err != nil {
 			return err
 		}
 		out = n
@@ -424,11 +428,23 @@ func (s *SQL) updateNetwork(ctx context.Context, name string, fn func(*Network))
 }
 
 func (s *SQL) SetNetworkPolicy(ctx context.Context, name string, doc policy.Document) (Network, error) {
-	return s.updateNetwork(ctx, name, func(n *Network) { n.Policy = doc.Normalize() })
+	return s.updateNetwork(ctx, name, func(n *Network) bool {
+		n.Policy = doc.Normalize()
+		return true
+	})
 }
 
-func (s *SQL) SetNetworkIsolation(ctx context.Context, name string, iso policy.Isolation) (Network, error) {
-	return s.updateNetwork(ctx, name, func(n *Network) { n.Isolation = iso })
+func (s *SQL) UpdateNetwork(ctx context.Context, name string, u NetworkUpdate) (Network, error) {
+	return s.updateNetwork(ctx, name, func(n *Network) bool {
+		if u.InteractiveEnrollment != nil {
+			n.InteractiveEnrollment = *u.InteractiveEnrollment
+		}
+		if u.Isolation != nil {
+			n.Isolation = *u.Isolation
+			return true
+		}
+		return false
+	})
 }
 
 // ---- peers ----

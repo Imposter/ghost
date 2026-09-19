@@ -26,10 +26,20 @@ type Network struct {
 	Name string
 	Pool string
 	// Isolation limits which peers may see each other on top of the ACLs.
-	Isolation      policy.Isolation
-	Policy         policy.Document
-	PolicyRevision int64
-	CreatedAt      time.Time
+	Isolation policy.Isolation
+	// InteractiveEnrollment allows peers to enrol with interactive codes
+	// (POST /v1/enroll/interactive). Pre-auth keys work either way.
+	InteractiveEnrollment bool
+	Policy                policy.Document
+	PolicyRevision        int64
+	CreatedAt             time.Time
+}
+
+// NetworkUpdate changes a network's settings; nil fields are left unchanged.
+type NetworkUpdate struct {
+	// Isolation, when set, also bumps the policy revision.
+	Isolation             *policy.Isolation
+	InteractiveEnrollment *bool
 }
 
 // Peer is an enrolled identity. TokenHash is the SHA-256 of the peer's bearer
@@ -196,9 +206,9 @@ type Store interface {
 	// SetNetworkPolicy stores a policy document, bumps the revision and
 	// returns the updated network.
 	SetNetworkPolicy(ctx context.Context, name string, doc policy.Document) (Network, error)
-	// SetNetworkIsolation changes a network's isolation mode, bumps the
-	// policy revision and returns the updated network.
-	SetNetworkIsolation(ctx context.Context, name string, iso policy.Isolation) (Network, error)
+	// UpdateNetwork applies u atomically and returns the updated network. The
+	// policy revision is bumped when u sets the isolation mode.
+	UpdateNetwork(ctx context.Context, name string, u NetworkUpdate) (Network, error)
 
 	CreatePeer(ctx context.Context, p Peer) error
 	GetPeer(ctx context.Context, id string) (Peer, error)

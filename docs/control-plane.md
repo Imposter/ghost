@@ -25,8 +25,10 @@ ICE, and WireGuard runs end to end.
 ## Model
 
 **Network:** a name (`[a-z0-9][a-z0-9._-]{0,62}`), an address pool (default
-`100.64.0.0/10`), an isolation mode (`none` or `hub-only`), and a policy
-document with a revision.
+`100.64.0.0/10`), an isolation mode (`none` or `hub-only`), an
+`interactive_enrollment` switch (default `true`, see
+[below](#turning-interactive-enrolment-off)), and a policy document with a
+revision.
 
 **Peer:** an enrolled identity in exactly one network.
 
@@ -105,6 +107,31 @@ A peer enrols with the key through `POST /v1/enroll`:
 - are case-insensitive, and dashes and spaces are ignored;
 - expire after `enrollment.code_ttl` (10 min by default);
 - are stored only as hashes, as are poll tokens.
+
+#### Turning interactive enrolment off
+
+Each network has an `interactive_enrollment` switch. It defaults to `true`,
+so a network created without it, one from `networks` in the configuration,
+and every network that existed before the switch was added keep accepting
+codes. Interactive enrolment already needs an operator's approval, so leaving
+it on opens nothing new. Set the switch with `POST /control/networks
+{…, "interactive_enrollment": false}` or `PATCH /control/networks/{net}
+{"interactive_enrollment": false}`. It is not part of the policy, so changing
+it does not bump the policy revision or push netmaps.
+
+While it is off, for that network:
+
+- `POST /v1/enroll/interactive` answers `403` with
+  `{"error": "forbidden: interactive enrolment is disabled for network <net>"}`
+  (an unknown network is still `404`);
+- `POST /control/enrollments/{code}/approve` on a pending code answers the
+  same `403`, and the code stays pending;
+- `POST /v1/enroll/poll` for an enrolment approved before the switch went off
+  answers the same `403` and does not create the peer. The enrolment stays
+  approved, and can be claimed if the switch is turned back on before it
+  expires;
+- pending enrolments can still be listed and denied;
+- pre-auth keys (`POST /v1/enroll`) and direct creation are unaffected.
 
 ### Direct creation
 
@@ -187,7 +214,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 
 | Scope | Grants |
 | ----- | ------ |
-| `networks:read` / `networks:write` | networks and isolation |
+| `networks:read` / `networks:write` | networks, isolation and the interactive enrolment switch |
 | `policy:read` / `policy:write` | the policy document, ACLs, tags, exit policies |
 | `peers:read` / `peers:write` | peers, health, presence, stats |
 | `keys:read` / `keys:write` | pre-auth keys and interactive enrolments |
@@ -198,9 +225,9 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | Method & path | Body → result |
 | ------------- | ------------- |
 | `GET /control/networks` | `{networks: [NetworkView]}` |
-| `POST /control/networks` | `{name, pool?, isolation?}` → `201 NetworkView` |
-| `GET /control/networks/{net}` | `NetworkView {name, pool, isolation, policy_revision, created_at, online}` |
-| `PATCH /control/networks/{net}` | `{isolation}` → `NetworkView` (pushes netmaps) |
+| `POST /control/networks` | `{name, pool?, isolation?, interactive_enrollment?}` → `201 NetworkView` |
+| `GET /control/networks/{net}` | `NetworkView {name, pool, isolation, interactive_enrollment, policy_revision, created_at, online}` |
+| `PATCH /control/networks/{net}` | `{isolation?, interactive_enrollment?}` (at least one) → `NetworkView`. Changing `isolation` bumps the policy revision and pushes netmaps. |
 | `DELETE /control/networks/{net}` | `204`. `409` while it has peers. |
 | `GET /control/networks/{net}/policy` | `PolicyView {network, isolation, revision, policy}` |
 | `PUT /control/networks/{net}/policy` | a policy document → `PolicyView` |
@@ -213,7 +240,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | `DELETE /control/networks/{net}/auth-keys/{id}` | revoke → `AuthKeyView` |
 | `GET /control/networks/{net}/enrollments?status=` | `{enrollments: [...]}` |
 | `GET /control/enrollments/{code}` | `EnrollmentView` |
-| `POST /control/enrollments/{code}/approve` | `{roles, tags, labels, name}` → `EnrollmentView` |
+| `POST /control/enrollments/{code}/approve` | `{roles, tags, labels, name}` → `EnrollmentView`. `403` while the network's interactive enrolment is off. |
 | `POST /control/enrollments/{code}/deny` | `{reason}` → `EnrollmentView` |
 | `POST /control/networks/{net}/peers` | create → `201` credentials |
 | `GET /control/peers?network=&tag=&role=&include_revoked=` | `{peers: [PeerView]}` |
@@ -247,7 +274,7 @@ Token and key hashes are never exposed.
 | ------ | ------- |
 | `400` | invalid |
 | `401` | unauthenticated |
-| `403` | missing scope, or an authorizer denial |
+| `403` | missing scope, an authorizer denial, or interactive enrolment turned off for the network |
 | `404` | not found, or outside the key's networks |
 | `409` | conflict |
 | `503` | authorizer unavailable |
@@ -289,7 +316,8 @@ action, target, detail}`) and published on the watch stream.
 
 **Actions:**
 - **networks and policy:** `network.created`, `network.deleted`,
-  `network.isolation`, `policy.updated`
+  `network.isolation`, `network.interactive_enrollment` (`{enabled}`),
+  `policy.updated`
 - **peers:** `peer.enrolled`, `peer.enroll_denied`, `peer.updated`,
   `peer.moved`, `peer.revoked`, `peer.expired`, `peer.deleted`,
   `peer.credentials_rotated`, `peer.key_rotated`, `peer.connect_denied`
@@ -304,8 +332,8 @@ action, target, detail}`) and published on the watch stream.
 | ------------- | ------------- |
 | `GET /healthz` | `{status: "ok"}` |
 | `POST /v1/enroll` | `{auth_key, name?, public_key?, labels?}` → `201` credentials |
-| `POST /v1/enroll/interactive` | `{network, name?, public_key?, labels?}` → `201 {code, poll_token, expires_at, interval_seconds}` |
-| `POST /v1/enroll/poll` | `{poll_token}` → `{status, reason?, credentials?}` |
+| `POST /v1/enroll/interactive` | `{network, name?, public_key?, labels?}` → `201 {code, poll_token, expires_at, interval_seconds}`. `403` while the network's interactive enrolment is off. |
+| `POST /v1/enroll/poll` | `{poll_token}` → `{status, reason?, credentials?}`. `403` when claiming while the network's interactive enrolment is off. |
 | `POST /v1/peer/rotate` | Bearer peer token, `{public_key?}` → `{peer_id, peer_token, public_key}` |
 | `GET /v1/signal` | WebSocket, [`signalling-v1.md`](signalling-v1.md) |
 
@@ -354,7 +382,8 @@ The server logs JSON to stdout. Its metrics are listed in
 - One portable schema (`server/store/migrations/*.sql`) runs on **PostgreSQL**
   (production) and **SQLite** (development and single-node deployments). It
   is applied at startup and tracked in `schema_migrations`.
-- The tables are `networks` (pool, isolation, policy document, revision),
+- The tables are `networks` (pool, isolation, interactive enrolment switch,
+  policy document, revision),
   `peers`, `auth_keys`, `enrollments`, `api_keys` and `audit_events`.
 - Timestamps are Unix milliseconds. Roles, tags, labels, health and policy
   documents are stored as JSON text.

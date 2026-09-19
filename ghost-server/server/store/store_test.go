@@ -34,7 +34,8 @@ func TestSQLiteStore(t *testing.T) {
 	if err != nil || n.PolicyRevision != 1 || len(n.Policy.Exit) != 1 {
 		t.Fatalf("policy: %v %+v", err, n)
 	}
-	if n, err = s.SetNetworkIsolation(ctx, "n", policy.IsolationHubOnly); err != nil || n.Isolation != policy.IsolationHubOnly || n.PolicyRevision != 2 {
+	hubOnly := policy.IsolationHubOnly
+	if n, err = s.UpdateNetwork(ctx, "n", NetworkUpdate{Isolation: &hubOnly}); err != nil || n.Isolation != policy.IsolationHubOnly || n.PolicyRevision != 2 {
 		t.Fatalf("isolation: %v %+v", err, n)
 	}
 
