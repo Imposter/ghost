@@ -1,60 +1,42 @@
-# Binaries
+# Binaries and build output
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary
 *.test
+/bin/
+/dist/
+**/build/
 
-# Output of the go coverage tool
+# Coverage
 *.out
+coverage.html
 
-# Go workspace file
+# Local Go workspace (see docs/development.md)
 go.work
+go.work.sum
 
 # Environment files
 .env
-.env.local
-.env.*.local
+.env.*
 
-# IDE
-.vscode/
+# IDE and OS
 .idea/
-!.idea/runConfigurations/
+.vscode/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Build artifacts
-/bin/
-/dist/
-/build/
 
 # Temporary files
 *.tmp
 *.log
 
-# Claude
-.claude/
-
 # Secrets and local state (never commit)
-.ghost-test-keys.json
 **/.ghost-test-keys.json
+**/ghost-keys.json
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
-**/ghost-keys.json
-
-# Build outputs
-**/bin/
-**/obj/
-ghost-go/build/
-*.aar
-*.xcframework/
