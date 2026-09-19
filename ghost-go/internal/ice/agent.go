@@ -102,6 +102,10 @@ type Agent interface {
 	// from Pion's internal goroutines concurrently with other operations.
 	OnConnectionStateChange(callback ConnectionStateChangeCallback)
 
+	// RoundTripTime returns the latest RTT on the nominated candidate pair,
+	// or zero when unknown.
+	RoundTripTime() time.Duration
+
 	// Close closes the agent and releases all resources.
 	// This includes:
 	//   - Stopping all ICE goroutines
