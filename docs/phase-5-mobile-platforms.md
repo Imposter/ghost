@@ -6,7 +6,7 @@
 
 ## Overview
 
-This phase implements consumer-facing mobile applications using **React Native with Expo**. The app provides a user interface for authentication, device management, peer selection, and connection monitoring.
+This phase implements consumer-facing mobile applications using **React Native with Expo**. The app provides a user interface for authentication, peer management, peer selection, and connection monitoring.
 
 **Key architectural decision**: The mobile app uses **gomobile native bindings** to call into the `ghost-proxy` library directly. There is NO HTTP API for control - all interactions happen through native function calls (JNI on Android, Cgo on iOS).
 
@@ -22,7 +22,7 @@ The app operates entirely in **user space** without using OS-level VPN APIs (`Vp
 │  ┌───────────────────────────────────────────────────────┐ │
 │  │  Screens                                               │ │
 │  │  • LoginScreen - OAuth2 authentication                │ │
-│  │  • DeviceListScreen - Show paired devices             │ │
+│  │  • PeerListScreen - Show paired peers                 │ │
 │  │  • ConnectionScreen - Connect to peer                 │ │
 │  │  • StatusScreen - Connection stats, tunnel info       │ │
 │  └───────────────────────────────────────────────────────┘ │
@@ -42,8 +42,8 @@ The app operates entirely in **user space** without using OS-level VPN APIs (`Vp
 │         ghost-proxy Native Module (Go + Native Glue)        │
 │  ┌───────────────────────────────────────────────────────┐ │
 │  │  gomobile Exported API (cmd/ghost-mobile/)            │ │
-│  │  • Initialize(coordinationURL, deviceJWT)             │ │
-│  │  • StartConnection(peerDeviceID, peerPubKey, iceJSON) │ │
+│  │  • Initialize(coordinationURL, peerJWT)             │ │
+│  │  • StartConnection(peerID, peerPubKey, iceJSON)       │ │
 │  │  • StopConnection()                                    │ │
 │  │  • GetConnectionStatus() → JSON                       │ │
 │  │  • SetOnStateChange(callback)                         │ │
@@ -71,7 +71,7 @@ The app operates entirely in **user space** without using OS-level VPN APIs (`Vp
 ┌─────────────────────────────────────────────────────────────┐
 │         .NET Coordination Backend (Phase 2a)                │
 │  • Account management (OAuth2/OIDC)                         │
-│  • Device registry (PostgreSQL)                             │
+│  • Peer registry (PostgreSQL)                               │
 │  • SignalR hub (real-time signaling relay)                  │
 │  • Same-account authorization enforcement                   │
 └─────────────────────────────────────────────────────────────┘
@@ -98,7 +98,7 @@ ghost-app/
 │   │   ├── login.tsx             # OAuth2 login flow
 │   │   └── pairing.tsx           # QR code pairing
 │   ├── (tabs)/
-│   │   ├── devices.tsx           # Device list
+│   │   ├── peers.tsx             # Peer list
 │   │   ├── connect.tsx           # Peer selection + connection
 │   │   └── settings.tsx          # App settings
 │   └── _layout.tsx               # Root layout
@@ -140,7 +140,7 @@ The native module bridges TypeScript to the Go library compiled with `gomobile b
 
 ```typescript
 export interface PeerInfo {
-  deviceId: string;
+  peerId: string;
   publicKey: string;      // Base64 WireGuard public key
   name: string;
   platform: string;
@@ -165,16 +165,16 @@ export interface ConnectionStatus {
 
 export interface GhostProxyModule {
   /**
-   * Initialize the proxy with coordination server URL and device JWT
+   * Initialize the proxy with coordination server URL and peer JWT
    */
-  initialize(coordinationURL: string, deviceJWT: string): Promise<void>;
+  initialize(coordinationURL: string, peerJWT: string): Promise<void>;
 
   /**
    * Start P2P connection to peer
    * Returns local proxy URL (e.g., "http://127.0.0.1:8080")
    */
   startConnection(
-    peerDeviceId: string,
+    peerId: string,
     peerPublicKey: string,
     iceServers: ICEServer[]
   ): Promise<string>;
@@ -214,17 +214,17 @@ class GhostProxyModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("GhostProxy")
 
-    AsyncFunction("initialize") { coordinationURL: String, deviceJWT: String ->
+    AsyncFunction("initialize") { coordinationURL: String, peerJWT: String ->
       try {
-        Ghostproxy.initialize(coordinationURL, deviceJWT)
+        Ghostproxy.initialize(coordinationURL, peerJWT)
       } catch (e: Exception) {
         throw Exception("Failed to initialize: ${e.message}")
       }
     }
 
-    AsyncFunction("startConnection") { peerDeviceId: String, peerPublicKey: String, iceServersJSON: String ->
+    AsyncFunction("startConnection") { peerId: String, peerPublicKey: String, iceServersJSON: String ->
       try {
-        val proxyURL = Ghostproxy.startConnection(peerDeviceId, peerPublicKey, iceServersJSON)
+        val proxyURL = Ghostproxy.startConnection(peerId, peerPublicKey, iceServersJSON)
         return@AsyncFunction proxyURL
       } catch (e: Exception) {
         throw Exception("Failed to start connection: ${e.message}")
@@ -274,17 +274,17 @@ public class GhostProxyModule: Module {
   public func definition() -> ModuleDefinition {
     Name("GhostProxy")
 
-    AsyncFunction("initialize") { (coordinationURL: String, deviceJWT: String) in
+    AsyncFunction("initialize") { (coordinationURL: String, peerJWT: String) in
       var error: NSError?
-      GhostproxyInitialize(coordinationURL, deviceJWT, &error)
+      GhostproxyInitialize(coordinationURL, peerJWT, &error)
       if let error = error {
         throw Exception(name: "InitializationError", description: error.localizedDescription)
       }
     }
 
-    AsyncFunction("startConnection") { (peerDeviceId: String, peerPublicKey: String, iceServersJSON: String) -> String in
+    AsyncFunction("startConnection") { (peerId: String, peerPublicKey: String, iceServersJSON: String) -> String in
       var error: NSError?
-      let proxyURL = GhostproxyStartConnection(peerDeviceId, peerPublicKey, iceServersJSON, &error)
+      let proxyURL = GhostproxyStartConnection(peerId, peerPublicKey, iceServersJSON, &error)
       if let error = error {
         throw Exception(name: "ConnectionError", description: error.localizedDescription)
       }
@@ -326,16 +326,16 @@ import { coordinationAPI } from './coordination';
 class TunnelService {
   private proxyURL: string | null = null;
 
-  async initialize(deviceJWT: string) {
+  async initialize(peerJWT: string) {
     await GhostProxy.initialize(
       'https://coordination.example.com',
-      deviceJWT
+      peerJWT
     );
   }
 
-  async connectToPeer(peerDeviceId: string) {
+  async connectToPeer(peerId: string) {
     // 1. Fetch peer info from coordination server
-    const peerInfo = await coordinationAPI.getDevice(peerDeviceId);
+    const peerInfo = await coordinationAPI.getPeer(peerId);
 
     // 2. Get ICE servers from config
     const iceServers = [
@@ -385,15 +385,15 @@ export const tunnelService = new TunnelService();
 2. Login Screen
    • User taps "Login with Google/Auth0"
    • OAuth2 flow completes
-   • Receive JWT with account_id + device_id claims
+   • Receive JWT with account_id + peer_id claims
    ↓
 3. Initialize Module
    • GhostProxy.initialize(coordinationURL, jwt)
    • Connects to SignalR hub
-   • Registers device as online
+   • Registers peer as online
    ↓
-4. Device List Screen
-   • Fetch devices from /api/devices
+4. Peer List Screen
+   • Fetch peers from /api/peers
    • Show: Name, Platform, Online status, Last seen
    ↓
 5. User selects peer → Connection Screen
@@ -505,7 +505,7 @@ npx expo run:ios
 # Run tests
 npm test
 
-# Run on device
+# Run on phone
 npx expo run:android --device
 npx expo run:ios --device
 ```
@@ -543,9 +543,9 @@ npx expo run:ios --device
 ### Overview
 
 In this use case:
-- **Phone**: Mobile device (iOS/Android)
-- **Hub**: Local device (Raspberry Pi, NAS, home server)
-- **Key Requirement**: Keys are only exchanged when both devices are on the **same local network**
+- **Phone**: Mobile phone (iOS/Android)
+- **Hub**: Local machine (Raspberry Pi, NAS, home server)
+- **Key Requirement**: Keys are only exchanged when both peers are on the **same local network**
 - **No cloud dependency**: No .NET coordination backend required for pairing
 
 This provides better privacy and works offline, making it ideal for self-hosted scenarios.
@@ -576,8 +576,8 @@ This provides better privacy and works offline, making it ideal for self-hosted 
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 
-After pairing, devices can connect via P2P even when NOT on same network.
-Both devices store each other's public keys locally.
+After pairing, peers can connect via P2P even when NOT on same network.
+Both peers store each other's public keys locally.
 ```
 
 ---
@@ -600,7 +600,7 @@ func broadcastHub() {
         "",
         8080,  // Pairing HTTP server port
         nil,
-        []string{"txtvers=1", "id=" + deviceID},
+        []string{"txtvers=1", "id=" + peerID},
     )
     server, _ := mdns.NewServer(&mdns.Config{Zone: service})
     defer server.Shutdown()
@@ -647,8 +647,8 @@ Content-Type: application/json
 Authorization: Bearer <pairing_token_from_qr>
 
 {
-  "device_id": "phone-uuid",
-  "device_name": "Alice's iPhone",
+  "peer_id": "phone-uuid",
+  "peer_name": "Alice's iPhone",
   "platform": "ios",
   "public_key": "base64-encoded-wireguard-public-key"
 }
@@ -670,14 +670,14 @@ Content-Type: application/json
 }
 ```
 
-Both devices now store each other's:
-- Device ID
+Both peers now store each other's:
+- Peer ID
 - WireGuard public key
 - Assigned tunnel IP addresses
 
 #### 4. Subsequent Connections (P2P)
 
-After pairing, devices can connect directly via P2P **even when not on the same network**:
+After pairing, peers can connect directly via P2P **even when not on the same network**:
 
 **Without Coordination Server**:
 ```typescript
@@ -690,7 +690,7 @@ await GhostProxy.startConnection(
 ```
 
 **Important**: Since there's no coordination server to relay signaling messages, you need an alternative signaling mechanism:
-- **Option A**: Direct IP connection (if devices are on same network or have port forwarding)
+- **Option A**: Direct IP connection (if peers are on same network or have port forwarding)
 - **Option B**: Fallback signaling via public STUN/TURN servers
 - **Option C**: Local signaling server on hub (WebSocket)
 
@@ -721,8 +721,8 @@ await GhostProxy.startConnection(
 1. **Pairing Token**: Use short-lived JWT (5 min expiry) embedded in QR code
 2. **HTTPS**: Use self-signed cert on hub, pin cert fingerprint in QR code
 3. **Confirmation**: Require user confirmation on hub after phone scans QR
-4. **Key Verification**: Display key fingerprints on both devices for manual verification
-5. **Revocation**: Hub should provide API to revoke paired devices
+4. **Key Verification**: Display key fingerprints on both peers for manual verification
+5. **Revocation**: Hub should provide API to revoke paired peers
 
 **Example Pairing Token (Hub generates):**
 ```go
@@ -766,8 +766,8 @@ tokenString, _ := token.SignedString(hubSecret)
 - Connection lifecycle (connect, disconnect, reconnect)
 
 ### Platform Tests
-- Android: Test on emulator + physical device
-- iOS: Test on simulator + physical device
+- Android: Test on emulator + physical phone
+- iOS: Test on simulator + physical phone
 - Test on different network conditions (Wi-Fi, cellular, offline)
 
 ---
@@ -801,7 +801,7 @@ eas build --platform ios --profile production
 
 Phase 5 delivers a consumer-facing mobile app that:
 - ✅ Uses gomobile bindings (no HTTP API for control)
-- ✅ Connects to .NET backend for account-based device management
+- ✅ Connects to .NET backend for account-based peer management
 - ✅ Establishes P2P tunnels via ghost-proxy → ghost-go
 - ✅ Routes app traffic through local HTTP reverse proxy
 - ✅ Works entirely in user space (no VPN APIs required)

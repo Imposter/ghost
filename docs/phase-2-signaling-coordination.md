@@ -12,17 +12,17 @@ Phase 2 implements the coordination and proxy layers that sit on top of the core
 ### Phase 2a: .NET Coordination Backend (`ghost-coordination/`)
 
 **Repository**: Separate .NET 8 project
-**Purpose**: Centralized account-based device management and signaling relay
+**Purpose**: Centralized account-based peer management and signaling relay
 **Status**: 🔜 Not Started
 
 **Components**:
 - Account management (OAuth2/OIDC integration)
-- Device registry (PostgreSQL + EF Core)
+- Peer registry (PostgreSQL + EF Core)
 - SignalR hub for real-time signaling
 - Same-account authorization enforcement
-- REST APIs for device registration and discovery
+- REST APIs for peer registration and discovery
 
-**Use Case**: Multi-user, multi-device scenarios where users want to manage multiple devices under a single account (e.g., "Alice's iPhone", "Alice's MacBook", "Alice's iPad").
+**Use Case**: Multi-user, multi-machine scenarios where users want to manage multiple machines under a single account (e.g., "Alice's iPhone", "Alice's MacBook", "Alice's iPad").
 
 ---
 
@@ -49,9 +49,9 @@ This architecture supports **two deployment patterns**:
 
 ### Option A: Cloud-Coordinated (Implemented in Phase 2a)
 - .NET backend in the cloud (Azure, AWS, DigitalOcean, etc.)
-- Account-based device management
+- Account-based peer management
 - SignalR for real-time signaling
-- Works globally, devices can be anywhere
+- Works globally, peers can be anywhere
 - Requires internet connection for initial pairing and signaling
 
 ### Option B: Local Network Pairing (Application-Specific)
@@ -61,7 +61,7 @@ This architecture supports **two deployment patterns**:
 - Ideal for privacy-conscious users and self-hosted scenarios
 - Documented in Phase 5 (see "Alternative Use Case: Local Network Pairing")
 
-**Both options use the same ghost-go core library for P2P tunneling. The difference is only in how devices discover each other and exchange keys.**
+**Both options use the same ghost-go core library for P2P tunneling. The difference is only in how peers discover each other and exchange keys.**
 
 ## Architecture Diagram
 
@@ -93,7 +93,7 @@ This architecture supports **two deployment patterns**:
 | **Backend** | .NET 8 Minimal APIs + SignalR | Familiar C#, modern, excellent SignalR support |
 | **Identity Provider** | External OAuth2/OIDC | Standard protocol, battle-tested (Auth0, Azure AD, Keycloak) |
 | **Authorization** | Backend enforces same-account | Simple, secure, trusted backend validates all messages |
-| **Device Registration** | QR code pairing + OAuth device flow | Flexible: mobile uses QR, CLI uses device flow |
+| **Peer Registration** | QR code pairing + OAuth interactive enrollment | Flexible: mobile uses QR, CLI uses interactive enrollment |
 | **Signaling Transport** | SignalR over WebSocket | Real-time, bidirectional, built into .NET |
 | **App Control** | gomobile native bindings | Direct function calls, no HTTP API for control |
 | **HTTP Proxy** | Reverse proxy in ghost-proxy | Forwards app traffic through WireGuard tunnel |
@@ -115,10 +115,10 @@ This architecture supports **two deployment patterns**:
 │              .NET Coordination Service                            │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │             Minimal APIs (REST)                             │ │
-│  │  • POST /api/devices/register                               │ │
-│  │  • GET  /api/devices                                        │ │
-│  │  • POST /api/devices/pairing/initiate                       │ │
-│  │  • POST /api/devices/pairing/complete                       │ │
+│  │  • POST /api/peers/register                               │ │
+│  │  • GET  /api/peers                                        │ │
+│  │  • POST /api/peers/pairing/initiate                       │ │
+│  │  • POST /api/peers/pairing/complete                       │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │             SignalR Hub (WebSocket)                         │ │
@@ -128,7 +128,7 @@ This architecture supports **two deployment patterns**:
 │  └────────────────────────────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │             Database (PostgreSQL / SQL Server)              │ │
-│  │  • Accounts, Devices, Sessions                             │ │
+│  │  • Accounts, Peers, Sessions                             │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └───────────────────────────────────────────────────────────────────┘
                     │
@@ -157,11 +157,11 @@ public class Account
     public DateTime? LastSeenAt { get; set; }
 
     // Navigation
-    public ICollection<Device> Devices { get; set; } = new List<Device>();
+    public ICollection<Peer> Peers { get; set; } = new List<Peer>();
 }
 
-// Models/Device.cs
-public class Device
+// Models/Peer.cs
+public class Peer
 {
     public Guid Id { get; set; }
     public Guid AccountId { get; set; }
@@ -210,7 +210,7 @@ public class PairingSession
 public class AppDbContext : DbContext
 {
     public DbSet<Account> Accounts { get; set; }
-    public DbSet<Device> Devices { get; set; }
+    public DbSet<Peer> Peers { get; set; }
     public DbSet<PairingSession> PairingSessions { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -224,8 +224,8 @@ public class AppDbContext : DbContext
             entity.Property(e => e.IdpProvider).HasMaxLength(50).IsRequired();
         });
 
-        // Devices
-        modelBuilder.Entity<Device>(entity =>
+        // Peers
+        modelBuilder.Entity<Peer>(entity =>
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.AccountId);
@@ -233,7 +233,7 @@ public class AppDbContext : DbContext
             entity.Property(e => e.PublicKey).IsRequired();
 
             entity.HasOne(e => e.Account)
-                .WithMany(a => a.Devices)
+                .WithMany(a => a.Peers)
                 .HasForeignKey(e => e.AccountId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
@@ -304,7 +304,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Add services
 builder.Services.AddScoped<IAccountService, AccountService>();
-builder.Services.AddScoped<IDeviceService, DeviceService>();
+builder.Services.AddScoped<IPeerService, PeerService>();
 
 var app = builder.Build();
 
@@ -315,7 +315,7 @@ app.UseAuthorization();
 app.MapHub<SignalingHub>("/hubs/signaling");
 
 // Map APIs (next section)
-app.MapDeviceApis();
+app.MapPeerApis();
 app.MapPairingApis();
 
 app.Run();
@@ -326,22 +326,22 @@ app.Run();
 ### REST APIs (Minimal APIs)
 
 ```csharp
-// Apis/DeviceApis.cs
-public static class DeviceApis
+// Apis/PeerApis.cs
+public static class PeerApis
 {
-    public static void MapDeviceApis(this WebApplication app)
+    public static void MapPeerApis(this WebApplication app)
     {
-        var group = app.MapGroup("/api/devices").RequireAuthorization();
+        var group = app.MapGroup("/api/peers").RequireAuthorization();
 
-        // Register a new device
+        // Register a new peer
         group.MapPost("/register", async (
-            RegisterDeviceRequest request,
-            IDeviceService deviceService,
+            RegisterPeerRequest request,
+            IPeerService peerService,
             ClaimsPrincipal user) =>
         {
             var accountId = GetAccountId(user);
 
-            var device = await deviceService.RegisterDeviceAsync(new Device
+            var peer = await peerService.RegisterPeerAsync(new Peer
             {
                 AccountId = accountId,
                 Name = request.Name,
@@ -350,20 +350,20 @@ public static class DeviceApis
                 PublicKey = Convert.FromBase64String(request.PublicKeyBase64)
             });
 
-            return Results.Ok(new RegisterDeviceResponse
+            return Results.Ok(new RegisterPeerResponse
             {
-                DeviceId = device.Id,
-                AccountId = device.AccountId
+                PeerId = peer.Id,
+                AccountId = peer.AccountId
             });
         });
 
-        // List all devices for authenticated account
-        group.MapGet("", async (IDeviceService deviceService, ClaimsPrincipal user) =>
+        // List all peers for authenticated account
+        group.MapGet("", async (IPeerService peerService, ClaimsPrincipal user) =>
         {
             var accountId = GetAccountId(user);
-            var devices = await deviceService.GetDevicesAsync(accountId);
+            var peers = await peerService.GetPeersAsync(accountId);
 
-            return Results.Ok(devices.Select(d => new DeviceInfo
+            return Results.Ok(peers.Select(d => new PeerInfo
             {
                 Id = d.Id,
                 Name = d.Name,
@@ -374,41 +374,41 @@ public static class DeviceApis
             }));
         });
 
-        // Get specific device info (for discovery)
-        group.MapGet("/{deviceId:guid}", async (
-            Guid deviceId,
-            IDeviceService deviceService,
+        // Get specific peer info (for discovery)
+        group.MapGet("/{peerId:guid}", async (
+            Guid peerId,
+            IPeerService peerService,
             ClaimsPrincipal user) =>
         {
             var accountId = GetAccountId(user);
-            var device = await deviceService.GetDeviceAsync(deviceId);
+            var peer = await peerService.GetPeerAsync(peerId);
 
-            if (device == null)
+            if (peer == null)
                 return Results.NotFound();
 
             // Enforce same-account access
-            if (device.AccountId != accountId)
+            if (peer.AccountId != accountId)
                 return Results.Forbid();
 
-            return Results.Ok(new DeviceInfo
+            return Results.Ok(new PeerInfo
             {
-                Id = device.Id,
-                Name = device.Name,
-                Platform = device.Platform,
-                PublicKey = Convert.ToBase64String(device.PublicKey),
-                IsOnline = device.IsOnline,
-                LastSeenAt = device.LastSeenAt
+                Id = peer.Id,
+                Name = peer.Name,
+                Platform = peer.Platform,
+                PublicKey = Convert.ToBase64String(peer.PublicKey),
+                IsOnline = peer.IsOnline,
+                LastSeenAt = peer.LastSeenAt
             });
         });
 
-        // Heartbeat to update device status
-        group.MapPost("/{deviceId:guid}/heartbeat", async (
-            Guid deviceId,
-            IDeviceService deviceService,
+        // Heartbeat to update peer status
+        group.MapPost("/{peerId:guid}/heartbeat", async (
+            Guid peerId,
+            IPeerService peerService,
             ClaimsPrincipal user) =>
         {
             var accountId = GetAccountId(user);
-            await deviceService.UpdateHeartbeatAsync(deviceId, accountId);
+            await peerService.UpdateHeartbeatAsync(peerId, accountId);
             return Results.NoContent();
         });
     }
@@ -425,17 +425,17 @@ public static class DeviceApis
 }
 
 // DTOs
-public record RegisterDeviceRequest(
+public record RegisterPeerRequest(
     string Name,
     string Platform,
     string Hostname,
     string PublicKeyBase64);
 
-public record RegisterDeviceResponse(
-    Guid DeviceId,
+public record RegisterPeerResponse(
+    Guid PeerId,
     Guid AccountId);
 
-public record DeviceInfo(
+public record PeerInfo(
     Guid Id,
     string Name,
     string Platform,
@@ -446,7 +446,7 @@ public record DeviceInfo(
 
 ---
 
-### Device Pairing APIs
+### Peer Pairing APIs
 
 ```csharp
 // Apis/PairingApis.cs
@@ -473,22 +473,22 @@ public static class PairingApis
             });
         });
 
-        // Complete pairing (called by device with the code)
+        // Complete pairing (called by peer with the code)
         group.MapPost("/complete", async (
             CompletePairingRequest request,
             IPairingService pairingService,
-            IDeviceService deviceService) =>
+            IPeerService peerService) =>
         {
             // Validate pairing code
             var session = await pairingService.ValidatePairingCodeAsync(request.Code);
             if (session == null)
                 return Results.BadRequest(new { error = "Invalid or expired code" });
 
-            // Register device
-            var device = await deviceService.RegisterDeviceAsync(new Device
+            // Register peer
+            var peer = await peerService.RegisterPeerAsync(new Peer
             {
                 AccountId = session.AccountId,
-                Name = request.DeviceName,
+                Name = request.PeerName,
                 Platform = request.Platform,
                 Hostname = request.Hostname,
                 PublicKey = Convert.FromBase64String(request.PublicKeyBase64)
@@ -497,13 +497,13 @@ public static class PairingApis
             // Mark session as used
             await pairingService.MarkSessionUsedAsync(session.Id);
 
-            // Generate access token for the device
-            var token = await pairingService.GenerateDeviceTokenAsync(device);
+            // Generate access token for the peer
+            var token = await pairingService.GeneratePeerTokenAsync(peer);
 
             return Results.Ok(new CompletePairingResponse
             {
-                DeviceId = device.Id,
-                AccountId = device.AccountId,
+                PeerId = peer.Id,
+                AccountId = peer.AccountId,
                 AccessToken = token
             });
         });
@@ -517,13 +517,13 @@ public record InitiatePairingResponse(
 
 public record CompletePairingRequest(
     string Code,
-    string DeviceName,
+    string PeerName,
     string Platform,
     string Hostname,
     string PublicKeyBase64);
 
 public record CompletePairingResponse(
-    Guid DeviceId,
+    Guid PeerId,
     Guid AccountId,
     string AccessToken);
 ```
@@ -537,111 +537,111 @@ public record CompletePairingResponse(
 [Authorize]
 public class SignalingHub : Hub
 {
-    private readonly IDeviceService _deviceService;
+    private readonly IPeerService _peerService;
     private readonly ILogger<SignalingHub> _logger;
 
     // In-memory connection tracking (use Redis for production)
-    private static readonly ConcurrentDictionary<Guid, string> _deviceConnections = new();
+    private static readonly ConcurrentDictionary<Guid, string> _peerConnections = new();
 
-    public SignalingHub(IDeviceService deviceService, ILogger<SignalingHub> logger)
+    public SignalingHub(IPeerService peerService, ILogger<SignalingHub> logger)
     {
-        _deviceService = deviceService;
+        _peerService = peerService;
         _logger = logger;
     }
 
     public override async Task OnConnectedAsync()
     {
-        var deviceId = GetDeviceId();
+        var peerId = GetPeerId();
         var accountId = GetAccountId();
 
-        // Update device connection status
-        _deviceConnections[deviceId] = Context.ConnectionId;
-        await _deviceService.UpdateConnectionStatusAsync(deviceId, Context.ConnectionId, true);
+        // Update peer connection status
+        _peerConnections[peerId] = Context.ConnectionId;
+        await _peerService.UpdateConnectionStatusAsync(peerId, Context.ConnectionId, true);
 
-        _logger.LogInformation("Device {DeviceId} connected from account {AccountId}",
-            deviceId, accountId);
+        _logger.LogInformation("Peer {PeerId} connected from account {AccountId}",
+            peerId, accountId);
 
         await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        var deviceId = GetDeviceId();
+        var peerId = GetPeerId();
 
-        _deviceConnections.TryRemove(deviceId, out _);
-        await _deviceService.UpdateConnectionStatusAsync(deviceId, null, false);
+        _peerConnections.TryRemove(peerId, out _);
+        await _peerService.UpdateConnectionStatusAsync(peerId, null, false);
 
-        _logger.LogInformation("Device {DeviceId} disconnected", deviceId);
+        _logger.LogInformation("Peer {PeerId} disconnected", peerId);
 
         await base.OnDisconnectedAsync(exception);
     }
 
     // Client calls: SendOffer
-    public async Task<SendMessageResult> SendOffer(Guid toDeviceId, SignalingMessage message)
+    public async Task<SendMessageResult> SendOffer(Guid toPeerId, SignalingMessage message)
     {
-        return await SendMessageToDevice(toDeviceId, "ReceiveOffer", message);
+        return await SendMessageToPeer(toPeerId, "ReceiveOffer", message);
     }
 
     // Client calls: SendAnswer
-    public async Task<SendMessageResult> SendAnswer(Guid toDeviceId, SignalingMessage message)
+    public async Task<SendMessageResult> SendAnswer(Guid toPeerId, SignalingMessage message)
     {
-        return await SendMessageToDevice(toDeviceId, "ReceiveAnswer", message);
+        return await SendMessageToPeer(toPeerId, "ReceiveAnswer", message);
     }
 
     // Client calls: SendCandidate (trickle ICE)
-    public async Task<SendMessageResult> SendCandidate(Guid toDeviceId, SignalingMessage message)
+    public async Task<SendMessageResult> SendCandidate(Guid toPeerId, SignalingMessage message)
     {
-        return await SendMessageToDevice(toDeviceId, "ReceiveCandidate", message);
+        return await SendMessageToPeer(toPeerId, "ReceiveCandidate", message);
     }
 
-    private async Task<SendMessageResult> SendMessageToDevice(
-        Guid toDeviceId,
+    private async Task<SendMessageResult> SendMessageToPeer(
+        Guid toPeerId,
         string method,
         SignalingMessage message)
     {
-        var fromDeviceId = GetDeviceId();
+        var fromPeerId = GetPeerId();
         var accountId = GetAccountId();
 
-        // Validate target device exists and is in same account
-        var targetDevice = await _deviceService.GetDeviceAsync(toDeviceId);
-        if (targetDevice == null)
+        // Validate target peer exists and is in same account
+        var targetPeer = await _peerService.GetPeerAsync(toPeerId);
+        if (targetPeer == null)
         {
-            return new SendMessageResult { Success = false, Error = "Device not found" };
+            return new SendMessageResult { Success = false, Error = "Peer not found" };
         }
 
         // CRITICAL: Enforce same-account authorization
-        if (targetDevice.AccountId != accountId)
+        if (targetPeer.AccountId != accountId)
         {
-            _logger.LogWarning("Device {From} attempted to message device {To} in different account",
-                fromDeviceId, toDeviceId);
+            _logger.LogWarning("Peer {From} attempted to message peer {To} in different account",
+                fromPeerId, toPeerId);
             return new SendMessageResult { Success = false, Error = "Forbidden" };
         }
 
         // Check if target is online
-        if (!_deviceConnections.TryGetValue(toDeviceId, out var connectionId))
+        if (!_peerConnections.TryGetValue(toPeerId, out var connectionId))
         {
-            return new SendMessageResult { Success = false, Error = "Device offline" };
+            return new SendMessageResult { Success = false, Error = "Peer offline" };
         }
 
         // Add sender info
-        message.FromDeviceId = fromDeviceId;
-        message.ToDeviceId = toDeviceId;
+        message.FromPeerId = fromPeerId;
+        message.ToPeerId = toPeerId;
         message.Timestamp = DateTime.UtcNow;
 
-        // Forward message to target device
+        // Forward message to target peer
         await Clients.Client(connectionId).SendAsync(method, message);
 
-        _logger.LogDebug("Forwarded {Method} from {From} to {To}", method, fromDeviceId, toDeviceId);
+        _logger.LogDebug("Forwarded {Method} from {From} to {To}", method, fromPeerId, toPeerId);
 
         return new SendMessageResult { Success = true };
     }
 
-    private Guid GetDeviceId()
+    private Guid GetPeerId()
     {
-        var claim = Context.User?.FindFirst("device_id")?.Value;
-        if (claim == null || !Guid.TryParse(claim, out var deviceId))
-            throw new HubException("Invalid device_id claim");
-        return deviceId;
+        var claim = Context.User?.FindFirst("peer_id")?.Value;
+        if (claim == null || !Guid.TryParse(claim, out var peerId))
+            throw new HubException("Invalid peer_id claim");
+        return peerId;
     }
 
     private Guid GetAccountId()
@@ -656,8 +656,8 @@ public class SignalingHub : Hub
 // SignalR message DTOs
 public class SignalingMessage
 {
-    public Guid FromDeviceId { get; set; }
-    public Guid ToDeviceId { get; set; }
+    public Guid FromPeerId { get; set; }
+    public Guid ToPeerId { get; set; }
     public string Type { get; set; } = string.Empty; // "offer", "answer", "candidate"
     public string Payload { get; set; } = string.Empty; // JSON payload (E2E encrypted)
     public DateTime Timestamp { get; set; }
@@ -672,7 +672,7 @@ public class SendMessageResult
 
 ---
 
-### JWT Token Generation with Device Claims
+### JWT Token Generation with Peer Claims
 
 ```csharp
 // Services/PairingService.cs
@@ -681,7 +681,7 @@ public class PairingService : IPairingService
     private readonly IConfiguration _configuration;
     private readonly AppDbContext _db;
 
-    public async Task<string> GenerateDeviceTokenAsync(Device device)
+    public async Task<string> GeneratePeerTokenAsync(Peer peer)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.ASCII.GetBytes(_configuration["Jwt:Secret"]!);
@@ -690,12 +690,12 @@ public class PairingService : IPairingService
         {
             Subject = new ClaimsIdentity(new[]
             {
-                new Claim("device_id", device.Id.ToString()),
-                new Claim("account_id", device.AccountId.ToString()),
-                new Claim("device_name", device.Name),
-                new Claim(ClaimTypes.Role, "device")
+                new Claim("peer_id", peer.Id.ToString()),
+                new Claim("account_id", peer.AccountId.ToString()),
+                new Claim("peer_name", peer.Name),
+                new Claim(ClaimTypes.Role, "peer")
             }),
-            Expires = DateTime.UtcNow.AddYears(1), // Long-lived for devices
+            Expires = DateTime.UtcNow.AddYears(1), // Long-lived for peers
             SigningCredentials = new SigningCredentials(
                 new SymmetricSecurityKey(key),
                 SecurityAlgorithms.HmacSha256Signature)
@@ -722,32 +722,32 @@ type Client struct {
     httpClient *http.Client
 
     // Authentication
-    accessToken string  // JWT from device registration
-    deviceID    string  // Our device ID
+    accessToken string  // JWT from peer registration
+    peerID    string  // Our peer ID
     accountID   string  // Our account ID
 
     logger *slog.Logger
 }
 
-// Register registers this device with the coordination service
-// using a pairing code from QR or device flow.
-func (c *Client) RegisterWithPairingCode(ctx context.Context, code string, deviceInfo *DeviceInfo) error {
+// Register registers this peer with the coordination service
+// using a pairing code from QR or interactive enrollment.
+func (c *Client) RegisterWithPairingCode(ctx context.Context, code string, peerInfo *PeerInfo) error {
     req := struct {
         Code            string `json:"code"`
-        DeviceName      string `json:"deviceName"`
+        PeerName      string `json:"peerName"`
         Platform        string `json:"platform"`
         Hostname        string `json:"hostname"`
         PublicKeyBase64 string `json:"publicKeyBase64"`
     }{
         Code:            code,
-        DeviceName:      deviceInfo.Name,
-        Platform:        deviceInfo.Platform,
-        Hostname:        deviceInfo.Hostname,
-        PublicKeyBase64: base64.StdEncoding.EncodeToString(deviceInfo.PublicKey),
+        PeerName:      peerInfo.Name,
+        Platform:        peerInfo.Platform,
+        Hostname:        peerInfo.Hostname,
+        PublicKeyBase64: base64.StdEncoding.EncodeToString(peerInfo.PublicKey),
     }
 
     resp := struct {
-        DeviceId    string `json:"deviceId"`
+        PeerId    string `json:"peerId"`
         AccountId   string `json:"accountId"`
         AccessToken string `json:"accessToken"`
     }{}
@@ -757,35 +757,35 @@ func (c *Client) RegisterWithPairingCode(ctx context.Context, code string, devic
     }
 
     // Store credentials
-    c.deviceID = resp.DeviceId
+    c.peerID = resp.PeerId
     c.accountID = resp.AccountId
     c.accessToken = resp.AccessToken
 
-    c.logger.Info("device registered",
-        "device_id", c.deviceID,
+    c.logger.Info("peer registered",
+        "peer_id", c.peerID,
         "account_id", c.accountID)
 
     return nil
 }
 
-// DiscoverDevice fetches info about another device in the same account.
-func (c *Client) DiscoverDevice(ctx context.Context, deviceID string) (*DeviceInfo, error) {
-    var info DeviceInfo
-    err := c.get(ctx, fmt.Sprintf("/api/devices/%s", deviceID), &info)
+// DiscoverPeer fetches info about another peer in the same account.
+func (c *Client) DiscoverPeer(ctx context.Context, peerID string) (*PeerInfo, error) {
+    var info PeerInfo
+    err := c.get(ctx, fmt.Sprintf("/api/peers/%s", peerID), &info)
     if err != nil {
-        return nil, fmt.Errorf("discover device: %w", err)
+        return nil, fmt.Errorf("discover peer: %w", err)
     }
     return &info, nil
 }
 
-// ListDevices returns all devices in the account.
-func (c *Client) ListDevices(ctx context.Context) ([]*DeviceInfo, error) {
-    var devices []*DeviceInfo
-    err := c.get(ctx, "/api/devices", &devices)
+// ListPeers returns all peers in the account.
+func (c *Client) ListPeers(ctx context.Context) ([]*PeerInfo, error) {
+    var peers []*PeerInfo
+    err := c.get(ctx, "/api/peers", &peers)
     if err != nil {
-        return nil, fmt.Errorf("list devices: %w", err)
+        return nil, fmt.Errorf("list peers: %w", err)
     }
-    return devices, nil
+    return peers, nil
 }
 
 func (c *Client) get(ctx context.Context, path string, result interface{}) error {
@@ -816,7 +816,7 @@ func (c *Client) get(ctx context.Context, path string, result interface{}) error
 type Client struct {
     hub *signalr.Client
 
-    deviceID  string
+    peerID  string
     accountID string
 
     // Callbacks
@@ -854,8 +854,8 @@ func (c *Client) Connect(ctx context.Context, coordinationURL, accessToken strin
     return nil
 }
 
-// SendOffer sends an ICE offer to another device.
-func (c *Client) SendOffer(ctx context.Context, toDeviceID string, offer *OfferPayload) error {
+// SendOffer sends an ICE offer to another peer.
+func (c *Client) SendOffer(ctx context.Context, toPeerID string, offer *OfferPayload) error {
     payload, err := json.Marshal(offer)
     if err != nil {
         return fmt.Errorf("marshal offer: %w", err)
@@ -872,7 +872,7 @@ func (c *Client) SendOffer(ctx context.Context, toDeviceID string, offer *OfferP
         Error   string `json:"error"`
     }{}
 
-    if err := c.hub.Invoke(ctx, "SendOffer", toDeviceID, msg).Await(ctx, &result); err != nil {
+    if err := c.hub.Invoke(ctx, "SendOffer", toPeerID, msg).Await(ctx, &result); err != nil {
         return fmt.Errorf("send offer: %w", err)
     }
 
@@ -903,7 +903,7 @@ WebSocket-based signaling client for real-time communication with coordination s
 ```go
 type Client struct {
     conn      *websocket.Conn
-    deviceID  string
+    peerID  string
     publicKey []byte  // For E2E encryption
 
     // Callbacks
@@ -1000,10 +1000,10 @@ Client for peer discovery and registration.
 type CoordinationClient struct {
     baseURL   string
     authToken string
-    deviceID  string
+    peerID  string
 }
 
-func (c *CoordinationClient) Register(ctx context.Context, info *DeviceInfo) error
+func (c *CoordinationClient) Register(ctx context.Context, info *PeerInfo) error
 func (c *CoordinationClient) DiscoverPeer(ctx context.Context, peerID string) (*PeerInfo, error)
 func (c *CoordinationClient) ListPeers(ctx context.Context) ([]*PeerInfo, error)
 func (c *CoordinationClient) Heartbeat(ctx context.Context) error
@@ -1106,17 +1106,17 @@ var (
     signalingClient *signaling.Client
 )
 
-// Initialize sets up the proxy with coordination server URL and device JWT
+// Initialize sets up the proxy with coordination server URL and peer JWT
 //export Initialize
-func Initialize(coordinationURL, deviceJWT string) error {
-    signalingClient = signaling.NewClient(coordinationURL, deviceJWT)
+func Initialize(coordinationURL, peerJWT string) error {
+    signalingClient = signaling.NewClient(coordinationURL, peerJWT)
     return signalingClient.Connect(context.Background())
 }
 
 // StartConnection initiates P2P tunnel and returns local proxy URL
 // iceServersJSON: JSON array of {"urls": "stun:..."} objects
 //export StartConnection
-func StartConnection(peerDeviceID, peerPublicKeyB64, iceServersJSON string) (string, error) {
+func StartConnection(peerID, peerPublicKeyB64, iceServersJSON string) (string, error) {
     ctx := context.Background()
 
     // 1. Parse ICE servers
@@ -1141,7 +1141,7 @@ func StartConnection(peerDeviceID, peerPublicKeyB64, iceServersJSON string) (str
     }
 
     // 5. E2E encrypt our WG public key with peer's signaling public key
-    peerSignalingPubKey := getPeerSignalingKey(peerDeviceID) // From device registry
+    peerSignalingPubKey := getPeerSignalingKey(peerID) // From peer registry
     encryptedWGKey, err := encryptWGKeyForPeer(wgPublicKey, peerSignalingPubKey)
     if err != nil {
         return "", fmt.Errorf("encrypt WG key: %w", err)
@@ -1155,7 +1155,7 @@ func StartConnection(peerDeviceID, peerPublicKeyB64, iceServersJSON string) (str
         EncryptedWGKey: encryptedWGKey,
     }
 
-    answer, err := signalingClient.SendOfferAndWaitForAnswer(ctx, peerDeviceID, offer)
+    answer, err := signalingClient.SendOfferAndWaitForAnswer(ctx, peerID, offer)
     if err != nil {
         return "", fmt.Errorf("signaling: %w", err)
     }
@@ -1280,7 +1280,7 @@ import (
 
 type Client struct {
     hub *signalr.Client
-    deviceID string
+    peerID string
 
     // Pending offers/answers
     pendingAnswers map[string]chan *AnswerMessage
@@ -1288,9 +1288,9 @@ type Client struct {
     logger *slog.Logger
 }
 
-func NewClient(coordinationURL, deviceJWT string) *Client {
+func NewClient(coordinationURL, peerJWT string) *Client {
     return &Client{
-        deviceID:       extractDeviceIDFromJWT(deviceJWT),
+        peerID:       extractPeerIDFromJWT(peerJWT),
         pendingAnswers: make(map[string]chan *AnswerMessage),
     }
 }
@@ -1300,7 +1300,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
     conn := signalr.WithConnection(
         signalr.NewHTTPConnection(hubURL, signalr.WithHTTPQuery(
-            map[string]string{"access_token": c.deviceJWT},
+            map[string]string{"access_token": c.peerJWT},
         )),
     )
 
@@ -1360,7 +1360,7 @@ func (c *Client) handleReceiveAnswer(msg *SignalingMessage) {
     }
 
     // Send to waiting goroutine
-    if ch, exists := c.pendingAnswers[msg.FromDeviceID]; exists {
+    if ch, exists := c.pendingAnswers[msg.FromPeerID]; exists {
         ch <- &answer
     }
 }
@@ -1460,7 +1460,7 @@ ghost-coordination/                  # New .NET project
 │       │
 │       ├── Models/                  # Data models
 │       │   ├── Account.cs
-│       │   ├── Device.cs
+│       │   ├── Peer.cs
 │       │   └── PairingSession.cs
 │       │
 │       ├── Data/                    # EF Core
@@ -1468,7 +1468,7 @@ ghost-coordination/                  # New .NET project
 │       │   └── Migrations/
 │       │
 │       ├── Apis/                    # Minimal API endpoints
-│       │   ├── DeviceApis.cs
+│       │   ├── PeerApis.cs
 │       │   └── PairingApis.cs
 │       │
 │       ├── Hubs/                    # SignalR hubs
@@ -1477,8 +1477,8 @@ ghost-coordination/                  # New .NET project
 │       ├── Services/                # Business logic
 │       │   ├── IAccountService.cs
 │       │   ├── AccountService.cs
-│       │   ├── IDeviceService.cs
-│       │   ├── DeviceService.cs
+│       │   ├── IPeerService.cs
+│       │   ├── PeerService.cs
 │       │   ├── IPairingService.cs
 │       │   └── PairingService.cs
 │       │
@@ -1487,7 +1487,7 @@ ghost-coordination/                  # New .NET project
 │
 ├── tests/
 │   └── GhostCoordination.Tests/
-│       ├── DeviceApiTests.cs
+│       ├── PeerApiTests.cs
 │       ├── PairingApiTests.cs
 │       └── SignalingHubTests.cs
 │
@@ -1510,9 +1510,9 @@ ghost-coordination/                  # New .NET project
     "Audience": "ghost-coordination-api"
   },
   "Jwt": {
-    "Secret": "your-jwt-secret-for-device-tokens",
+    "Secret": "your-jwt-secret-for-peer-tokens",
     "Issuer": "ghost-coordination",
-    "Audience": "ghost-devices"
+    "Audience": "ghost-peers"
   },
   "Pairing": {
     "CodeLength": 6,
@@ -1563,7 +1563,7 @@ ghost-coordination/                  # New .NET project
 |------|---------|
 | `pkg/signaling/client.go` | SignalR client (connects to .NET hub) |
 | `pkg/signaling/protocol.go` | Message types matching .NET DTOs |
-| `internal/coordination/client.go` | REST API client for device management |
+| `internal/coordination/client.go` | REST API client for peer management |
 | `internal/coordination/pairing.go` | Pairing flow implementation |
 | `internal/crypto/keyexchange.go` | Secure key exchange |
 | `internal/crypto/x25519.go` | Curve25519 operations |
@@ -1573,9 +1573,9 @@ ghost-coordination/                  # New .NET project
 | File | Purpose |
 |------|---------|
 | `Program.cs` | Application entry, DI, middleware |
-| `Models/*.cs` | Account, Device, PairingSession entities |
+| `Models/*.cs` | Account, Peer, PairingSession entities |
 | `Data/AppDbContext.cs` | EF Core context |
-| `Apis/DeviceApis.cs` | Device registration/discovery endpoints |
+| `Apis/PeerApis.cs` | Peer registration/discovery endpoints |
 | `Apis/PairingApis.cs` | Pairing initiation/completion endpoints |
 | `Hubs/SignalingHub.cs` | SignalR hub for real-time signaling |
 | `Services/*.cs` | Business logic services |

@@ -30,7 +30,7 @@ Ghost-GO is a peer-to-peer VPN system that combines:
                             │
                 ┌───────────▼────────────┐
                 │  Coordination Server   │
-                │  - Device registry     │
+                │  - Peer registry       │
                 │  - ICE signaling       │
                 │  - Discovery           │
                 └───────────┬────────────┘
@@ -46,12 +46,12 @@ Ghost-GO is a peer-to-peer VPN system that combines:
     │        │       │             │        │      │
     │   ┌────▼────┐  │             │   ┌────▼────┐ │
     │   │WireGuard│  │             │   │WireGuard│ │
-    │   │ Device  │  │             │   │ Device  │ │
+    │   │ Tunnel  │  │             │   │ Tunnel  │ │
     │   └────┬────┘  │             │   └────┬────┘ │
     │        │       │             │        │      │
     │   ┌────▼────┐  │             │   ┌────▼────┐ │
     │   │   TUN   │  │             │   │   TUN   │ │
-    │   │ Device  │  │             │   │ Device  │ │
+    │   │Interface│  │             │   │Interface│ │
     │   └─────────┘  │             │   └─────────┘ │
     └────────────────┘             └────────────────┘
 ```
@@ -88,12 +88,12 @@ Ghost-GO is a peer-to-peer VPN system that combines:
 - Direct packet forwarding
 - No additional buffering
 
-### 3. WireGuard Device (`internal/wireguard/device.go`)
+### 3. WireGuard Tunnel (`internal/wireguard/tunnel.go`)
 
 **Purpose**: Encrypted tunnel management.
 
 **Responsibilities**:
-- Device lifecycle (Up/Down/Close)
+- Tunnel lifecycle (Up/Down/Close)
 - Peer configuration
 - IPC-based configuration (standard WireGuard protocol)
 - Dynamic endpoint updates
@@ -104,7 +104,7 @@ Ghost-GO is a peer-to-peer VPN system that combines:
 - Peer management
 - Status monitoring
 
-### 4. TUN Device (`internal/wireguard/tun.go`)
+### 4. TUN Interface (`internal/wireguard/tun.go`)
 
 **Purpose**: Virtual network interface.
 
@@ -112,7 +112,7 @@ Ghost-GO is a peer-to-peer VPN system that combines:
 - **Desktop**: Unified implementation (wireguard-go handles OS differences)
   - Linux: `/dev/net/tun`
   - Windows: WinTun driver
-  - macOS: `utun` devices
+  - macOS: `utun` interfaces
 - **Mobile** (Phase 5):
   - Android: VpnService file descriptor
   - iOS: NEPacketTunnelProvider packet flow
@@ -123,7 +123,7 @@ Ghost-GO is a peer-to-peer VPN system that combines:
 
 **Responsibilities**:
 - User authentication (JWT/OAuth)
-- Device registration
+- Peer registration
 - Peer discovery
 - ICE signaling (WebSocket)
 - Online status tracking
@@ -143,13 +143,13 @@ Ghost-GO is a peer-to-peer VPN system that combines:
      ├─→ Phone: Login → JWT token
      └─→ Hub: Login → JWT token
 
-  2. Devices register with coordination server
-     ├─→ Phone: POST /devices {jwt, public_key, device_id}
-     └─→ Hub: POST /devices {jwt, public_key, device_id}
+  2. Peers register with coordination server
+     ├─→ Phone: POST /peers {jwt, public_key, peer_id}
+     └─→ Hub: POST /peers {jwt, public_key, peer_id}
 
   3. Phone discovers hub
-     └─→ GET /devices/discover {jwt}
-         ← Returns: hub's device_id, public_key, online status
+     └─→ GET /peers/discover {jwt}
+         ← Returns: hub's peer_id, public_key, online status
 
 ┌─────────────────────────────────────────────────────────────────┐
 │ Phase 2: ICE Signaling                                          │
@@ -189,17 +189,17 @@ Ghost-GO is a peer-to-peer VPN system that combines:
       ├─→ Phone: NewICEBind(conn)
       └─→ Hub: NewICEBind(conn)
 
-  11. WireGuard devices created
-      ├─→ Phone: NewDevice(tun, bind, config)
-      └─→ Hub: NewDevice(tun, bind, config)
+  11. WireGuard tunnels created
+      ├─→ Phone: NewTunnel(tun, bind, config)
+      └─→ Hub: NewTunnel(tun, bind, config)
 
   12. Peers configured
       ├─→ Phone: AddPeer(hub_public_key, allowed_ips)
       └─→ Hub: AddPeer(phone_public_key, allowed_ips)
 
-  13. Devices brought up
-      ├─→ Phone: device.Up()
-      └─→ Hub: device.Up()
+  13. Tunnels brought up
+      ├─→ Phone: tunnel.Up()
+      └─→ Hub: tunnel.Up()
 
   14. WireGuard handshake
       └─→ Encrypted tunnel established! ✓
@@ -228,16 +228,16 @@ Ghost-GO is a peer-to-peer VPN system that combines:
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Layer 2: Device Registration & Authorization                    │
-│ - Maps devices to user accounts                                 │
+│ Layer 2: Peer Registration & Authorization                      │
+│ - Maps peers to user accounts                                   │
 │ - Stores WireGuard public keys                                  │
-│ - Provides: Device ownership, Authorization                     │
+│ - Provides: Peer ownership, Authorization                       │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ Layer 3: Discovery & Access Control                             │
-│ - User A can only discover User A's devices                     │
+│ - User A can only discover User A's peers                       │
 │ - JWT authentication required                                   │
 │ - Provides: Access control, Isolation                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -265,11 +265,11 @@ Ghost-GO is a peer-to-peer VPN system that combines:
 
 **Without proper authentication**:
 ```
-Attacker steals device_id
+Attacker steals peer_id
   ↓
-Registers fake device with coordination server
+Registers fake peer with coordination server
   ↓
-Victim's phone discovers fake device
+Victim's phone discovers fake peer
   ↓
 Connects to attacker ✗
 ```
@@ -294,22 +294,22 @@ Returns JWT token: {
 Client stores JWT for API calls
 ```
 
-**2. Device Registration**
+**2. Peer Registration**
 
 ```
-POST /api/devices
+POST /api/peers
 Authorization: Bearer <jwt>
 Body: {
-  device_type: "phone",
+  peer_type: "phone",
   public_key: "wg_pub_key_abc123",
-  device_id: "phone_xyz789",
-  device_name: "My Phone"
+  peer_id: "phone_xyz789",
+  peer_name: "My Phone"
 }
 
 Server:
   1. Validates JWT signature
   2. Extracts user_id from JWT
-  3. Stores: users[user_123].devices[phone_xyz789] = {
+  3. Stores: users[user_123].peers[phone_xyz789] = {
        public_key: "wg_pub_key_abc123",
        ...
      }
@@ -318,17 +318,17 @@ Server:
 **3. Discovery (Account-Scoped)**
 
 ```
-GET /api/devices/discover
+GET /api/peers/discover
 Authorization: Bearer <jwt>
 
 Server:
   1. Validates JWT → extracts user_id = "user_123"
-  2. Queries: SELECT * FROM devices WHERE user_id = 'user_123'
-  3. Returns ONLY devices owned by user_123
+  2. Queries: SELECT * FROM peers WHERE user_id = 'user_123'
+  3. Returns ONLY peers owned by user_123
 
 Result:
-  User A can ONLY see User A's devices
-  User B cannot see User A's devices
+  User A can ONLY see User A's peers
+  User B cannot see User A's peers
 ```
 
 **4. Connection Authorization**
@@ -337,22 +337,22 @@ Result:
 POST /api/connections/initiate
 Authorization: Bearer <jwt>
 Body: {
-  from_device: "phone_xyz789",
-  to_device: "hub_abc123"
+  from_peer: "phone_xyz789",
+  to_peer: "hub_abc123"
 }
 
 Server verifies:
   ✓ JWT is valid
-  ✓ Both devices belong to JWT.user_id
-  ✓ User is authorized to connect these devices
-  ✗ Reject if devices belong to different users
+  ✓ Both peers belong to JWT.user_id
+  ✓ User is authorized to connect these peers
+  ✗ Reject if peers belong to different users
 ```
 
 **5. WireGuard Cryptographic Verification**
 
 Even if coordination server is compromised:
 ```
-Attacker registers fake device
+Attacker registers fake peer
   ↓
 Phone gets attacker's public key from server
   ↓
@@ -361,9 +361,9 @@ WireGuard handshake begins
 Phone sends data encrypted with pub_attacker
   ↓
 Only attacker's priv_attacker can decrypt ✓
-  BUT: Attacker doesn't have real device's private key
+  BUT: Attacker doesn't have real peer's private key
   ↓
-Can't impersonate legitimate device
+Can't impersonate legitimate peer
   ↓
 Traffic is encrypted but to wrong destination
   (Coordination was compromised, but crypto still works)
@@ -371,23 +371,23 @@ Traffic is encrypted but to wrong destination
 
 ### Anti-Forgery Protections
 
-**1. Device ID Forgery Prevention**
+**1. Peer ID Forgery Prevention**
 
 ```
 Registration requires:
   ✓ Valid JWT (user authenticated)
-  ✓ Unique device_id per user account
-  ✓ Server generates device_token (signed)
+  ✓ Unique peer_id per user account
+  ✓ Server generates peer_token (signed)
 
-device_token = sign({
-  device_id,
+peer_token = sign({
+  peer_id,
   user_id,
   public_key
 }, server_secret)
 
 Future authentications:
-  Client sends: JWT + device_token
-  Server verifies: JWT signature + device_token signature
+  Client sends: JWT + peer_token
+  Server verifies: JWT signature + peer_token signature
 ```
 
 **2. Public Key Pinning**
@@ -408,10 +408,10 @@ Subsequent connections:
 
 ```
 Registration:
-  1. Device: "Register with public_key X"
+  1. Peer: "Register with public_key X"
   2. Server: "Prove you own the private key"
      → Sends nonce: "random_challenge_123"
-  3. Device: signature = sign(nonce, private_key)
+  3. Peer: signature = sign(nonce, private_key)
   4. Server: verify(signature, nonce, public_key)
   5. Only real key owner can produce valid signature ✓
 ```
@@ -424,17 +424,17 @@ Registration:
 - ✅ Perfect forward secrecy
 
 **What WireGuard Keys DON'T Provide**:
-- ❌ Account association (which user owns which device?)
+- ❌ Account association (which user owns which peer?)
 - ❌ Authorization policy (who can connect to whom?)
 - ❌ Discovery (how to find peers and get their keys?)
-- ❌ Revocation (how to block compromised devices?)
+- ❌ Revocation (how to block compromised peers?)
 
 **Example Attack**:
 ```
 No account system, only public keys:
 
-1. Attacker steals hub's device_id (from logs/network/etc.)
-2. Attacker registers: device_id=hub_abc123, public_key=pub_attacker
+1. Attacker steals hub's peer_id (from logs/network/etc.)
+2. Attacker registers: peer_id=hub_abc123, public_key=pub_attacker
 3. Victim's phone queries: "Where is hub_abc123?"
 4. Server returns: pub_attacker
 5. Phone connects via WireGuard with pub_attacker
@@ -444,11 +444,11 @@ No account system, only public keys:
 
 **With account system**:
 ```
-1. Attacker tries to register with hub's device_id
+1. Attacker tries to register with hub's peer_id
 2. Server requires JWT
 3. Attacker's JWT has user_attacker (different user)
-4. Server rejects: "device_id already registered to user_123"
-5. OR: Attacker uses new device_id
+4. Server rejects: "peer_id already registered to user_123"
+5. OR: Attacker uses new peer_id
    → Victim's phone won't discover it (scoped to user_123)
 6. Connection prevented ✓
 ```
@@ -463,9 +463,9 @@ No account system, only public keys:
 **Ghost-GO Security**:
 ```
 IdP/OAuth    → Proves you're a valid user
-Account DB   → Maps users to devices
-Discovery    → Only shows your devices
-WireGuard    → Proves device identity + encrypts traffic
+Account DB   → Maps users to peers
+Discovery    → Only shows your peers
+WireGuard    → Proves peer identity + encrypts traffic
 ```
 
 ---
@@ -477,8 +477,8 @@ WireGuard    → Proves device identity + encrypts traffic
 **Components**:
 - ICE agent wrapper (Pion ICE v3)
 - ICEBind adapter (conn.Bind)
-- WireGuard device wrapper
-- TUN device abstraction
+- WireGuard tunnel wrapper
+- TUN interface abstraction
 - Demo application
 
 **Status**: Fully implemented, tested, debugged
@@ -490,7 +490,7 @@ WireGuard    → Proves device identity + encrypts traffic
 **Components**:
 - Coordination server (WebSocket signaling)
 - User authentication (JWT initially, OAuth later)
-- Device registration API
+- Peer registration API
 - Discovery API
 - ICE signaling automation
 
@@ -559,7 +559,7 @@ WireGuard    → Proves device identity + encrypts traffic
     └─────────┘     └─────────┘     └─────────┘
 ```
 
-**Use Case**: Remote access to home network from mobile devices
+**Use Case**: Remote access to home network from phones and laptops
 
 **Hub**:
 - Runs on user's home network (Raspberry Pi, NAS, PC)
@@ -585,7 +585,7 @@ WireGuard    → Proves device identity + encrypts traffic
                  └────────┘
 ```
 
-**Use Case**: Direct device-to-device connections
+**Use Case**: Direct peer-to-peer connections
 
 **Features**:
 - Any peer can connect to any other peer

@@ -46,12 +46,12 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
    - Establish ICE connection with desktop peer
 
 2. **WireGuard Key Management**
-   - Generate WireGuard keypair on device
+   - Generate WireGuard keypair locally
    - Display public key
    - Accept peer public key (manual input or QR code)
 
 3. **Userspace Network Stack**
-   - WireGuard device with userspace networking (no TUN devices)
+   - WireGuard interface with userspace networking (no TUN interfaces)
    - Virtual IP addresses (desktop: 10.0.0.1, mobile: 10.0.0.2)
    - Application-level network access via Go net.Conn/HTTP
 
@@ -74,7 +74,7 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 
 ### Out of Scope
 
-- ❌ TUN devices (no kernel-level networking)
+- ❌ TUN interfaces (no kernel-level networking)
 - ❌ VpnService integration (Android system VPN)
 - ❌ NEPacketTunnelProvider integration (iOS system VPN)
 - ❌ Automatic reconnection
@@ -117,13 +117,13 @@ This phase creates a **minimal MVP React Native Expo app** to validate the ghost
 │  │          ghost-go Core Library                   │   │
 │  │  - ICE agent (pion/ice)                          │   │
 │  │  - ICEBind adapter                               │   │
-│  │  - WireGuard device (userspace, NO TUN)          │   │
+│  │  - WireGuard interface (userspace, NO TUN)       │   │
 │  │  - Userspace TCP/IP stack (gvisor netstack)      │   │
 │  │  - Key generation                                │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 
-Data Flow (Userspace Networking - No TUN Devices):
+Data Flow (Userspace Networking - No TUN Interfaces):
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
 │   Mobile App                       Desktop Peer         │
@@ -270,7 +270,7 @@ func (c *GhostClient) SetLocalIP(ipAddress string) error
 func (c *GhostClient) GetTunnelStats() string
 
 // HTTPGet performs an HTTP GET request through the WireGuard tunnel
-// Uses userspace networking (no TUN device required)
+// Uses userspace networking (no TUN interface required)
 // Returns JSON: { "success": true, "statusCode": 200, "body": "...", "latencyMs": 123 }
 func (c *GhostClient) HTTPGet(url string) string
 
@@ -328,7 +328,7 @@ The mobile bindings use ghost-go's userspace networking (Phase 1, Section 1.5). 
 // GhostClient wraps ghost-go's userspace networking for mobile
 type GhostClient struct {
     iceAgent  *ice.Agent
-    wgDevice  *device.Device
+    wgTunnel  *device.Device
     tunNet    *wireguard.Net   // From ghost-go's CreateNetTUN
     // ...
 }
@@ -346,7 +346,7 @@ func (c *GhostClient) setupTunnel() error {
     }
 
     // Standard ghost-go WireGuard setup
-    c.wgDevice = device.NewDevice(tunDev, c.iceBind, logger)
+    c.wgTunnel = device.NewDevice(tunDev, c.iceBind, logger)
     c.tunNet = tunNet  // Store for DialContext/ListenTCP
     return nil
 }
@@ -543,7 +543,7 @@ export function useGhostClient() {
     setState('connecting');
   };
 
-  // HTTP request through userspace networking (no TUN device)
+  // HTTP request through userspace networking (no TUN interface)
   const httpGet = async (url: string): Promise<{
     success: boolean;
     statusCode?: number;
@@ -586,7 +586,7 @@ export default function App() {
   }, [state]);
 
   const handleTestHTTP = async () => {
-    // HTTP request goes through userspace WireGuard tunnel (no TUN device)
+    // HTTP request goes through userspace WireGuard tunnel (no TUN interface)
     const result = await httpGet('http://10.0.0.1:8080/test');
     setHttpResult(result.success
       ? `✓ ${result.statusCode} - ${result.body} (${result.latencyMs}ms)`
@@ -789,7 +789,7 @@ func main() {
 
     log.Println("")
     log.Println("Mobile peer can now test connectivity!")
-    log.Println("No TUN device or root access required - all networking is userspace!")
+    log.Println("No TUN interface or root access required - all networking is userspace!")
 
     // Wait for shutdown signal
     // ...
@@ -845,7 +845,7 @@ go run ./cmd/mobile-demo -role server  # No sudo needed!
 # [QR code displayed]
 #
 # Waiting for mobile peer...
-# Note: No TUN device or root access required!
+# Note: No TUN interface or root access required!
 ```
 
 **Step 2: Start Mobile App**
@@ -973,8 +973,8 @@ Create `src/hooks/useGhostClient.ts` and basic UI components.
 ### Step 6: Testing Strategy
 
 #### Manual Testing
-1. Run app on Android device/emulator
-2. Run app on iOS device/simulator
+1. Run app on Android phone/emulator
+2. Run app on iOS phone/simulator
 3. Run desktop demo peer (`cmd/demo`)
 4. Test ICE connection establishment
 
@@ -1022,18 +1022,18 @@ npm test -- --updateSnapshot
 - [x] Credential exchange
 - [x] Connection establishment between peers
 - [x] Selected candidate pair reported correctly
-- [ ] ICE agent on Android device (requires device testing)
-- [ ] ICE agent on iOS device (requires device testing)
+- [ ] ICE agent on Android phone (requires phone testing)
+- [ ] ICE agent on iOS phone (requires phone testing)
 
 ### WireGuard Functionality (Host Tests ✅)
 - [x] Key generation
 - [x] Public key export
 - [x] Key validation (32 bytes, non-zero)
-- [x] Userspace network stack initialization (no TUN device)
+- [x] Userspace network stack initialization (no TUN interface)
 - [x] Virtual IP address assignment
 - [x] WireGuard handshake completes successfully
-- [ ] Key generation on Android device (requires device testing)
-- [ ] Key generation on iOS device (requires device testing)
+- [ ] Key generation on Android phone (requires phone testing)
+- [ ] Key generation on iOS phone (requires phone testing)
 
 ### Data Transfer & Connectivity (Host Tests ✅)
 - [x] HTTP server starts on virtual IP
@@ -1042,9 +1042,9 @@ npm test -- --updateSnapshot
 - [x] Response data received correctly
 - [x] Tunnel statistics update (bytes sent/received)
 - [x] Multiple HTTP requests work (connection persistence)
-- [x] No TUN device or root permissions required
-- [ ] Large payload transfer (>10KB) - needs device testing
-- [ ] Latency validation (<500ms) - needs device testing
+- [x] No TUN interface or root permissions required
+- [ ] Large payload transfer (>10KB) - needs phone testing
+- [ ] Latency validation (<500ms) - needs phone testing
 
 ### Build System ✅
 - [x] Android AAR builds successfully (34MB)
@@ -1052,7 +1052,7 @@ npm test -- --updateSnapshot
 - [x] Makefile targets work (android, test, clean, help)
 - [ ] iOS XCFramework builds (requires macOS)
 
-### App Lifecycle (Requires Device Testing)
+### App Lifecycle (Requires Phone Testing)
 - [ ] Proper cleanup on app backgrounding
 - [ ] Reconnection on app foregrounding
 - [ ] No crashes on rapid start/stop
@@ -1062,10 +1062,10 @@ npm test -- --updateSnapshot
 - [x] Invalid signaling data error
 - [x] Timeout handling
 - [x] ICE connection failure scenarios
-- [ ] Network unavailable error (device testing)
-- [ ] Graceful error display in UI (device testing)
+- [ ] Network unavailable error (phone testing)
+- [ ] Graceful error display in UI (phone testing)
 
-### Platform-Specific (Requires Device Testing)
+### Platform-Specific (Requires Phone Testing)
 - [ ] Android 8+ compatibility
 - [ ] iOS 13+ compatibility
 - [x] Android permissions configured (INTERNET, ACCESS_NETWORK_STATE, CAMERA)
@@ -1104,7 +1104,7 @@ npm test -- --updateSnapshot
 - [x] Establishes ICE connection (controlling/controlled roles)
 - [x] Reports connection state accurately
 - [x] Generates WireGuard keys (Curve25519)
-- [x] Initializes userspace network stack (no TUN device required)
+- [x] Initializes userspace network stack (no TUN interface required)
 - [x] Completes WireGuard handshake between peers
 - [x] HTTP requests work through userspace tunnel
 - [x] Tunnel statistics track data transfer
@@ -1127,9 +1127,9 @@ npm test -- --updateSnapshot
 - [x] Connection screen for signaling exchange
 - [x] Test screen for HTTP testing
 
-### Device Testing (Phase 5 Prerequisite)
+### Phone Testing (Phase 5 Prerequisite)
 
-⏳ **Mobile app on device:**
+⏳ **Mobile app on phone:**
 - [ ] Creates ICE agent on Android
 - [ ] Creates ICE agent on iOS
 - [ ] Gathers ICE candidates via STUN
@@ -1145,7 +1145,7 @@ npm test -- --updateSnapshot
 - [x] Event-based async architecture
 - [x] Host-based testing patterns (no emulator needed)
 - [x] End-to-end encrypted data transfer through WireGuard tunnel
-- [x] Userspace networking without TUN devices (gvisor/netstack)
+- [x] Userspace networking without TUN interfaces (gvisor/netstack)
 - [x] Cross-platform compatibility without platform-specific permissions
 
 ---
@@ -1257,7 +1257,7 @@ require (
 
 The mobile bindings depend on ghost-go core, which provides:
 - ICE agent (pion/ice)
-- WireGuard device (wireguard-go)
+- WireGuard interface (wireguard-go)
 - Userspace networking (gvisor/netstack via wireguard-go/tun/netstack)
 
 See [Phase 1 Dependencies](phase-1-core-infrastructure.md#dependencies) for the full list.
@@ -1379,7 +1379,7 @@ See [Phase 1 Dependencies](phase-1-core-infrastructure.md#dependencies) for the 
 **Phase 2**: Signaling & Coordination Server
 - Eliminates manual signaling (QR codes)
 - WebSocket-based candidate exchange
-- Device discovery
+- Peer discovery
 - Automatic connection establishment
 
 **Phase 5**: Full Mobile Integration

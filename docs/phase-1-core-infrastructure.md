@@ -14,12 +14,12 @@ This phase implements the **core P2P tunneling library** - a pure Go library foc
 - ✅ ICE-based NAT traversal (Pion/ICE)
 - ✅ WireGuard encrypted tunneling
 - ✅ ICEBind adapter (bridges ICE to WireGuard)
-- ✅ Platform-specific TUN device creation (kernel)
+- ✅ Platform-specific TUN interface creation (kernel)
 - 📋 Userspace networking via gvisor/netstack (no root required)
 
 **What this library does NOT do:**
 - ❌ NO coordination/signaling (handled by ghost-proxy in Phase 2b)
-- ❌ NO device registration (handled by .NET backend in Phase 2a)
+- ❌ NO peer registration (handled by .NET backend in Phase 2a)
 - ❌ NO HTTP servers/APIs (handled by ghost-proxy in Phase 2b)
 - ❌ NO WebSocket clients (handled by ghost-proxy in Phase 2b)
 
@@ -57,8 +57,8 @@ This phase establishes the foundational components: Pion/ICE integration for NAT
 - ICE agent wrapper with STUN/TURN support
 - ICEBind adapter (critical component)
 - WireGuard configuration and key management
-- Cross-platform TUN device abstraction (kernel-based)
-- WireGuard device wrapper with lifecycle management
+- Cross-platform TUN interface abstraction (kernel-based)
+- WireGuard tunnel wrapper with lifecycle management
 - Integration tests with mock signaling
 - Demo application with interactive shell
 - **All critical bugs debugged and fixed**
@@ -131,15 +131,15 @@ func (b *ICEBind) ParseEndpoint(s string) (conn.Endpoint, error)
 - Endpoint is fixed (single peer per bind)
 - BatchSize of 1 for simplicity
 
-### 1.3 WireGuard Device Wrapper (`internal/wireguard/device.go`)
+### 1.3 WireGuard Tunnel Wrapper (`internal/wireguard/tunnel.go`)
 
 **Status**: ✅ Complete
 
-Wraps wireguard-go's device with lifecycle management and peer configuration.
+Wraps wireguard-go's tunnel with lifecycle management and peer configuration.
 
 ```go
-type Device struct {
-    device *device.Device
+type Tunnel struct {
+    wg     *device.Device
     tun    tun.Device
     bind   conn.Bind
     config *WireGuardConfig
@@ -151,16 +151,16 @@ type Device struct {
 }
 
 // Core methods implemented:
-func NewDevice(tunDevice tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Device, error)
-func (d *Device) Configure(privateKey []byte) error
-func (d *Device) AddPeer(peerConfig *PeerConfig) error
-func (d *Device) RemovePeer(publicKey []byte) error
-func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error
-func (d *Device) Up() error
-func (d *Device) Down() error
-func (d *Device) Close() error
-func (d *Device) GetPeers() []*PeerConfig
-func (d *Device) GetStatus() (string, error)
+func NewTunnel(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Tunnel, error)
+func (d *Tunnel) Configure(privateKey []byte) error
+func (d *Tunnel) AddPeer(peerConfig *PeerConfig) error
+func (d *Tunnel) RemovePeer(publicKey []byte) error
+func (d *Tunnel) UpdatePeerEndpoint(publicKey []byte, endpoint string) error
+func (d *Tunnel) Up() error
+func (d *Tunnel) Down() error
+func (d *Tunnel) Close() error
+func (d *Tunnel) GetPeers() []*PeerConfig
+func (d *Tunnel) GetStatus() (string, error)
 ```
 
 **Key features**:
@@ -171,14 +171,14 @@ func (d *Device) GetStatus() (string, error)
 - Proper resource cleanup
 - Structured logging
 
-### 1.4 TUN Device Abstraction (`internal/wireguard/tun.go`)
+### 1.4 TUN Interface Abstraction (`internal/wireguard/tun.go`)
 
 **Status**: ✅ Complete - Simplified implementation
 
-Platform-agnostic TUN device creation. **wireguard-go handles platform differences internally**, so we only need to set default names per platform.
+Platform-agnostic TUN interface creation. **wireguard-go handles platform differences internally**, so we only need to set default names per platform.
 
 ```go
-// CreateTUN creates a TUN device for desktop platforms
+// CreateTUN creates a TUN interface for desktop platforms
 // Works identically on Linux, Windows, and macOS
 func CreateTUN(name string, mtu int) (tun.Device, error)
 
@@ -224,13 +224,13 @@ Total: ~61 lines, DRY principle followed
 **Why This Works:**
 All desktop platforms use **identical** TUN creation via wireguard-go:
 ```go
-device, err := tun.CreateTUN(name, mtu)
+tunDev, err := tun.CreateTUN(name, mtu)
 ```
 
 wireguard-go's internal implementation handles:
-- **Linux**: `/dev/net/tun` character device operations
+- **Linux**: `/dev/net/tun` character interface operations
 - **Windows**: WinTun driver integration and adapter creation
-- **macOS**: `utun` device creation via system calls
+- **macOS**: `utun` interface creation via system calls
 
 We only need to provide platform-appropriate **default names**.
 
@@ -281,11 +281,11 @@ iOS is **not fd-based** - it uses packet flow callbacks, requiring custom bridgi
 
 **Status**: 📋 PLANNED
 
-Provides an alternative to kernel TUN devices using gvisor's netstack - a complete userspace TCP/IP stack. This enables WireGuard tunneling without requiring root/admin privileges or platform-specific VPN APIs.
+Provides an alternative to kernel TUN interfaces using gvisor's netstack - a complete userspace TCP/IP stack. This enables WireGuard tunneling without requiring root/admin privileges or platform-specific VPN APIs.
 
 ```go
-// CreateNetTUN creates a userspace TUN device backed by gvisor/netstack
-// Returns both the TUN device (for WireGuard) and the Net (for applications)
+// CreateNetTUN creates a userspace TUN interface backed by gvisor/netstack
+// Returns both the TUN interface (for WireGuard) and the Net (for applications)
 func CreateNetTUN(localAddresses []netip.Addr, dnsServers []netip.Addr, mtu int) (tun.Device, *Net, error)
 
 // Net provides standard Go networking interfaces over the WireGuard tunnel
@@ -326,11 +326,11 @@ func (n *Net) ListenUDP(addr *net.UDPAddr) (*gonet.UDPConn, error)
 
 ```go
 // Userspace networking integrates at the same point as kernel TUN
-// The WireGuard device doesn't know the difference
+// The WireGuard tunnel doesn't know the difference
 
 // Option 1: Kernel TUN (requires root)
 tunDev, err := CreateTUN("ghost0", 1420)
-wgDevice := device.NewDevice(tunDev, iceBind, logger)
+wgTunnel := device.NewDevice(tunDev, iceBind, logger)
 
 // Option 2: Userspace TUN (no root needed)
 tunDev, tunNet, err := CreateNetTUN(
@@ -338,7 +338,7 @@ tunDev, tunNet, err := CreateNetTUN(
     []netip.Addr{},                                   // DNS servers (optional)
     1420,                                             // MTU
 )
-wgDevice := device.NewDevice(tunDev, iceBind, logger)
+wgTunnel := device.NewDevice(tunDev, iceBind, logger)
 // tunNet now provides DialContext/ListenTCP for applications
 ```
 
@@ -383,11 +383,11 @@ Userspace TCP/IP Stack (gvisor/netstack):
   Creates TCP connection, manages packets
        │
        ▼
-Channel-based TUN Device:
+Channel-based TUN Interface:
   IP packets written to channel (not kernel)
        │
        ▼
-WireGuard Device:
+WireGuard Tunnel:
   Encrypts packets with peer's public key
        │
        ▼
@@ -413,7 +413,7 @@ internal/wireguard/
 **Implementation Notes:**
 
 1. Uses `golang.zx2c4.com/wireguard/tun/netstack` which wraps gvisor
-2. The `tun.Device` returned works with existing WireGuard device code unchanged
+2. The `tun.Device` returned works with existing WireGuard tunnel code unchanged
 3. The `Net` object is the application interface - exposes standard Go networking
 4. No HTTP-specific code in ghost-go - applications build protocols on top
 
@@ -470,10 +470,10 @@ type WireGuardConfig struct {
 4. Add remote candidates
 5. Connect ICE agent → returns net.Conn
 6. Create ICEBind with ICE connection
-7. Create TUN device (platform-specific)
-8. Create WireGuard device with ICEBind + TUN
+7. Create TUN interface (platform-specific)
+8. Create WireGuard tunnel with ICEBind + TUN
 9. Configure WireGuard peer with exchanged public key
-10. Bring up WireGuard device
+10. Bring up WireGuard tunnel
 ```
 
 ---
@@ -487,11 +487,11 @@ type WireGuardConfig struct {
 | `internal/ice/config.go` | ✅ Complete | ICE configuration with constants | ~185 |
 | `internal/ice/types.go` | ✅ Complete | Candidate, Endpoint types | ~110 |
 | `internal/ice/errors.go` | ✅ Complete | Domain-specific errors | ~25 |
-| `internal/wireguard/device.go` | ✅ Complete | WireGuard device wrapper (HEX IPC) | ~410 |
+| `internal/wireguard/tunnel.go` | ✅ Complete | WireGuard tunnel wrapper (HEX IPC) | ~410 |
 | `internal/wireguard/config.go` | ✅ Complete | WireGuard configuration with constants | ~150 |
 | `internal/wireguard/keys.go` | ✅ Complete | Key generation with documented constants | ~130 |
 | `internal/wireguard/errors.go` | ✅ Complete | Domain-specific errors | ~25 |
-| `internal/wireguard/tun.go` | ✅ Complete | TUN device abstraction (kernel) | ~45 |
+| `internal/wireguard/tun.go` | ✅ Complete | TUN interface abstraction (kernel) | ~45 |
 | `internal/wireguard/tun_netstack.go` | 📋 Planned | Userspace TUN via gvisor/netstack | ~80 |
 | `internal/wireguard/tun_linux.go` | ✅ Simplified | Linux default name constant | ~6 |
 | `internal/wireguard/tun_darwin.go` | ✅ Simplified | macOS default name constant | ~6 |
@@ -506,7 +506,7 @@ type WireGuardConfig struct {
 | `internal/ice/agent_test.go` | Agent creation tests | ✅ All passing |
 | `internal/wireguard/config_test.go` | 12 tests | ✅ All passing |
 | `internal/wireguard/keys_test.go` | 10 tests | ✅ All passing |
-| `internal/wireguard/device_test.go` | Device lifecycle tests | ✅ All passing |
+| `internal/wireguard/tunnel_test.go` | Tunnel lifecycle tests | ✅ All passing |
 
 **Utility Files**:
 | File | Purpose |
@@ -534,7 +534,7 @@ type WireGuardConfig struct {
 - Unit tests for ICEConfig validation (10 tests passing)
 - Unit tests for WireGuardConfig validation (12 tests passing)  
 - Unit tests for key generation and validation (10 tests passing)
-- Unit tests for device lifecycle
+- Unit tests for tunnel lifecycle
 - Integration tests for ICE agent with mock signaling
 - Integration tests for ICEBind adapter
 - Full ICE connection flow tests (controlling/controlled roles)
@@ -570,7 +570,7 @@ type WireGuardConfig struct {
 ### 4. WireGuard Key Encoding
 **Issue**: "IPC error -22: invalid byte"  
 **Fix**: WireGuard IPC uses **HEX**, not base64!  
-**Files**: `internal/wireguard/device.go` (Configure, AddPeer)
+**Files**: `internal/wireguard/tunnel.go` (Configure, AddPeer)
 
 ### 5. Windows TUN Driver
 **Issue**: "Error loading wintun.dll"  
@@ -580,7 +580,7 @@ type WireGuardConfig struct {
 ### 6. Code Quality
 **Issue**: Magic constants, unhandled errors  
 **Fix**: Extracted constants, added error checking  
-**Files**: All config files, device.go, tests
+**Files**: All config files, tunnel.go, tests
 
 ---
 

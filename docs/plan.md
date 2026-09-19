@@ -16,8 +16,8 @@ Build a secure, peer-to-peer network tunneling solution (P2P VPN) enabling direc
 
 - [ ] **ICE Agent** (`internal/ice/`): Wrapper around Pion/ICE for candidate gathering and connectivity.
 - [ ] **ICEBind Adapter** (`internal/ice/bind.go`): Bridge ICE connection to WireGuard `conn.Bind`.
-- [ ] **WireGuard Device** (`internal/wireguard/`): Wrapper for `wireguard-go` device management.
-- [ ] **TUN Interface** (`internal/tun/`): Platform-specific TUN device creation (Linux/Windows/macOS).
+- [ ] **WireGuard Tunnel** (`internal/wireguard/`): Wrapper for `wireguard-go` interface management.
+- [ ] **TUN Interface** (`internal/tun/`): Platform-specific TUN interface creation (Linux/Windows/macOS).
 - [ ] **Integration Tests**: Verify packets pass between two peers over ICE.
 
 ## Phase 2: Signaling & Coordination
@@ -49,7 +49,7 @@ Build a secure, peer-to-peer network tunneling solution (P2P VPN) enabling direc
 **Goal:** User-space mobile clients (No OS-GW VPN).
 
 - [ ] **Go Mobile Bindings** (`cmd/ghost-mobile/`): Export functions to Start/Stop the user-space node and proxy.
-- [ ] **User-Space Tunneling**: Use `wireguard-go` netstack instead of TUN device.
+- [ ] **User-Space Tunneling**: Use `wireguard-go` netstack instead of a TUN interface.
 - [ ] **Local Proxy**: Expose `localhost` proxy for React Native usage.
 - [ ] **Expo Native Module**:
     - Light wrapper around Go shared library.

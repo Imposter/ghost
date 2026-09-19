@@ -15,7 +15,7 @@ Go implementation of Ghost - peer-to-peer networking using WireGuard encryption 
 - **Go 1.25+** - Modern Go features (range-over-func)
 - **WireGuard** (wireguard-go) - State-of-the-art encryption and secure tunneling
 - **Pion ICE v3** - NAT traversal and peer connectivity establishment
-- **Wintun** - Windows TUN device driver (platform-specific)
+- **Wintun** - Windows TUN interface driver (platform-specific)
 
 ## Critical Architecture: ICEBind Adapter Pattern
 
@@ -71,7 +71,7 @@ When shutting down a tunnel, resources must be closed in the correct order:
 
 ```go
 // Correct cleanup order:
-device.Close()   // 1. Stops WireGuard, calls bind.Close() (stops receive loop)
+tunnel.Close()   // 1. Stops WireGuard, calls bind.Close() (stops receive loop)
 iceConn.Close()  // 2. Caller closes the connection they created
 agent.Close()    // 3. Caller closes the ICE agent they created
 ```
@@ -110,7 +110,7 @@ ghost-go/
 │   │   └── README.md            # Comprehensive ICE package docs
 │   │
 │   ├── wireguard/               # WireGuard Encryption Package
-│   │   ├── device.go            # Device wrapper with lifecycle management
+│   │   ├── tunnel.go            # Tunnel wrapper with lifecycle management
 │   │   ├── config.go            # WireGuard & peer configuration
 │   │   ├── keys.go              # Curve25519 key generation & management
 │   │   ├── tun.go               # Cross-platform TUN creation
@@ -119,7 +119,7 @@ ghost-go/
 │   │   ├── tun_darwin.go        # macOS-specific TUN (utun)
 │   │   ├── tun_netstack.go      # ⭐ Userspace TUN via gvisor/netstack
 │   │   ├── errors.go            # WireGuard-specific errors
-│   │   ├── device_test.go       # Device unit tests
+│   │   ├── tunnel_test.go       # Tunnel unit tests
 │   │   ├── config_test.go       # Config validation tests
 │   │   ├── keys_test.go         # Key generation tests
 │   │   ├── tun_netstack_test.go # Userspace TUN tests
@@ -168,23 +168,23 @@ Provides peer-to-peer connectivity using the Interactive Connectivity Establishm
 3. Exchange candidates/credentials via signaling (out-of-band)
 4. Connect (specify controlling/controlled role)
 5. Wrap connection with ICEBind
-6. Pass to WireGuard device
+6. Pass to WireGuard tunnel
 
 ### internal/wireguard - Encryption & Tunneling
 
 Provides encrypted peer-to-peer tunneling using the WireGuard protocol. Wraps wireguard-go with lifecycle management.
 
 **Key Files:**
-- `device.go` (448 lines) - Device wrapper with full lifecycle
-  - `NewDevice()` - Creates device from TUN, bind, config
+- `tunnel.go` (448 lines) - Tunnel wrapper with full lifecycle
+  - `NewTunnel()` - Creates tunnel from TUN interface, bind, config
   - `Configure()` - Sets private key via IPC
   - `AddPeer()` / `RemovePeer()` - Peer management
   - `UpdatePeerEndpoint()` - Handle NAT rebinding
-  - `Up()` / `Down()` - Device state control
+  - `Up()` / `Down()` - Tunnel state control
   - `GetStatus()` - IPC status query
 
 - `config.go` (155 lines) - Configuration structures
-  - `WireGuardConfig` - Device settings (private key, MTU, keepalive)
+  - `WireGuardConfig` - Tunnel settings (private key, MTU, keepalive)
   - `PeerConfig` - Peer settings (public key, allowed IPs, endpoint)
   - Validation for all config fields
 
@@ -194,8 +194,8 @@ Provides encrypted peer-to-peer tunneling using the WireGuard protocol. Wraps wi
   - `EncodeKey()` / `DecodeKey()` - Base64 encoding (standard WireGuard format)
   - Key validation (32 bytes, non-zero)
 
-- `tun.go` + platform files - Cross-platform TUN device creation
-  - `CreateTUN()` - Creates TUN device (auto-detects platform)
+- `tun.go` + platform files - Cross-platform TUN interface creation
+  - `CreateTUN()` - Creates TUN interface (auto-detects platform)
   - `CreateTUNFromFD()` - Create from file descriptor (for mobile)
   - Platform-specific implementations for Linux, Windows, macOS
 
@@ -226,7 +226,7 @@ These decisions are foundational to the codebase. Changes should be carefully co
    - `Close()` only stops the receive loop, does NOT close the connection
    - Caller who creates the connection is responsible for closing it
    - This follows Go's idiom: whoever creates a resource closes it
-   - Cleanup order: `device.Close()` → `iceConn.Close()` → `agent.Close()`
+   - Cleanup order: `tunnel.Close()` → `iceConn.Close()` → `agent.Close()`
 
 2. **BatchSize = 1** (ICEBind)
    - Simplifies initial implementation
@@ -241,7 +241,7 @@ These decisions are foundational to the codebase. Changes should be carefully co
 4. **Single Endpoint Per Bind** (ICEBind)
    - ICE connections are point-to-point
    - One ICEBind = one ICE connection = one endpoint
-   - Multiple peers require multiple devices (future: connection pooling)
+   - Multiple peers require multiple tunnels (future: connection pooling)
 
 5. **Direct Reads from net.Conn** (ICEBind)
    - No additional buffering beyond recvChan (32 packets)
@@ -253,7 +253,7 @@ These decisions are foundational to the codebase. Changes should be carefully co
    - Ensures keys are valid Curve25519 points
    - Critical for WireGuard compatibility
 
-7. **IPC Field Constants** (device.go)
+7. **IPC Field Constants** (tunnel.go)
    - All IPC field names defined as constants
    - Prevents typos in string literals
    - Makes refactoring safer
@@ -276,13 +276,13 @@ These decisions are foundational to the codebase. Changes should be carefully co
 - ✅ ICE NAT traversal (Pion ICE v3)
 - ✅ WireGuard encryption (wireguard-go)
 - ✅ ICEBind adapter (critical bridge component)
-- ✅ Cross-platform TUN devices (Linux, Windows, macOS)
+- ✅ Cross-platform TUN interfaces (Linux, Windows, macOS)
 - ✅ Comprehensive test coverage
 - ✅ Working demo application
 
 **Deliverables:**
 - Complete ICE package with agent, bind, config, types
-- Complete WireGuard package with device, keys, config, TUN
+- Complete WireGuard package with tunnel, keys, config, TUN
 - Integration tests proving end-to-end connectivity
 - Demo application showing full tunnel establishment
 - Documentation (READMEs, code comments, this file)
@@ -360,24 +360,24 @@ func main() {
     // Step 5: Create ICEBind adapter
     bind := ice.NewICEBind(iceConn, logger)
 
-    // Step 6: Create TUN device
+    // Step 6: Create TUN interface
     tunDev, _ := wireguard.CreateTUN("ghost0", 1280)
 
     // Step 7: Generate WireGuard keys
     privateKey, _ := wireguard.GeneratePrivateKey()
     publicKey, _ := wireguard.GetPublicKey(privateKey)
 
-    // Step 8: Create WireGuard device
+    // Step 8: Create WireGuard tunnel
     wgConfig := &wireguard.WireGuardConfig{
         PrivateKey:          privateKey,
         MTU:                 1280,
         PersistentKeepalive: 25 * time.Second,
     }
-    device, _ := wireguard.NewDevice(tunDev, bind, wgConfig, logger)
-    defer device.Close()
+    tunnel, _ := wireguard.NewTunnel(tunDev, bind, wgConfig, logger)
+    defer tunnel.Close()
 
-    // Step 9: Configure device
-    device.Configure(privateKey)
+    // Step 9: Configure tunnel
+    tunnel.Configure(privateKey)
 
     // Step 10: Add peer
     peerConfig := &wireguard.PeerConfig{
@@ -385,10 +385,10 @@ func main() {
         AllowedIPs:          []string{"10.0.0.0/24"},
         PersistentKeepalive: 25 * time.Second,
     }
-    device.AddPeer(peerConfig)
+    tunnel.AddPeer(peerConfig)
 
-    // Step 11: Bring device up
-    device.Up()
+    // Step 11: Bring tunnel up
+    tunnel.Up()
 
     // ✅ Encrypted tunnel is now established!
     // Packets to 10.0.0.0/24 will be encrypted and sent through ICE
@@ -411,7 +411,7 @@ go test ./internal/testutil -v
 ```bash
 # Requires network access and may need elevated privileges
 go test ./internal/ice -run "TestICEConnection" -v
-sudo go test ./internal/wireguard -run "TestDevice" -v
+sudo go test ./internal/wireguard -run "TestTunnel" -v
 ```
 
 ### Demo Application
@@ -431,7 +431,7 @@ sudo go run ./cmd/demo -role b
 - Key generation and encoding
 - Candidate gathering (with mock STUN)
 - ICE connection establishment
-- WireGuard device lifecycle
+- WireGuard tunnel lifecycle
 - Error handling and edge cases
 
 ## Important Constraints & Considerations
@@ -448,7 +448,7 @@ sudo go run ./cmd/demo -role b
 
 1. **Latency**: ICEBind adds minimal latency (~1-2ms) vs raw UDP
 2. **Throughput**: BatchSize=1 limits to ~50-100 Mbps; can be optimized
-3. **Memory**: ~2-3MB per active tunnel (device + goroutines)
+3. **Memory**: ~2-3MB per active tunnel (tunnel + goroutines)
 4. **CPU**: WireGuard encryption is highly optimized; minimal overhead
 
 ### Platform Support
@@ -457,12 +457,12 @@ sudo go run ./cmd/demo -role b
 |----------|--------|-------|
 | Linux    | ✅ Full | Native TUN (requires CAP_NET_ADMIN) or userspace via netstack |
 | Windows  | ✅ Full | Wintun driver (requires Administrator) or userspace via netstack |
-| macOS    | ✅ Full | utun devices (requires root) or userspace via netstack |
+| macOS    | ✅ Full | utun interfaces (requires root) or userspace via netstack |
 | Android  | 🔄 Phase 1b | Userspace via netstack (no root required) |
 | iOS      | 🔄 Phase 1b | Userspace via netstack (no root required) |
 
 **Userspace Networking (gvisor/netstack):**
-- `CreateNetTUN()` creates a pure Go network stack - no kernel TUN device needed
+- `CreateNetTUN()` creates a pure Go network stack - no kernel TUN interface needed
 - Works on all platforms without elevated privileges
 - Ideal for mobile platforms and unprivileged environments
 - Provides `net.Conn`-compatible dial/listen through the WireGuard tunnel
@@ -470,7 +470,7 @@ sudo go run ./cmd/demo -role b
 ### Architectural Philosophy
 
 **User-Space Library**: Ghost-go is designed as a user-space library that creates encrypted tunnels. It does NOT integrate with system VPN services (Android VpnService, iOS NEPacketTunnelProvider, etc.). The library:
-- Creates the TUN device and encrypted tunnel
+- Creates the TUN interface and encrypted tunnel
 - Provides the tunnel to the application
 - Delegates tunnel management (IP assignment, routing, lifecycle) to the application
 
@@ -478,7 +478,7 @@ This design gives applications full control over tunnel behavior without requiri
 
 ### Known Limitations
 
-1. **Single Connection Per Device**: One ICEBind = one WireGuard device (future: connection pooling)
+1. **Single Connection Per Tunnel**: One ICEBind = one WireGuard tunnel (future: connection pooling)
 2. **Manual Signaling**: Phase 1 requires manual candidate exchange; automated in Phase 2
 3. **No Reconnection**: Connection loss requires full restart; handled in Phase 3
 4. **IPv4 Only (ICE)**: IPv6 support in ICE config but not tested (future work)
@@ -507,7 +507,7 @@ logger.Info("connection established",
     "remote", pair.Remote.String())
 
 // Check WireGuard status
-status, _ := device.GetStatus()
+status, _ := tunnel.GetStatus()
 fmt.Println(status)  // Full IPC output
 ```
 
@@ -516,7 +516,7 @@ fmt.Println(status)  // Full IPC output
 ```go
 // When peer's IP changes (e.g., mobile switching networks)
 newEndpoint := "203.0.113.45:51820"
-err := device.UpdatePeerEndpoint(peerPublicKey, newEndpoint)
+err := tunnel.UpdatePeerEndpoint(peerPublicKey, newEndpoint)
 if err != nil {
     logger.Error("failed to update endpoint", "err", err)
 }
@@ -526,8 +526,8 @@ if err != nil {
 
 ```go
 // Proper shutdown order
-device.Down()        // Stop WireGuard device
-device.Close()       // Close resources (also closes bind and TUN)
+tunnel.Down()        // Stop WireGuard tunnel
+tunnel.Close()       // Close resources (also closes bind and TUN)
 agent.Close()        // Close ICE agent
 ```
 
@@ -551,7 +551,7 @@ agent.Close()        // Close ICE agent
 ┌────────────▼─────────┐    ┌───▼──────────────┐
 │  internal/wireguard  │    │   internal/ice   │
 │                      │    │                  │
-│  - Device lifecycle  │    │  - Agent (Pion)  │
+│  - Tunnel lifecycle  │    │  - Agent (Pion)  │
 │  - Peer management   │◄───┤  - ICEBind ⭐    │
 │  - Key management    │    │  - Candidates    │
 │  - TUN abstraction   │    │  - Config        │
@@ -565,7 +565,7 @@ agent.Close()        // Close ICE agent
            │                          │
       ┌────▼─────┐             ┌──────▼──────┐
       │ TUN/TAP  │             │  UDP/STUN   │
-      │  Device  │             │    /TURN    │
+      │Interface │             │    /TURN    │
       └──────────┘             └─────────────┘
            │                          │
            │                          │
@@ -577,7 +577,7 @@ agent.Close()        // Close ICE agent
 **Data Flow:**
 1. Application creates ICE agent and establishes connection
 2. ICE connection wrapped in ICEBind adapter
-3. WireGuard device created with TUN device + ICEBind
+3. WireGuard tunnel created with TUN interface + ICEBind
 4. Packets from TUN → WireGuard encryption → ICEBind → ICE → Network
 5. Network → ICE → ICEBind → WireGuard decryption → TUN → Application
 

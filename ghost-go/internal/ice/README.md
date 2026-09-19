@@ -122,8 +122,8 @@ conn, _ := iceAgent.Connect(ctx, true)  // true = controlling role
 // Wrap for WireGuard
 bind := ice.NewICEBind(conn, logger)
 
-// Use with WireGuard device
-device, _ := wireguard.NewDevice(tunDev, bind, wgConfig, logger)
+// Use with WireGuard tunnel
+tunnel, _ := wireguard.NewTunnel(tunDev, bind, wgConfig, logger)
 ```
 
 ---
@@ -260,15 +260,15 @@ conn, _ := agent.Connect(ctx, true)
 // Create bind
 bind := ice.NewICEBind(conn, logger)
 
-// Create TUN device
+// Create TUN interface
 tunDev, _ := wireguard.CreateTUN("ghost0", 1280)
 
-// Create WireGuard device
+// Create WireGuard tunnel
 wgConfig := &wireguard.WireGuardConfig{
     PrivateKey: privateKey,
     MTU: 1280,
 }
-device, _ := wireguard.NewDevice(tunDev, bind, wgConfig, logger)
+tunnel, _ := wireguard.NewTunnel(tunDev, bind, wgConfig, logger)
 
 // Configure peers, bring up, etc.
 ```

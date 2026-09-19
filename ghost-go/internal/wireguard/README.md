@@ -227,16 +227,16 @@ if err != nil {
 ### Remove Peer
 
 ```go
-err := device.RemovePeer(peerPublicKey)
+err := tunnel.RemovePeer(peerPublicKey)
 if err != nil {
     logger.Error("failed to remove peer", "err", err)
 }
 ```
 
-### Get Device Status
+### Get Tunnel Status
 
 ```go
-status, err := device.GetStatus()
+status, err := tunnel.GetStatus()
 if err != nil {
     return err
 }
@@ -254,12 +254,12 @@ if err != nil {
 
 ```go
 // Proper cleanup order
-err := device.Down()        // Stop device
+err := tunnel.Down()        // Stop tunnel
 if err != nil {
     logger.Warn("down failed", "err", err)
 }
 
-err = device.Close()        // Close resources
+err = tunnel.Close()        // Close resources
 if err != nil {
     logger.Error("close failed", "err", err)
 }
@@ -321,16 +321,16 @@ wgConfig := &wireguard.WireGuardConfig{
     MTU: 1280,
 }
 
-device, _ := wireguard.NewDevice(tunDev, bind, wgConfig, logger)
-device.Configure(privateKey)
+tunnel, _ := wireguard.NewTunnel(tunDev, bind, wgConfig, logger)
+tunnel.Configure(privateKey)
 
 // Add peer
-device.AddPeer(&wireguard.PeerConfig{
+tunnel.AddPeer(&wireguard.PeerConfig{
     PublicKey: peerPublicKey,
     AllowedIPs: []string{"10.0.0.0/24"},
 })
 
-device.Up()
+tunnel.Up()
 
 // Now you have an encrypted tunnel over ICE!
 // Packets sent to 10.0.0.x will be encrypted and sent through ICE
@@ -352,10 +352,10 @@ go test ./internal/wireguard -run "Key" -v
 
 ### Integration Tests
 
-**Note:** Full device tests require proper network setup:
+**Note:** Full tunnel tests require proper network setup:
 ```bash
 # Run with elevated privileges (TUN creation)
-sudo go test ./internal/wireguard -run "TestDevice" -v
+sudo go test ./internal/wireguard -run "TestTunnel" -v
 ```
 
 ---
@@ -389,7 +389,7 @@ sudo go test ./internal/wireguard -run "TestDevice" -v
    - Minimal CPU overhead (modern cryptography)
 
 4. **Memory Usage**
-   - ~50 goroutines per device
+   - ~50 goroutines per tunnel
    - ~1-2MB per active peer
    - Scales well to 100+ peers
 
@@ -420,14 +420,14 @@ sudo go test ./internal/wireguard -run "TestDevice" -v
 Common errors:
 
 ```go
-// Device already up
-if errors.Is(err, wireguard.ErrDeviceNotDown) {
-    // Call Down() first
+// Tunnel not up
+if errors.Is(err, wireguard.ErrTunnelNotUp) {
+    // Call Up() first
 }
 
-// Device closed
-if errors.Is(err, wireguard.ErrDeviceClosed) {
-    // Create new device
+// Tunnel closed
+if errors.Is(err, wireguard.ErrTunnelClosed) {
+    // Create new tunnel
 }
 
 // Peer not found
@@ -453,7 +453,7 @@ logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 ```
 
 Key debug points:
-- Device creation and configuration
+- Tunnel creation and configuration
 - Peer addition/removal
 - Endpoint updates
 - Handshake completion
@@ -461,7 +461,7 @@ Key debug points:
 
 Get detailed status:
 ```go
-status, _ := device.GetStatus()
+status, _ := tunnel.GetStatus()
 fmt.Println(status)  // Full IPC output
 ```
 
@@ -469,13 +469,13 @@ fmt.Println(status)  // Full IPC output
 
 ## Limitations
 
-1. **Device Tests Hang**: Full WireGuard device testing is complex due to internal goroutine management. Integration tests should use real network interfaces.
+1. **Tunnel Tests Hang**: Full WireGuard tunnel testing is complex due to internal goroutine management. Integration tests should use real network interfaces.
 
 2. **Mobile Support**: Android and iOS require platform-specific integration (Phase 5).
 
 3. **IPv6**: Fully supported but requires proper network configuration.
 
-4. **Multihoming**: Single bind per device (ICE connection). Use multiple devices for multiple connections.
+4. **Multihoming**: Single bind per tunnel (ICE connection). Use multiple tunnels for multiple connections.
 
 ---
 
@@ -484,7 +484,7 @@ fmt.Println(status)  // Full IPC output
 - `internal/ice` - Provides ICEBind for NAT traversal
 - `internal/testutil` - Testing utilities
 - `golang.zx2c4.com/wireguard` - Underlying WireGuard implementation
-- `golang.zx2c4.com/wireguard/tun` - TUN device abstraction
+- `golang.zx2c4.com/wireguard/tun` - TUN interface abstraction
 
 ---
 

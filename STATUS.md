@@ -44,15 +44,15 @@
 | `tun_linux.go` | 3 | ✅ Complete | N/A |
 | `tun_windows.go` | 3 | ✅ Complete | N/A |
 | `tun_darwin.go` | 3 | ✅ Complete | N/A |
-| `device.go` | 370 | ✅ Complete | ⏳ Integration tests pending |
+| `tunnel.go` | 370 | ✅ Complete | ⏳ Integration tests pending |
 
 **Key Features**:
 - WireGuard configuration with validation
 - Peer configuration support
 - Curve25519 key generation and derivation
 - Base64 key encoding/decoding
-- Platform-specific TUN device creation (Linux, Windows, macOS)
-- **Device wrapper with full lifecycle management**
+- Platform-specific TUN interface creation (Linux, Windows, macOS)
+- **Tunnel wrapper with full lifecycle management**
 - Dynamic peer management (Add/Remove/Update)
 - Thread-safe operations
 - IPC-based configuration
@@ -84,20 +84,20 @@ Integration:         Pending (Stage 8)
 Overall:             Unit tests: 100% for config, Integration: 0%
 ```
 
-**Note**: Integration testing requires proper setup due to WireGuard's complex internal goroutine management (~50+ goroutines per device).
+**Note**: Integration testing requires proper setup due to WireGuard's complex internal goroutine management (~50+ goroutines per tunnel).
 
 ---
 
 ## Next Steps
 
 ### Immediate (Stage 7)
-Create `internal/wireguard/device.go`:
+Create `internal/wireguard/tunnel.go`:
 - Wrap wireguard-go's device.Device
-- Accept ICEBind + TUN device
+- Accept ICEBind + TUN interface
 - Configure peers with public keys
 - Lifecycle management (Up/Down/Close)
 
-### After Device Implementation
+### After Tunnel Implementation
 1. Write unit tests for agent.go and bind.go
 2. Create integration test demonstrating full flow
 3. Write documentation
@@ -113,7 +113,7 @@ Create `internal/wireguard/device.go`:
 - **Fixed endpoint**: Each bind represents one peer connection
 - **Direct reads**: No additional buffering, reads from net.Conn
 
-### TUN Devices
+### TUN Interfaces
 - **Platform-specific implementations**: Linux, Windows, macOS
 - **Build tags**: Clean separation of platform code
 - **Mobile stub**: CreateTUNFromFD placeholder for Phase 5
@@ -161,8 +161,8 @@ internal/
 │   ├── tun_linux.go     (3 lines - default name constant)
 │   ├── tun_windows.go   (3 lines - default name constant)
 │   ├── tun_darwin.go    (3 lines - default name constant)
-│   ├── device.go        (WireGuard device wrapper ⭐ - 370 lines)
-│   └── device_test.go   (Test infrastructure - 270 lines)
+│   ├── tunnel.go        (WireGuard tunnel wrapper ⭐ - 370 lines)
+│   └── tunnel_test.go   (Test infrastructure - 270 lines)
 └── testutil/
     (ready for integration tests)
 
@@ -208,10 +208,10 @@ Peer A                                              Peer B
   │   └─► Wraps net.Conn             │                │
   │       Implements conn.Bind       │                │
   │                                   │                │
-  ├─► TUN Device (tun_*.go)          │                │
+  ├─► TUN Interface (tun_*.go)        │                │
   │   └─► Platform-specific           │                │
   │                                   │                │
-  ├─► WireGuard Device ←─────────────┴────────────┐  │
+  ├─► WireGuard Tunnel ←─────────────┴────────────┐  │
   │   └─► ICEBind + TUN                           │  │
   │       Configure peer public keys              │  │
   │       Encrypted tunnel                        │  │
@@ -237,7 +237,7 @@ Key: ⭐ = Critical component
 
 ## Architecture Insights
 
-### TUN Device Simplification
+### TUN Interface Simplification
 After investigation, we discovered that desktop platforms (Linux/Windows/macOS) all use `tun.CreateTUN()` identically. wireguard-go handles platform differences internally. We simplified from ~120 lines of redundant code to ~61 lines with platform-specific constants only.
 
 Mobile platforms are fundamentally different:
@@ -250,8 +250,8 @@ Mobile platforms are fundamentally different:
 
 Yes! All prerequisites are complete:
 - ✅ ICEBind implements conn.Bind correctly
-- ✅ TUN device creation works on Linux/Windows
+- ✅ TUN interface creation works on Linux/Windows
 - ✅ Configuration and key management ready
 - ✅ All tests passing (22/22 unit tests)
 
-Next file to create: `internal/wireguard/device.go`
+Next file to create: `internal/wireguard/tunnel.go`

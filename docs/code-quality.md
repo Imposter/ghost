@@ -82,7 +82,7 @@ const (
 - **576 minimum**: Absolute minimum for IP networks (RFC 791)
 - **25s keepalive**: Standard WireGuard keepalive interval
 
-### WireGuard Package (`internal/wireguard/device.go`)
+### WireGuard Package (`internal/wireguard/tunnel.go`)
 
 ```go
 // WireGuard IPC configuration field names
@@ -126,12 +126,12 @@ const (
 
 ### Critical Fixes in Library Code
 
-#### 1. WireGuard Device Lifecycle (`internal/wireguard/device.go`)
+#### 1. WireGuard Tunnel Lifecycle (`internal/wireguard/tunnel.go`)
 
 **Before (WRONG):**
 ```go
-func (d *Device) Up() error {
-    d.device.Up()  // ❌ Error ignored!
+func (d *Tunnel) Up() error {
+    d.wg.Up()  // ❌ Error ignored!
     d.isUp = true
     return nil
 }
@@ -139,9 +139,9 @@ func (d *Device) Up() error {
 
 **After (CORRECT):**
 ```go
-func (d *Device) Up() error {
-    if err := d.device.Up(); err != nil {
-        return fmt.Errorf("failed to bring device up: %w", err)  // ✅ Error wrapped with context
+func (d *Tunnel) Up() error {
+    if err := d.wg.Up(); err != nil {
+        return fmt.Errorf("failed to bring interface up: %w", err)  // ✅ Error wrapped with context
     }
     d.isUp = true
     return nil
@@ -149,7 +149,7 @@ func (d *Device) Up() error {
 ```
 
 **Impact:**
-- Device state could become inconsistent if Up() fails
+- Tunnel state could become inconsistent if Up() fails
 - Silent failures mask network configuration issues
 - Callers can't distinguish between success and failure
 

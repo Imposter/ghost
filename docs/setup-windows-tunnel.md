@@ -9,7 +9,7 @@ Error loading wintun.dll DLL: Unable to load library: The specified module could
 ## What is Wintun?
 
 **Wintun** is the Windows TUN driver developed by WireGuard.  
-It's required to create virtual network interfaces (TUN devices) on Windows.
+It's required to create virtual network interfaces (TUN interfaces) on Windows.
 
 Without it, WireGuard cannot create the tunnel interface!
 
@@ -294,7 +294,7 @@ If the demo still fails, look for error messages in the console output to diagno
 
 This is Windows-only. Linux and macOS have native TUN/TAP support:
 - **Linux**: Uses kernel TUN driver
-- **macOS**: Uses built-in utun devices
+- **macOS**: Uses built-in utun interfaces
 
 Just run the demo directly (with sudo for Linux/macOS):
 
