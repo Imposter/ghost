@@ -1,0 +1,125 @@
+# ghost-server + coturn + one hub + one exit node, all built from this
+# repository. See README.md. Run from this directory:
+#   docker compose up --build
+name: ghost-example
+
+x-cli: &cli
+  image: ghost-cli:example
+  build:
+    context: ../..
+    dockerfile: ghost-go/cmd/ghost-cli/Dockerfile
+
+services:
+  ghost-server:
+    image: ghost-server:example
+    build:
+      context: ../..
+      dockerfile: ghost-server/Dockerfile
+    environment:
+      GHOST_CONTROL_TOKEN: ${GHOST_CONTROL_TOKEN:-example-control-token-change-me}
+      GHOST_NETWORKS: lab=100.64.0.0/10=hub-only
+      # coturn answers STUN too. Peers get short-lived TURN credentials in
+      # their welcome, minted with the shared secret coturn also holds.
+      GHOST_STUN_URLS: stun:coturn:3478
+      GHOST_TURN_URLS: turn:coturn:3478?transport=udp,turn:coturn:3478?transport=tcp
+      GHOST_TURN_SECRET: ${GHOST_TURN_SECRET:-example-turn-secret-change-me}
+    ports:
+      - "127.0.0.1:${GHOST_HOST_PORT:-8080}:8080" # control API on the host
+    volumes:
+      - server-data:/var/lib/ghost
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      - coturn
+
+  coturn:
+    image: coturn/coturn:4.6
+    # TURN REST API credentials (use-auth-secret): ghost-server signs
+    # "<expiry>:<peer_id>" with the same static-auth-secret.
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --use-auth-secret
+      - --static-auth-secret=${GHOST_TURN_SECRET:-example-turn-secret-change-me}
+      - --realm=ghost.example
+      - --fingerprint
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+
+  # One-shot: puts the exit policy in place, creates the hub peers and a
+  # single-use pre-auth key for the node, and leaves them in the shared volume.
+  setup:
+    <<: *cli
+    user: "0"
+    entrypoint: ["/bin/sh", "/setup.sh"]
+    environment:
+      GHOST_CONTROL_TOKEN: ${GHOST_CONTROL_TOKEN:-example-control-token-change-me}
+      GHOST_SERVER: http://ghost-server:8080
+      EXIT_ALLOW: ${EXIT_ALLOW:-example.com:443,www.example.com:443}
+    volumes:
+      - ./setup.sh:/setup.sh:ro
+      - shared:/shared
+    depends_on:
+      ghost-server:
+        condition: service_healthy
+    restart: "no"
+
+  # An exit node: enrols once with the pre-auth key (asking nothing of the
+  # server but what the key grants), then serves an exit and its metrics on
+  # its tunnel IP.
+  node:
+    <<: *cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        [ -f ghost-creds.json ] || ghost-cli enroll -auth-key "$$(cat /shared/node.authkey)" -label geo=example || exit 1
+        exec ghost-cli node -exit -metrics
+    environment:
+      GHOST_SERVER: http://ghost-server:8080
+      GHOST_NAME: node-1
+    volumes:
+      - node-data:/var/lib/ghost
+      - shared:/shared:ro
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # The hub: forwards 127.0.0.1:1080 in its container to node-1's exit.
+  hub:
+    <<: *cli
+    command: ["hub", "-forward", "127.0.0.1:1080=node-1:1080"]
+    environment:
+      GHOST_CREDS: /shared/hub.json
+    volumes:
+      - hub-data:/var/lib/ghost
+      - shared:/shared:ro
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # A second hub peer for one-shot commands (docker compose run --rm hub-cli
+  # curl ...), so they don't replace the running hub's session.
+  hub-cli:
+    <<: *cli
+    profiles: [tools]
+    entrypoint: ["ghost-cli", "hub"]
+    environment:
+      GHOST_CREDS: /shared/hub-cli.json
+      GHOST_STATUS: ""
+    volumes:
+      - shared:/shared:ro
+
+volumes:
+  server-data:
+  node-data:
+  hub-data:
+  shared:
