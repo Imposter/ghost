@@ -82,3 +82,78 @@ gateway), not the old `GhostClient`. It should:
 
 The signalling wire format is stable and versioned (`proto.Version = 1`), so a
 binding only needs to speak the `signal` client protocol.
+
+---
+
+# ghost-go API changes (A3b: strict node metrics)
+
+Additive except where marked **breaking**. No shims were kept.
+
+## New packages
+
+| Package                                         | Purpose |
+| ----------------------------------------------- | ------- |
+| `github.com/Imposter/ghost/ghost-go/metrics`    | `Collector` (an `exit.Accountant`: ring buffer, bounded aggregates, top-N denied hosts), `NewHandler` (the tunnel-only HTTP endpoint), `Client` (hub-side fetch), and the wire types `Snapshot`, `Connection`, `ConnectionsResponse`, `StatusError`. |
+| `internal/bounded`                              | `Set` (first-N label values, overflow `"other"`) and `TopN` (Space-Saving). |
+
+## `ghost`
+
+- `Config.Metrics *MetricsConfig` — when set, the member serves
+  `GET /metrics`, `GET /metrics?format=json` and
+  `GET /metrics/connections?limit=N` on its tunnel IP (netstack, port
+  `metrics.DefaultPort` = 9464) once joined. Only the hub and
+  `MetricsConfig.AllowPeers` are admitted; everyone else gets 403.
+- `Config.NodeMetricsPort` — the port a Hub fetches node metrics from.
+- `Node.Snapshot() metrics.Snapshot` / `Node.RecentConnections(limit)` — pure-Go
+  in-process reads for the desktop app's FFI binding (also on `Hub`).
+- `Node.PeerForAddr` / `Hub.PeerForAddr` implement `exit.PeerResolver`.
+- `NodeMetricsFetcher` interface (`NodeSnapshot`, `NodeConnections`,
+  `NodePrometheus` by device id), implemented by `*Hub`. The ghost-server
+  admin route and the egress gateway depend on the interface.
+- `ErrUnknownPeer`, `ErrNoMetrics`.
+
+## `exit`
+
+- `Config.PeerResolver` / `PeerResolver` interface: `ConnInfo.SourcePeer` is
+  now the peer's **device id** (via the resolver) or its bare tunnel IP.
+  **Breaking:** it was `IP:port`, an unbounded label.
+- `Config.MaxSourceTags` (default `DefaultMaxSourceTags` = 64): the
+  `ghost.source.tag` label admits the first N tags, then `"other"`. The raw tag
+  stays in `ConnInfo` and on the span.
+- `ConnInfo.PolicyAllowed`: whether the policy permitted the destination
+  (true even when the dial later failed).
+- `DeniedHost` (`"denied"`) constant; `ConnRing.Cap()`.
+- The SOCKS5 non-CONNECT refusal is now a full record (metrics + span), not
+  only an `Accountant` call.
+- The `Accountant` is now called **after** the metrics and span are recorded.
+
+### Metric changes (instrumentation scope version 0.2.0)
+
+| Instrument                         | Change |
+| ---------------------------------- | ------ |
+| `ghost.exit.connections`           | `server.address` is the host when the **policy** permitted it (dial errors and timeouts now keep the host; previously they collapsed to `denied`). `server.port` is set only for permitted hosts. `tls.server.name` only when the SNI itself is permitted. |
+| `ghost.exit.duration`              | Now also carries `result`. |
+| `ghost.exit.cap.used`, `ghost.exit.cap.limit` (By), `ghost.exit.paused` | New async gauges: daily cap usage and pause state. |
+
+Policy denials are `ghost.exit.connections{result="denied"}`; the hosts behind
+them are kept only in the collector's capped top-N (`Snapshot.DeniedHosts`)
+and the ring buffer, never as labels.
+
+## Snapshot JSON
+
+```json
+{
+  "time": "…", "device_id": "…", "address": "100.64.0.2/32",
+  "totals": {"connections": 3, "bytes_in": 150, "bytes_out": 15, "active": 0,
+             "denied": 1, "cap_used_bytes": 165, "cap_limit_bytes": 0, "paused": false},
+  "destinations": [{"host": "api.example", "port": 443, "connections": 2, "bytes_in": 150, "bytes_out": 15}],
+  "sources":      [{"peer": "<hub device id>", "tag": "job=1", "connections": 1, "bytes_in": 100, "bytes_out": 10}],
+  "protocols":    [{"protocol": "socks5", "transport": "tcp", "connections": 2, "bytes_in": 150, "bytes_out": 15}],
+  "results":      [{"result": "allowed", "count": 2}],
+  "denied_hosts": [{"host": "evil.example", "count": 1}],
+  "tunnel":       [{"peer_id": "…", "address": "…", "candidate_type": "host", "rtt_seconds": 0.001,
+                    "last_handshake": "…", "handshake_age_seconds": 4.2, "rx_bytes": 9000, "tx_bytes": 8000}]
+}
+```
+
+Every array is present (empty, never `null`). Durations are in seconds.

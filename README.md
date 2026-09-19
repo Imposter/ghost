@@ -80,6 +80,35 @@ func main() {
 Create a hub with `ghost.NewHub`; run an allowlisted SOCKS5/HTTP-CONNECT exit
 on a node's tunnel IP with the `exit` package.
 
+### Node metrics
+
+A node serves strict metrics on its **tunnel IP only** (a netstack listener,
+port `metrics.DefaultPort` = 9464, no OS port). Only its hub, plus any device
+ids in `MetricsConfig.AllowPeers`, may read them; everyone else gets 403.
+
+```go
+setup, _ := otelsetup.New(ctx, otelsetup.Options{ServiceName: "ghost-node"})
+col := metrics.NewCollector(metrics.CollectorConfig{})     // ring + bounded aggregates
+node, _ := ghost.NewNode(ghost.Config{ /* … */
+    MeterProvider: setup.MeterProvider,
+    Metrics: &ghost.MetricsConfig{Collector: col, Prometheus: setup.PrometheusHandler},
+})
+ex := exit.New(exit.Config{Policy: allow, Accountant: col, PeerResolver: node,
+    MeterProvider: setup.MeterProvider})
+col.AttachExit(ex)
+
+snap := node.Snapshot()                                   // in-process (FFI) read
+```
+
+| Endpoint                              | Body                                        |
+| ------------------------------------- | ------------------------------------------- |
+| `GET /metrics`                        | Prometheus text (from `otelsetup`)          |
+| `GET /metrics?format=json`            | `metrics.Snapshot`                          |
+| `GET /metrics/connections?limit=N`    | `metrics.ConnectionsResponse`, newest first |
+
+On the hub, `*ghost.Hub` implements `ghost.NodeMetricsFetcher`
+(`NodeSnapshot`, `NodeConnections`, `NodePrometheus`) by device id.
+
 ---
 
 ## Architecture
