@@ -1,0 +1,7 @@
+.git
+.idea
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/bin/
+**/build/
