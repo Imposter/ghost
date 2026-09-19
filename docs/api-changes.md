@@ -82,3 +82,49 @@ gateway), not the old `GhostClient`. It should:
 
 The signalling wire format is stable and versioned (`proto.Version = 1`), so a
 binding only needs to speak the `signal` client protocol.
+
+---
+
+# A2/A3 changes: ghost-server and access control
+
+These are additive: the v1 wire format stays compatible, and no existing field
+changed meaning.
+
+## `signal/proto`
+
+| Change | Detail |
+| ------ | ------ |
+| New `TypePolicy = "policy"` | Server→client push of the effective exit policy. Payload: `ExitPolicy`. |
+| New `ExitPolicy` | `{network, allow[], daily_bytes, bytes_per_second, paused, labels, revision}`. `allow` uses the `exit.Allowlist` syntax. |
+| New `Joined.Policy *ExitPolicy` | The effective exit policy at join time. |
+| New `ErrCodeForbidden = "forbidden"` | Access control denied a join or connect. |
+| New `ErrCodeRevoked = "revoked"` | The device was revoked. Fatal. |
+
+## `signal`
+
+| Change | Detail |
+| ------ | ------ |
+| `Handlers.OnPolicy func(proto.ExitPolicy)` | Called for each `policy` message. |
+| `Event.Policy *proto.ExitPolicy` | Set on `policy` events. |
+
+## `ghost`
+
+| Change | Detail |
+| ------ | ------ |
+| `(*Config).UseLoopbackICE()` | Restricts ICE to host candidates on loopback, with no STUN or TURN. Lets other modules (ghost-server's integration tests) run a real Node and Hub without a firewall prompt. |
+
+`ghost.Node` / `ghost.Hub` don't yet surface `policy` messages as mesh events
+or apply them to an `exit.Server`. That wiring belongs to the node/exit work
+(A3b), to avoid conflicting edits in `ghost/mesh.go`. Until then, consumers
+read policy through `signal.Client` (`Event.Policy` or `Handlers.OnPolicy`).
+
+## Server behaviour a client should know
+
+- **Roles are server-side.** A device's role is fixed when it registers or
+  pairs. A `hello` whose `role` differs is rejected (`unauthorized`).
+- **The network is server-side.** `join_network` must name the device's own
+  network (`forbidden` otherwise).
+- **Signalling is node↔hub only.** Node↔node and hub↔hub relays are refused.
+  Nodes see only the hubs in `joined.peers` and in presence events.
+- **Addresses are sticky** to a device within its network. They are assigned
+  from the pool on the first join.
