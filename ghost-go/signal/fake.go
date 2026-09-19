@@ -302,11 +302,12 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 		}
 		sess.pubKey = h.PublicKey
 		s.sessions[peerID] = sess
+		sessionID := fmt.Sprintf("sess-%d", s.seq)
 		s.mu.Unlock()
 		sess.sendToClient(proto.TypeWelcome, proto.Welcome{
 			Version:           proto.Version,
 			PeerID:            peerID,
-			SessionID:         fmt.Sprintf("sess-%d", s.seq),
+			SessionID:         sessionID,
 			HeartbeatInterval: 20,
 		})
 		return nil
