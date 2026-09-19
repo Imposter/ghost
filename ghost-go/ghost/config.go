@@ -92,6 +92,15 @@ type Config struct {
 	MeterProvider  metric.MeterProvider
 	TracerProvider trace.TracerProvider
 
+	// Metrics, when set, makes this member serve its metrics endpoint on its
+	// tunnel IP once joined, and backs Snapshot / RecentConnections. See
+	// MetricsConfig.
+	Metrics *MetricsConfig
+
+	// NodeMetricsPort is the port a Hub fetches node metrics from (default
+	// metrics.DefaultPort). It must match the nodes' MetricsConfig.Port.
+	NodeMetricsPort int
+
 	// iceTuner, when set, adjusts the ICE config just before an agent is
 	// created. It is unexported and exists only for tests, which use it to
 	// restrict candidates to the loopback interface (host candidates only, no
