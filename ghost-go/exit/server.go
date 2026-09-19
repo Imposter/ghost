@@ -362,7 +362,6 @@ func (t *connTrack) finish(res Result, errMsg string) {
 	t.info.Result = res
 	t.info.Err = errMsg
 	t.info.Duration = time.Since(t.info.Start)
-	s.cfg.Accountant.Record(t.info)
 	s.metrics.record(t.ctx, t.info)
 	s.addActive(t.ctx, -1)
 	if t.span != nil {
@@ -372,6 +371,8 @@ func (t *connTrack) finish(res Result, errMsg string) {
 		}
 		t.span.End()
 	}
+	// The Accountant goes last so a reader it signals sees the metrics too.
+	s.cfg.Accountant.Record(t.info)
 }
 
 // resolve resolves host and returns the dial target "ip:port", the chosen IP,
