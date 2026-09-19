@@ -52,7 +52,9 @@ tunnel addresses as usual. To carry tokens over your own channel, implement
 `direct.Exchanger` (`Send` and `Receive` a token) and call
 `direct.Invite(ctx, sig, x)` or `direct.Answer(ctx, sig, x)`. `direct.Pipe`
 is an in-memory pair for tests. [`examples/p2p`](../ghost-go/examples/p2p)
-swaps tokens over stdin and stdout.
+swaps tokens over stdin and stdout, as do `ghost-cli p2p invite` and
+`ghost-cli p2p accept`, which keep the link up and can serve an exit
+(`-exit -allow host:port`) or forward host ports (`-forward`).
 
 The invited side starts ICE as soon as it accepts, so the answer must be
 applied within `ConnectTimeout`. A token pair links once: if the link fails,

@@ -50,10 +50,10 @@ prompt. In practice:
 - Don't contact external hosts. Exit tests use a local target and set
   `exit.Config.AllowLoopbackForTest`, which production code must never set.
 - `signal.FakeServer` runs the signalling protocol in memory when a test
-  doesn't need ghost-server. `AddPeer(token, signal.FakePeer{ID, Name, Roles, Tags,
-  Labels})` registers an enrolled peer, for example one holding the exit
-  role; a hello asking for a role the peer lacks is refused, as ghost-server
-  refuses it.
+  doesn't need ghost-server. `AddPeer(token, signal.FakePeer{ID, Name,
+  Roles, Tags, Labels})` registers an enrolled peer, for example one holding
+  the exit role; a hello asking for a role the peer lacks is refused, as
+  ghost-server refuses it.
 
 These rules are what let the suite run on the Windows CI runner.
 
@@ -68,7 +68,17 @@ go run ./cmd/ghost-server                 # SQLite at ./ghost-server.db, listens
 
 Then create keys and peers through the control API
 ([control-plane.md](control-plane.md)), and connect a `ghost.Node` or
-`ghost.Hub` to `ws://localhost:8080/v1/signal`.
+`ghost.Hub` to `ws://localhost:8080/v1/signal`, or use `ghost-cli`:
+
+```bash
+cd ghost-go
+go run ./cmd/ghost-cli enroll -server http://localhost:8080 -auth-key gak_…
+go run ./cmd/ghost-cli node -exit
+```
+
+`docker build -f ghost-go/cmd/ghost-cli/Dockerfile -t ghost-cli .` builds its
+image from the repository root, and [`examples/compose`](../examples/compose)
+runs a whole network.
 
 ## CI
 

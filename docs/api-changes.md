@@ -3,6 +3,53 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## ghost-cli, netmap labels, roles and structured source tags
+
+Mostly additive. The breaking changes are the exit and metrics renames for
+structured source tags (below); nothing else changes for existing callers.
+
+**New**
+
+- `ghost-go/cmd/ghost-cli`, a command-line member (`enroll`, `node`, `hub`
+  with `dial`/`curl`/`metrics`, `p2p invite`/`accept`, `status`), its
+  Dockerfile, and [`examples/compose`](../examples/compose).
+- `exit.DefaultPort` (1080), the conventional exit port, and
+  `exit.DefaultSourceHeader` (`X-Ghost-Source`).
+- `ghost.Config.Roles`: roles a member asks to hold. They are sent in the
+  hello, which the control plane refuses unless the peer holds them all.
+  `NewHub` adds `hub`. An unknown role fails `NewNode`/`NewHub`.
+- `signal.FakeServer.AddPeer(token, signal.FakePeer{ID, Name, Roles, Tags,
+  Labels})`: a registered peer gets its registered roles (not the hello's),
+  a hello asking for a role it lacks is refused with `unauthorized`, and
+  netmaps carry its name, tags and labels. Unregistered tokens behave as
+  before.
+
+**Wire protocol** (still v1, additive)
+
+- `PeerInfo.labels` (`proto.PeerInfo.Labels`): a netmap's `self` and
+  `peers` carry each peer's control-plane labels; absent when a peer has
+  none. A label change is pushed as a netmap delta.
+
+**Structured source tags** (see [architecture.md](architecture.md#source-tags))
+
+A tag is parsed as `source=<s>&job=<j>`; metrics are labelled by the source
+only, and the job stays in the connection record and on the span.
+
+| Old | New |
+| --- | --- |
+| `exit.Config.MaxSourceTags` | `exit.Config.MaxSources` |
+| `exit.DefaultMaxSourceTags` | `exit.DefaultMaxSources` |
+| metric attribute `ghost.source.tag` (the whole tag, bounded) | `ghost.source.name` (the source part only, bounded); Prometheus `ghost_source_tag` becomes `ghost_source_name` |
+| `metrics.SourceStat.Tag` (JSON `sources[].tag`) | `metrics.SourceStat.Source` (JSON `sources[].source`); sources aggregate by peer and source name, never by job |
+| — | `exit.SourceTag{Source, Job}`, `exit.ParseSourceTag`, `SourceTag.String`, `exit.SourceLabel`, `exit.SourceKey`, `exit.JobKey`, `exit.MaxSourceLen`, `exit.OverflowSource` |
+| — | `exit.ConnInfo.Source`, `.Job`; `metrics.Connection.Source`, `.Job` (JSON `source`, `job`) next to the raw `source_tag` |
+| span attribute `ghost.source.tag` | unchanged (the raw tag), plus `ghost.source.name` and `ghost.source.job` |
+
+A tag without `=` is a whole source name, so a bare tag labels the same way
+as before, as long as it is a valid label. A tag such as `job=42`, which used
+to be its own series, now has no source label. The exit's instrumentation
+scope version is `0.3.0`.
+
 ## Authorizer request context and on-demand re-checks
 
 Additive: existing authorizers and control API clients keep working. One

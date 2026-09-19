@@ -69,6 +69,30 @@ for ev := range node.Events() {
 
 A hub is the same thing built with `ghost.NewHub`. It needs a peer that holds
 the `hub` role, which you can create with `POST /control/networks/{net}/peers`.
+A node that serves an exit sets `Config.Roles: []proto.Role{proto.RoleExit}`,
+so the server refuses the session unless the peer was enrolled with the exit
+role.
+
+## ghost-cli
+
+[`ghost-cli`](ghost-go/cmd/ghost-cli) is a small command-line member built on
+the same API, for trying ghost out and for tests:
+
+```bash
+(cd ghost-go && go install ./cmd/ghost-cli)
+
+ghost-cli enroll -server http://localhost:8080 -auth-key gak_… -name node-1   # writes ghost-creds.json
+ghost-cli node -exit -metrics            # an exit on the tunnel IP, port 1080 (exit.DefaultPort)
+ghost-cli hub -forward 127.0.0.1:1080=node-1:1080          # a host port to the node's exit
+ghost-cli hub curl -source demo -job 1 node-1 https://example.com/
+ghost-cli hub metrics node-1             # the node's in-tunnel metrics
+ghost-cli p2p invite / ghost-cli p2p accept TOKEN            # no server at all
+ghost-cli status                         # a running member's netmap, tunnel and exit
+```
+
+`node -exit` applies the network's exit policy (and `-allow` narrows it),
+and serves only hubs. [`examples/compose`](examples/compose) runs
+ghost-server, coturn, a hub and an exit node with it.
 
 ## Using ghost without the control plane
 
@@ -130,6 +154,7 @@ There is no netmap policy, isolation or health reporting in this mode. See
 ghost-go/                  library module
   ghost/                   Node, Hub, Config, Signaller, keys, events, the tunnel netstack
   ghost/direct/            standalone Signaller: invite/answer tokens, static peers
+  cmd/ghost-cli/           command-line member: enroll, node, hub, p2p, status (and its Dockerfile)
   examples/p2p/            two members linked by pasted tokens
   exit/                    SOCKS5 / HTTP-CONNECT exit: allowlist, caps, accounting
   metrics/                 a node's strict metrics: collector, handler, hub-side client
@@ -145,6 +170,7 @@ ghost-server/              control plane module (imports ghost-go via replace)
   cmd/ghost-server/        the binary
   server/...               config, store, control, policy, access, signalling, httpapi, ...
   Dockerfile
+examples/compose/          ghost-server, coturn, a hub and an exit node in Docker Compose
 docs/                      the documents listed above
 .github/                   CI, image publishing, Dependabot
 ```

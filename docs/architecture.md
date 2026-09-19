@@ -36,7 +36,7 @@ these layers:
 | NAT traversal | `internal/ice` | One Pion ICE agent per linked peer. `MultiBind` is a single WireGuard `conn.Bind` that multiplexes every per-peer ICE connection under an opaque endpoint key, so a connection can be swapped (after an ICE restart, say) without touching WireGuard. |
 | Encryption | `internal/wireguard` | wireguard-go with one WireGuard peer per link. Each link's AllowedIPs is the other peer's own `/32`. |
 | Network stack | `internal/wireguard` | A gVisor userspace netstack (`CreateNetTUN`). It accepts only packets addressed to its own tunnel address and never forwards; drops are counted in `ForwardDrops`. No OS TUN device or privileges are needed. |
-| Exit | `exit` | An optional SOCKS5 (CONNECT only) and HTTP-CONNECT proxy served on the member's tunnel address. It dials allowlisted destinations through the host network, refuses loopback and private destinations, and enforces a daily byte cap, a rate limit and a pause switch. |
+| Exit | `exit` | An optional SOCKS5 (CONNECT only) and HTTP-CONNECT proxy served on the member's tunnel address, conventionally on port `exit.DefaultPort` (1080). It dials allowlisted destinations through the host network, refuses loopback and private destinations, and enforces a daily byte cap, a rate limit and a pause switch. |
 | Metrics | `metrics`, `otelsetup` | See [Metrics](#metrics). The libraries use only the OpenTelemetry API; `otelsetup` wires the SDK, the Prometheus exporter and optional OTLP for binaries. |
 
 ### The Signaller seam
