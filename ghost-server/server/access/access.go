@@ -58,7 +58,7 @@ type Caps struct {
 // Policy is the optional policy in an allow decision.
 type Policy struct {
 	// ExitAllowlist overrides the network's exit allowlist for this device.
-	ExitAllowlist []string `json:"exit_allowlist,omitempty"`
+	ExitAllowlist []string `json:"exit_allowlist"`
 	Caps          Caps     `json:"caps,omitempty"`
 	// Labels are stored as the device's labels (register, pair) or attached
 	// to its exit policy (join_network).
