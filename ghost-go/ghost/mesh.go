@@ -83,10 +83,10 @@ type mesh struct {
 	log       *slog.Logger
 	wantRoles []proto.Role // roles the constructor expects this peer to hold
 
-	sig    *signal.Client
-	bind   *ice.MultiBind
-	wg *wireguard.Tunnel
-	net    *wireguard.Net
+	sig  *signal.Client
+	bind *ice.MultiBind
+	wg   *wireguard.Tunnel
+	net  *wireguard.Net
 
 	mu      sync.Mutex
 	address string
