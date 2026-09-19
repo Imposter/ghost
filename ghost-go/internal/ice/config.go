@@ -136,11 +136,13 @@ func DefaultICEConfig() *ICEConfig {
 // Tests use a range of ports starting from this value to avoid conflicts.
 const TestPortRangeStart = 51000
 
-// TestICEConfig returns a configuration suitable for testing with fixed ports.
-// Each call increments the port range to allow multiple agents in the same test.
-// The portOffset parameter allows tests to specify unique port ranges for different agents.
+// TestICEConfig returns a configuration suitable for local testing: host
+// candidates on the loopback interface only, no STUN/TURN, and OS-assigned
+// (ephemeral) ports. Restricting to loopback and avoiding fixed ports keeps
+// the test suite from binding routable sockets or triggering firewall prompts.
+// The portOffset parameter is retained for source compatibility and ignored.
 func TestICEConfig(portOffset int) *ICEConfig {
-	port := uint16(TestPortRangeStart + portOffset)
+	_ = portOffset
 	return &ICEConfig{
 		STUNServers:         []string{}, // No STUN for faster local tests
 		TURNServers:         []TURNServer{},
@@ -153,8 +155,7 @@ func TestICEConfig(portOffset int) *ICEConfig {
 		CandidateTypes: []CandidateType{
 			CandidateTypeHost,
 		},
-		PortMin: port,
-		PortMax: port,
+		IPFilter: func(ip net.IP) bool { return ip.IsLoopback() },
 	}
 }
 

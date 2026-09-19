@@ -31,7 +31,7 @@ func TestNewAgent(t *testing.T) {
 func TestAgentGatherCandidates(t *testing.T) {
 	logger := testutil.NewTestLogger(t)
 
-	config := TestICEConfigWithSTUN(21) // Port 51021
+	config := TestICEConfig(21) // loopback host candidates, ephemeral port
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")

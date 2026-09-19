@@ -1,4 +1,7 @@
-package testutil
+// Package nettest holds test-only networking helpers shared across ghost
+// packages. It is deliberately separate from internal/testutil (which the ICE
+// package's own tests import) to avoid an import cycle.
+package nettest
 
 import (
 	"net"

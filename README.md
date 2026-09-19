@@ -6,6 +6,16 @@ Ghost-GO enables direct peer-to-peer connections through NAT/firewalls using ICE
 
 ---
 
+## Glossary
+
+- **peer** — any WireGuard endpoint.
+- **node** — a member that joins a network and connects to one hub.
+- **hub** — a peer that accepts many nodes (a gateway).
+- **device** — a *registered identity* only (device id, device token, pairing); never a tunnel role.
+- **network** — a named set of members sharing an address pool (default `100.64.0.0/10`).
+
+---
+
 ## Features
 
 - ✅ **NAT Traversal**: Automatic NAT punchthrough using ICE (STUN/TURN)
@@ -22,66 +32,53 @@ Ghost-GO enables direct peer-to-peer connections through NAT/firewalls using ICE
 ### Installation
 
 ```bash
-go get github.com/yourusername/ghost-go
+go get github.com/Imposter/ghost/ghost-go
 ```
 
 ### Basic Usage
+
+Use the public `ghost` package: a **node** joins a network via the signalling
+server and connects to a **hub**; addresses are assigned from the network pool.
 
 ```go
 package main
 
 import (
     "context"
-    "log/slog"
-    "time"
-    
-    "ghost-go/internal/ice"
-    "ghost-go/internal/wireguard"
+    "log"
+
+    "github.com/Imposter/ghost/ghost-go/ghost"
 )
 
 func main() {
-    logger := slog.Default()
-    
-    // 1. Configure ICE
-    iceConfig := &ice.ICEConfig{
-        STUNServers: []string{"stun:stun.l.google.com:19302"},
-        GatherTimeout: 10 * time.Second,
-    }
-    
-    // 2. Create ICE agent
-    agent, _ := ice.NewAgent(iceConfig, logger)
-    defer agent.Close()
-    
-    // 3. Gather candidates and exchange via signaling
-    // (See docs for signaling implementation)
-    
-    // 4. Connect via ICE
-    ctx := context.Background()
-    conn, _ := agent.Connect(ctx)
-    
-    // 5. Create WireGuard tunnel
-    bind := ice.NewICEBind(conn, logger)
-    tunDev, _ := wireguard.CreateTUN("ghost0", 1280)
-    
-    privateKey, _ := wireguard.GeneratePrivateKey()
-    wgConfig := &wireguard.WireGuardConfig{
-        PrivateKey: privateKey,
-        MTU: 1280,
-    }
-    
-    device, _ := wireguard.NewDevice(tunDev, bind, wgConfig, logger)
-    device.Configure(privateKey)
-    device.Up()
-    
-    // 6. Add peer
-    device.AddPeer(&wireguard.PeerConfig{
-        PublicKey: peerPublicKey,
-        AllowedIPs: []string{"10.0.0.0/24"},
+    node, err := ghost.NewNode(ghost.Config{
+        SignalURL:    "wss://signal.example.com/v1",
+        DeviceToken:  "…",                          // authenticates this device
+        Network:      "my-network",
+        KeyStorePath: "/var/lib/ghost/keys.json",   // persistent keys
+        STUNServers:  []ghost.STUNServer{{URL: "stun:stun.l.google.com:19302"}},
     })
-    
-    // Now you have an encrypted tunnel over ICE!
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := node.Start(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+    defer node.Close()
+
+    for ev := range node.Events() {
+        if ev.Kind == ghost.EventPeerConnected {
+            // DialContext / Listen run over the tunnel netstack.
+            conn, err := node.DialContext(context.Background(), "tcp", "100.64.0.2:8080")
+            _ = conn
+            _ = err
+        }
+    }
 }
 ```
+
+Create a hub with `ghost.NewHub`; run an allowlisted SOCKS5/HTTP-CONNECT exit
+on a node's tunnel IP with the `exit` package.
 
 ---
 

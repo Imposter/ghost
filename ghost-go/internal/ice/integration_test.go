@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"github.com/Imposter/ghost/ghost-go/internal/nettest"
 	"github.com/Imposter/ghost/ghost-go/internal/testutil"
 )
 
@@ -30,9 +31,10 @@ func TestICEConnection_TwoPeers(t *testing.T) {
 	// Create mock signaling channel
 	signaling := testutil.NewMockSignalingChannel(logger)
 
-	// Create configuration for both peers (using public STUN server with fixed ports)
-	configA := ice.TestICEConfigWithSTUN(0) // Port 51000
-	configB := ice.TestICEConfigWithSTUN(1) // Port 51001
+	// Loopback-only, host candidates, ephemeral ports: no external STUN and no
+	// fixed ports, so the test triggers no firewall prompt (operator rule).
+	configA := nettest.LoopbackICEConfig(0)
+	configB := nettest.LoopbackICEConfig(0)
 
 	// Create both agents
 	agentA, err := ice.NewAgent(configA, logger.With("peer", "A"))
@@ -227,9 +229,9 @@ func TestICEConnection_LocalOnly(t *testing.T) {
 
 	signaling := testutil.NewMockSignalingChannel(logger)
 
-	// Config without STUN servers (host candidates only) with fixed ports
-	configA := ice.TestICEConfig(10) // Port 51010
-	configB := ice.TestICEConfig(11) // Port 51011
+	// Loopback-only host candidates on ephemeral ports (operator rule).
+	configA := nettest.LoopbackICEConfig(0)
+	configB := nettest.LoopbackICEConfig(0)
 
 	agentA, err := ice.NewAgent(configA, logger.With("peer", "A"))
 	require.NoError(t, err)
