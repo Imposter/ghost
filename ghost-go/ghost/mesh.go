@@ -594,10 +594,14 @@ func (m *mesh) startConnect(l *peerLink) {
 				m.reportHealth()
 				return
 			}
-			l.conn = conn
+			candType := ""
 			if pair, err := l.agent.GetSelectedCandidatePair(); err == nil && pair.Local != nil {
-				l.candType = string(pair.Local.Type)
+				candType = string(pair.Local.Type)
 			}
+			m.mu.Lock()
+			l.conn = conn
+			l.candType = candType
+			m.mu.Unlock()
 			m.wireUpPeer(l)
 		}()
 	})

@@ -2,6 +2,7 @@ package ghost
 
 import (
 	"context"
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
 	"strconv"
 	"strings"
 	"time"
@@ -113,11 +114,24 @@ type linkStat struct {
 
 // linkSnapshot gathers current stats for every link without holding locks
 // during observation callbacks longer than necessary.
+// linkFields is the part of a peerLink the metrics snapshot reads, copied under the
+// mesh lock so a concurrent connect never races the scrape.
+type linkFields struct {
+	peerID, publicKey, address, epKey, candType string
+	added                                       bool
+	agent                                       ice.Agent
+}
+
 func (m *mesh) linkSnapshot() []linkStat {
+	// Copy each link's fields under the lock: the connect goroutine sets candType and
+	// conn under the same lock once ICE settles.
 	m.mu.Lock()
-	links := make([]*peerLink, 0, len(m.links))
+	links := make([]linkFields, 0, len(m.links))
 	for _, l := range m.links {
-		links = append(links, l)
+		links = append(links, linkFields{
+			peerID: l.peerID, address: l.address, candType: l.candType, added: l.added,
+			agent: l.agent, epKey: l.epKey, publicKey: l.publicKey,
+		})
 	}
 	bind := m.bind
 	dev := m.wg
