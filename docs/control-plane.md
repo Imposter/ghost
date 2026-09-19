@@ -18,7 +18,9 @@ ICE, and WireGuard runs end to end.
 
 - **Wire protocol:** [`signalling-v1.md`](signalling-v1.md)
 - **Policy, isolation and the authorizer:** [`policy.md`](policy.md)
-- **Operating the server:** [`ghost-server.md`](ghost-server.md)
+- **Package layout and metrics:** [`architecture.md`](architecture.md)
+- **Running the server:** [configuration](#configuration), [storage](#storage)
+  and [Docker](#docker), below
 
 ## Model
 
@@ -307,17 +309,72 @@ action, target, detail}`) and published on the watch stream.
 | `POST /v1/peer/rotate` | Bearer peer token, `{public_key?}` → `{peer_id, peer_token, public_key}` |
 | `GET /v1/signal` | WebSocket, [`signalling-v1.md`](signalling-v1.md) |
 
+## Configuration
+
+Settings are applied in this order, and each overrides the one before:
+
+1. the defaults;
+2. an optional JSON file (`-config path` or `GHOST_CONFIG`);
+3. environment variables.
+
+Durations are Go duration strings (`"30s"`).
+
+| JSON key | Env | Default |
+| -------- | --- | ------- |
+| `listen` | `GHOST_LISTEN` | `:8080` |
+| `metrics_listen` | `GHOST_METRICS_LISTEN` | *(empty: `/metrics` is served on `listen`)* |
+| `otlp` | `GHOST_OTLP` | `false` (reads `OTEL_EXPORTER_OTLP_*`) |
+| `log_level` | `GHOST_LOG_LEVEL` | `info` |
+| `database.driver` | `GHOST_DB_DRIVER` | `sqlite` (`sqlite` or `postgres`) |
+| `database.dsn` | `GHOST_DB_DSN` | `ghost-server.db` (a file path, or a `postgres://` URL) |
+| `access.mode` | `GHOST_ACCESS_MODE` | `open` (`open` or `api`) |
+| `access.authorizer_url` | `GHOST_AUTHORIZER_URL` | required in `api` mode |
+| `access.authorizer_secret` | `GHOST_AUTHORIZER_SECRET` | required in `api` mode (at least 16 bytes) |
+| `access.timeout` | `GHOST_AUTHORIZER_TIMEOUT` | `3s` |
+| `access.cache_ttl` | `GHOST_AUTHORIZER_CACHE_TTL` | `30s` |
+| `control.service_token` | `GHOST_CONTROL_TOKEN` | *(empty: the control API is off; otherwise at least 16 bytes)* |
+| `ice.stun_urls` | `GHOST_STUN_URLS` (comma-separated) | none |
+| `ice.turn_urls` | `GHOST_TURN_URLS` (comma-separated) | none |
+| `ice.turn_secret` | `GHOST_TURN_SECRET` | required if TURN URLs are set |
+| `ice.turn_ttl` | `GHOST_TURN_TTL` | `1h` |
+| `heartbeat.interval` | `GHOST_HEARTBEAT_INTERVAL` | `20s` |
+| `heartbeat.timeout` | `GHOST_HEARTBEAT_TIMEOUT` | `60s` |
+| `enrollment.code_ttl` | `GHOST_ENROLLMENT_CODE_TTL` | `10m` |
+| `enrollment.poll_interval` | `GHOST_ENROLLMENT_POLL_INTERVAL` | `2s` |
+| `peers.ephemeral_grace` | `GHOST_EPHEMERAL_GRACE` | `5m` |
+| `peers.janitor_interval` | `GHOST_JANITOR_INTERVAL` | `30s` |
+| `default_pool` | `GHOST_DEFAULT_POOL` | `100.64.0.0/10` |
+| `networks` | `GHOST_NETWORKS` (`name`, `name=pool` or `name=pool=isolation`, comma-separated) | networks created at startup if missing |
+
+The server logs JSON to stdout. Its metrics are listed in
+[architecture.md](architecture.md#instruments).
+
 ## Storage
 
-One portable schema (`server/store/migrations`) runs on **PostgreSQL**
-(production) and **SQLite** (development).
+- One portable schema (`server/store/migrations/*.sql`) runs on **PostgreSQL**
+  (production) and **SQLite** (development and single-node deployments). It
+  is applied at startup and tracked in `schema_migrations`.
+- The tables are `networks` (pool, isolation, policy document, revision),
+  `peers`, `auth_keys`, `enrollments`, `api_keys` and `audit_events`.
+- Timestamps are Unix milliseconds. Roles, tags, labels, health and policy
+  documents are stored as JSON text.
+- Tokens and keys are stored only as SHA-256 hashes.
+- SQLite runs in WAL mode with a single connection.
 
-**Tables:**
-- `networks`: pool, isolation, policy JSON, revision
-- `peers`
-- `auth_keys`
-- `enrollments`
-- `api_keys`
-- `audit_events`
+## Docker
 
-Secrets are stored only as SHA-256 hashes.
+```bash
+docker build -f ghost-server/Dockerfile -t ghost-server .   # from the repository root
+docker run -p 8080:8080 -v ghost-data:/var/lib/ghost   -e GHOST_CONTROL_TOKEN=... -e GHOST_NETWORKS=pool=100.64.0.0/10=hub-only ghost-server
+```
+
+The image:
+
+- is a static binary on Alpine, and runs as the non-root user `ghost`
+  (uid 65532);
+- keeps the SQLite database at `/var/lib/ghost/ghost-server.db`, so mount a
+  volume there, or set `GHOST_DB_DRIVER=postgres` and a `GHOST_DB_DSN`;
+- has a `HEALTHCHECK` that polls `GET /healthz` on the `GHOST_LISTEN` port.
+
+Published images are `ghcr.io/imposter/ghost-server`. See
+[development.md](development.md#publishing-images).

@@ -1,360 +1,140 @@
-# Ghost-GO
+# ghost
 
-**Peer-to-peer network tunneling over ICE with WireGuard encryption**
+ghost builds private peer-to-peer networks. Peers find each other through a
+control plane, connect directly over ICE (STUN, with TURN as a fallback), and
+run WireGuard end to end on a userspace netstack. The control plane decides
+who may reach whom, but it never carries tunnel traffic.
 
-Ghost-GO enables direct peer-to-peer connections through NAT/firewalls using ICE (Interactive Connectivity Establishment) and provides encrypted tunneling via WireGuard. Perfect for creating secure mesh networks, p2p applications, and bypassing restrictive networks.
+The repository holds two Go modules:
 
----
+- **`ghost-go`** is the library (`github.com/Imposter/ghost/ghost-go`). A
+  `ghost.Node` or `ghost.Hub` joins a network, links to the peers in its
+  netmap, and exposes `DialContext` and `Listen` on its tunnel address. It
+  needs no TUN device and no root. The `exit` package adds an allowlisted
+  SOCKS5/HTTP-CONNECT exit.
+- **`ghost-server`** is the control plane. It manages networks, peers and
+  enrolment, pushes netmaps over the signalling WebSocket, enforces policy and
+  isolation, stores health and audit records, and serves a control API with a
+  watch stream.
 
-## Glossary
+## Quick start
 
-- **peer** — an enrolled identity in one network: an id (`peer_…`), a WireGuard
-  key, an address from the pool, roles, tags and labels. It authenticates with
-  a peer token.
-- **network** — a named set of peers sharing an address pool (default
-  `100.64.0.0/10`), a policy document and an isolation mode.
-- **role** — a capability the control plane assigns to a peer: `hub` (a
-  gateway many peers connect to), `node` (an ordinary member), `exit` (runs an
-  allowlisted exit), `relay`.
-- **hub / node** — shorthand for a peer holding that role; `ghost.Hub` and
-  `ghost.Node` are the library types.
-- **netmap** — the peers a peer may reach, with its exit policy and packet
-  filter, pushed by the control plane as a snapshot plus deltas.
-- **isolation** — `none` (the ACLs decide) or `hub-only` (peers without the
-  hub role only ever see hubs).
-- **control plane** — `ghost-server`: networks, peers, enrolment, netmaps,
-  policy, health, audit and the control API ([docs/control-plane.md](docs/control-plane.md)).
-
----
-
-## Features
-
-- ✅ **NAT Traversal**: Automatic NAT punchthrough using ICE (STUN/TURN)
-- ✅ **End-to-End Encryption**: WireGuard protocol for secure tunneling
-- ✅ **Cross-Platform**: Linux, Windows, macOS support
-- ⏳ **Mobile Support**: Android & iOS (Phase 5)
-- ✅ **Zero Configuration**: Automatic candidate gathering and connection establishment
-- ✅ **Dynamic Peers**: Add/remove peers without restarting the tunnel
-
----
-
-## Quick Start
-
-### Installation
+Run the control plane. The image is built from the repository root:
 
 ```bash
-go get github.com/Imposter/ghost/ghost-go
+docker build -f ghost-server/Dockerfile -t ghost-server .
+docker run -p 8080:8080 -v ghost-data:/var/lib/ghost \
+  -e GHOST_CONTROL_TOKEN=change-me-to-16-bytes-or-more \
+  -e GHOST_NETWORKS=lab=100.64.0.0/10=hub-only \
+  -e GHOST_STUN_URLS=stun:stun.l.google.com:19302 \
+  ghost-server
 ```
 
-### Basic Usage
+Create a pre-auth key for the network, then enrol a peer with it:
 
-Use the public `ghost` package: a **node** joins a network via the signalling
-server and connects to a **hub**; addresses are assigned from the network pool.
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -X POST \
+  http://localhost:8080/control/networks/lab/auth-keys \
+  -d '{"roles":["node"],"reusable":true}'            # -> {"key":"gak_…", …}
+
+curl -s -X POST http://localhost:8080/v1/enroll \
+  -d '{"auth_key":"gak_…","name":"node-1"}'          # -> {"peer_id":"peer_…","peer_token":"gpt_…", …}
+```
+
+Join the network from Go with the peer token. By default a network is
+hub-and-spoke, so a node links to the hubs in its netmap:
 
 ```go
-package main
+node, err := ghost.NewNode(ghost.Config{
+    SignalURL:    "ws://localhost:8080/v1/signal", // wss:// in production
+    PeerToken:    peerToken,
+    Network:      "lab",
+    KeyStorePath: "/var/lib/ghost/keys.json", // WireGuard key; empty = ephemeral
+})
+if err != nil {
+    log.Fatal(err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+defer node.Close()
 
-import (
-    "context"
-    "log"
-
-    "github.com/Imposter/ghost/ghost-go/ghost"
-)
-
-func main() {
-    node, err := ghost.NewNode(ghost.Config{
-        SignalURL:    "wss://signal.example.com/v1",
-        PeerToken:    "…",                          // authenticates this peer
-        Network:      "my-network",
-        KeyStorePath: "/var/lib/ghost/keys.json",   // persistent keys
-        STUNServers:  []ghost.STUNServer{{URL: "stun:stun.l.google.com:19302"}},
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    if err := node.Start(context.Background()); err != nil {
-        log.Fatal(err)
-    }
-    defer node.Close()
-
-    for ev := range node.Events() {
-        if ev.Kind == ghost.EventPeerConnected {
-            // DialContext / Listen run over the tunnel netstack.
-            conn, err := node.DialContext(context.Background(), "tcp", "100.64.0.2:8080")
-            _ = conn
-            _ = err
-        }
+for ev := range node.Events() {
+    if ev.Kind == ghost.EventPeerConnected {
+        conn, err := node.DialContext(ctx, "tcp", "100.64.0.1:8080") // a hub's tunnel address
+        // ...
     }
 }
 ```
 
-Create a hub with `ghost.NewHub`; run an allowlisted SOCKS5/HTTP-CONNECT exit
-on a node's tunnel IP with the `exit` package.
+A hub is the same thing built with `ghost.NewHub`. It needs a peer that holds
+the `hub` role, which you can create with `POST /control/networks/{net}/peers`.
 
-### Node metrics
+## Glossary
 
-A node serves strict metrics on its **tunnel IP only** (a netstack listener,
-port `metrics.DefaultPort` = 9464, no OS port). Only its hubs, plus any peer
-ids in `MetricsConfig.AllowPeers` (ignored under hub-only isolation), may read
-them; everyone else gets 403.
-
-```go
-setup, _ := otelsetup.New(ctx, otelsetup.Options{ServiceName: "ghost-node"})
-col := metrics.NewCollector(metrics.CollectorConfig{})     // ring + bounded aggregates
-node, _ := ghost.NewNode(ghost.Config{ /* … */
-    MeterProvider: setup.MeterProvider,
-    Metrics: &ghost.MetricsConfig{Collector: col, Prometheus: setup.PrometheusHandler},
-})
-ex := exit.New(exit.Config{Policy: allow, Accountant: col, PeerResolver: node,
-    MeterProvider: setup.MeterProvider})
-col.AttachExit(ex)
-
-snap := node.Snapshot()                                   // in-process (FFI) read
-```
-
-| Endpoint                              | Body                                        |
-| ------------------------------------- | ------------------------------------------- |
-| `GET /metrics`                        | Prometheus text (from `otelsetup`)          |
-| `GET /metrics?format=json`            | `metrics.Snapshot`                          |
-| `GET /metrics/connections?limit=N`    | `metrics.ConnectionsResponse`, newest first |
-
-On the hub, `*ghost.Hub` implements `ghost.NodeMetricsFetcher`
-(`NodeSnapshot`, `NodeConnections`, `NodePrometheus`) by peer id. The
-control plane does not proxy these; it stores only the health summaries peers
-send in heartbeats.
-
----
-
-## Architecture
-
-```
-Application Layer
-    │
-    ├─ Signaling (Phase 2) ────► WebSocket/HTTP for candidate exchange
-    │
-    ├─ Connection Management
-    │   ├─ ICE Package ────────► NAT traversal & peer discovery
-    │   │   ├─ Agent ──────────► Candidate gathering
-    │   │   └─ ICEBind ────────► WireGuard integration ⭐
-    │   │
-    │   └─ WireGuard Package ──► Encrypted tunneling
-    │       ├─ Tunnel ─────────► Lifecycle management
-    │       ├─ TUN ────────────► Virtual network interface
-    │       └─ Keys ───────────► Cryptographic key management
-    │
-    └─ Network Layer
-        ├─ Pion ICE ───────────► ICE protocol implementation
-        └─ wireguard-go ───────► WireGuard protocol
-```
-
----
-
-## Project Status
-
-### Phase 1: Core Infrastructure (90% Complete) ✅
-
-**Implemented:**
-- ✅ ICE agent with STUN/TURN support (~900 lines)
-- ✅ ICEBind adapter (critical WireGuard integration) (~245 lines)
-- ✅ WireGuard tunnel wrapper with lifecycle (~700 lines)
-- ✅ Cross-platform TUN interface abstraction (~51 lines)
-- ✅ Key generation and management
-- ✅ Configuration validation
-- ✅ Integration test infrastructure
-- ✅ 32+ unit tests passing
-
-**Remaining:**
-- Demo application
-- Real-world integration tests
-
-### Phase 2: Signaling & Coordination (Planned)
-- WebSocket signaling server
-- Candidate exchange protocol
-- Peer discovery
-- Connection state management
-
-### Phase 3: Connection Management (Planned)
-- Automatic reconnection
-- NAT rebinding detection
-- Connection quality monitoring
-- Fallback strategies
-
-### Phase 4: HTTP Proxy (Planned)
-- SOCKS5 proxy server
-- HTTP proxy support
-- Traffic routing
-
-### Phase 5: Mobile Platforms (Planned)
-- Android VpnService integration
-- iOS NEPacketTunnelProvider
-- Mobile-specific optimizations
-
-### Phase 6: Observability & Testing (Planned)
-- Metrics and monitoring
-- End-to-end tests
-- Performance benchmarks
-
----
+- **peer**: an enrolled identity in one network. It has an id (`peer_…`), a
+  WireGuard key, an address from the pool, roles, tags and labels, and
+  authenticates with a peer token (`gpt_…`).
+- **network**: a named set of peers that share an address pool (default
+  `100.64.0.0/10`), a policy document and an isolation mode.
+- **role**: a capability that the control plane assigns: `hub` (a gateway
+  many peers connect to), `node` (an ordinary member), `exit` (runs an
+  allowlisted exit) or `relay` (reserved).
+- **hub / node**: a peer that holds that role. `ghost.Hub` and `ghost.Node`
+  are the library types.
+- **netmap**: the peers a peer may reach, plus its exit policy and inbound
+  packet filter. The control plane sends a snapshot, then deltas.
+- **policy**: a network's tags, ACL rules and exit policies
+  ([docs/policy.md](docs/policy.md)).
+- **isolation**: `none` (the ACLs decide) or `hub-only` (peers without the hub
+  role only ever see hubs).
+- **exit**: a SOCKS5/HTTP-CONNECT proxy on a peer's tunnel address. It dials
+  allowlisted destinations through the host's own network.
+- **control plane**: `ghost-server` ([docs/control-plane.md](docs/control-plane.md)).
 
 ## Documentation
 
-- **[Phase 1 Progress](docs/phase-1-core-infrastructure.md)** - Current implementation status
-- **[ICE Package Guide](internal/ice/)** - ICE agent and NAT traversal
-- **[WireGuard Package Guide](internal/wireguard/)** - Encryption and tunneling
+- [Architecture](docs/architecture.md): the components, a connection's
+  lifecycle, and metrics.
+- [Control plane](docs/control-plane.md): the model, enrolment, the control
+  and peer APIs, configuration, and running the server.
+- [Policy](docs/policy.md): ACLs, exit policies, isolation, and the external
+  authorizer.
+- [Signalling v1](docs/signalling-v1.md): the WebSocket protocol between peers
+  and the control plane.
+- [Development](docs/development.md): building, testing, linting, CI, and
+  image publishing.
+- [API changes](docs/api-changes.md): breaking changes and removals.
 
----
+## Repository layout
+
+```
+ghost-go/                  library module
+  ghost/                   Node, Hub, Config, keys, events, the tunnel netstack
+  exit/                    SOCKS5 / HTTP-CONNECT exit: allowlist, caps, accounting
+  metrics/                 a node's strict metrics: collector, handler, hub-side client
+  signal/                  signalling client (and an in-memory fake server)
+  signal/proto/            v1 wire types shared with ghost-server
+  otelsetup/               OpenTelemetry SDK and Prometheus wiring for binaries
+  internal/ice/            Pion ICE agent and the WireGuard MultiBind
+  internal/wireguard/      wireguard-go tunnel, keys, and the userspace netstack
+  internal/bounded/        cardinality-bounded sets and a top-N counter
+  internal/nettest/        loopback-only ICE config for tests
+  internal/testutil/       test loggers and in-memory ICE signalling
+ghost-server/              control plane module (imports ghost-go via replace)
+  cmd/ghost-server/        the binary
+  server/...               config, store, control, policy, access, signalling, httpapi, ...
+  Dockerfile
+docs/                      the documents listed above
+.github/                   CI, image publishing, Dependabot
+```
 
 ## Requirements
 
-- **Go**: 1.25+ (uses range-over-func)
-- **Operating System**:
-  - Linux: Kernel 3.10+ (TUN support)
-  - Windows: Windows 10+ (WireGuard adapter)
-  - macOS: 10.15+ (utun support)
-- **Network**: UDP connectivity for ICE
-- **Privileges**: Root/Administrator for TUN interface creation
+Go 1.25 or newer. A peer needs outbound UDP for ICE, and TURN if both ends are
+behind symmetric NATs. Neither module needs root or a TUN driver.
 
----
+## Acknowledgements
 
-## Testing
-
-```bash
-# Run all unit tests
-go test ./... -short -v
-
-# Run ICE tests
-go test ./internal/ice -v
-
-# Run WireGuard tests (config & keys)
-go test ./internal/wireguard -run "Config|Key" -v
-
-# Run integration tests (requires network)
-go test ./internal/ice -run "Integration" -v
-```
-
----
-
-## Configuration
-
-Example `.env` file:
-
-```bash
-# STUN/TURN Configuration
-GHOST_STUN_SERVERS=stun:stun.l.google.com:19302
-GHOST_TURN_SERVERS=turn:turn.example.com:3478
-GHOST_TURN_USERNAME=user
-GHOST_TURN_PASSWORD=pass
-
-# Timeouts
-GHOST_ICE_GATHER_TIMEOUT=10s
-GHOST_ICE_CONNECTION_TIMEOUT=30s
-GHOST_KEEPALIVE_INTERVAL=25s
-
-# Logging
-GHOST_LOG_LEVEL=info
-GHOST_LOG_FORMAT=json
-```
-
----
-
-## Security
-
-### Encryption
-- **WireGuard Protocol**: ChaCha20-Poly1305 for authenticated encryption
-- **Curve25519**: Key exchange
-- **BLAKE2s**: Hashing
-- **Perfect Forward Secrecy**: Session keys rotated automatically
-
-### NAT Traversal
-- **ICE**: Industry-standard NAT traversal (WebRTC compatible)
-- **STUN**: Discovers public IP/port
-- **TURN**: Relay fallback for restrictive NATs
-
-### Best Practices
-1. Exchange ICE credentials over secure signaling channel
-2. Verify peer public keys before connection
-3. Use TURN authentication for relay servers
-4. Monitor connection quality and force reconnect if degraded
-
----
-
-## Performance
-
-### Latency
-- **Direct Connection**: ~5-20ms (peer-to-peer)
-- **Through NAT**: ~20-50ms (includes ICE negotiation)
-- **Via TURN**: ~50-150ms (relay overhead)
-
-### Throughput
-- **CPU**: ~2Gbps per core (ChaCha20)
-- **Network**: Limited by ICE connection (typically 10-100 Mbps)
-- **Overhead**: ~80 bytes per packet (WireGuard headers)
-
-### Resource Usage
-- **Memory**: ~2-5MB per peer connection
-- **CPU**: < 1% idle, 10-20% under load
-- **Goroutines**: ~50 per WireGuard tunnel
-
----
-
-## Troubleshooting
-
-### ICE Connection Fails
-```bash
-# Check firewall allows UDP
-# Verify STUN server is reachable
-# Try adding TURN server for relay fallback
-```
-
-### TUN Interface Creation Fails
-```bash
-# Linux: Check /dev/net/tun exists and user has permissions
-# Windows: Install WireGuard Windows driver
-# macOS: Verify utun is available
-```
-
-### WireGuard Handshake Fails
-```bash
-# Verify keys are correct (32 bytes, non-zero)
-# Check MTU settings (try 1280)
-# Ensure clocks are synchronized (± 2 minutes)
-```
-
----
-
-## Contributing
-
-Contributions welcome! See [docs/common-guide.md](docs/common-guide.md) for development guidelines.
-
-### Development Setup
-```bash
-git clone https://github.com/yourusername/ghost-go.git
-cd ghost-go
-go mod download
-go test ./... -short
-```
-
----
-
-## License
-
-[Your License Here]
-
----
-
-## Acknowledgments
-
-- **[Pion](https://github.com/pion)** - ICE implementation
-- **[WireGuard](https://www.wireguard.com/)** - Fast, modern VPN protocol
-- **[wireguard-go](https://git.zx2c4.com/wireguard-go/)** - Go implementation
-
----
-
-## Contact
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/ghost-go/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/ghost-go/discussions)
-
----
-
-**Built with ❤️ using Go, ICE, and WireGuard**
+- [Pion](https://github.com/pion) for ICE.
+- [wireguard-go](https://git.zx2c4.com/wireguard-go/) and its gVisor netstack.
