@@ -61,6 +61,10 @@ type Peer struct {
 	Ephemeral bool
 	// AuthKeyID is the pre-auth key the peer enrolled with, if any.
 	AuthKeyID string
+	// EnrollmentMethod is how the peer enrolled: "auth_key", "interactive" or
+	// "direct" (see access.EnrollmentMethod). It is empty for peers enrolled
+	// before it was recorded whose method could not be recovered.
+	EnrollmentMethod string
 	// Health is the last health summary the peer reported, if any.
 	Health    *proto.Health
 	HealthAt  *time.Time

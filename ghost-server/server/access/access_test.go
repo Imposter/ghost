@@ -136,3 +136,44 @@ func TestControllerCacheAndFailClosed(t *testing.T) {
 		t.Fatalf("errors must not be cached; calls = %d", failing.n.Load())
 	}
 }
+
+// TestControllerKeysOnPeerContext: a new WireGuard key or enrolment method is
+// a different request, so it never reuses a decision made for the old one.
+func TestControllerKeysOnPeerContext(t *testing.T) {
+	auth := &countingAuth{}
+	c := NewController(auth, ControllerOptions{CacheTTL: time.Minute})
+	base := Request{Action: ActionConnect, Network: "n", Peer: "a", PublicKey: "k1", EnrollmentMethod: EnrollAuthKey, AuthKeyID: "key_1"}
+	variants := []func(*Request){
+		func(*Request) {},
+		func(r *Request) { r.PublicKey = "k2" },
+		func(r *Request) { r.EnrollmentMethod = EnrollDirect },
+		func(r *Request) { r.AuthKeyID = "key_2" },
+	}
+	for i, mutate := range variants {
+		req := base
+		mutate(&req)
+		c.Check(context.Background(), req)
+		c.Check(context.Background(), req)
+		if got := auth.n.Load(); got != int32(i+1) {
+			t.Fatalf("variant %d: authorizer calls = %d, want %d", i, got, i+1)
+		}
+	}
+}
+
+func TestControllerConsulted(t *testing.T) {
+	tests := []struct {
+		name string
+		auth Authorizer
+		want bool
+	}{
+		{"open", Open{}, false},
+		{"webhook", NewWebhook("http://127.0.0.1:1", secret, time.Second, nil, nil), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NewController(tt.auth, ControllerOptions{}).Consulted(); got != tt.want {
+				t.Fatalf("Consulted() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -136,7 +136,7 @@ With `access.mode = "api"`, ghost-server asks a webhook before:
 | Action         | When | Cached |
 | -------------- | ---- | ------ |
 | `enroll`       | a peer is created: pre-auth key (before the key is spent), interactive claim, or `POST /control/networks/{net}/peers` | yes |
-| `connect`      | a peer joins its network over signalling; asked again, **uncached**, for every live peer whenever the network's policy or isolation changes | on join |
+| `connect`      | a peer joins its network over signalling; asked again, **uncached**, for every live peer whenever the network's policy or isolation changes, and on demand through `POST /control/peers/{id}/reauthorize` or `POST /control/networks/{net}/reauthorize` | on join |
 | `connect_peer` | every relayed offer, answer and candidate | yes |
 
 In `open` mode, it is not consulted: credentials, ACLs and isolation decide.
@@ -156,6 +156,8 @@ X-Ghost-Signature: sha256=<hex HMAC-SHA256(authorizer_secret, raw body)>
   "action": "connect", "network": "scrape-pool",
   "peer": "peer_ab12…", "target": "peer_cd34…",
   "roles": ["exit", "node"], "tags": ["tag:exit"], "labels": { "owner": "u-42" },
+  "public_key": "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=",
+  "enrollment_method": "auth_key", "auth_key_id": "key_3fz…",
   "ts": 1790000000, "nonce": "9f86d081884c7d659a2feaa0c55ad015"
 }
 ```
@@ -165,6 +167,9 @@ X-Ghost-Signature: sha256=<hex HMAC-SHA256(authorizer_secret, raw body)>
 | `peer`   | `connect`, `connect_peer` | The acting peer. It is absent for `enroll`, because the peer doesn't exist yet. |
 | `target` | `connect_peer` | The peer being signalled. |
 | `roles`, `tags`, `labels` | all | The acting (or enrolling) peer's. For `enroll`, these are the key's or approval's values merged with the requested labels. |
+| `public_key` | all, when known | The acting (or enrolling) peer's WireGuard public key (base64, 32 bytes). On `connect` and `connect_peer` it is the key the peer presented in its `hello`. An `enroll` without a key (interactive or direct, when none was given) omits it. |
+| `enrollment_method` | all | How the acting (or enrolling) peer enrolled: `auth_key` (a pre-auth key), `interactive` (a claimed interactive code) or `direct` (`POST /control/networks/{net}/peers`). It is recorded on the peer, so `connect` and `connect_peer` carry it too. It is omitted only for peers enrolled before ghost recorded it whose method could not be recovered (see [api-changes.md](api-changes.md)). |
+| `auth_key_id` | `enrollment_method: auth_key` | The id (`key_…`) of the pre-auth key the peer enrolled with. |
 | `ts`, `nonce` | all | Unix seconds at signing time, and 128-bit random hex (single use). |
 
 ### Verifying (authorizer side)
@@ -196,6 +201,26 @@ Answer `401` to a request that fails verification.
   `exit_allowlist`, the network policy applies unchanged.
 - On `connect_peer`, only allow or deny matters.
 
+### Re-asking on demand
+
+When the authorizer's answer about a peer changes (it paused a node, say),
+tell ghost-server instead of waiting for the next policy change:
+
+- `POST /control/peers/{id}/reauthorize` re-asks about one peer;
+- `POST /control/networks/{net}/reauthorize` re-asks about every live peer
+  in the network.
+
+Both need `peers:write`. Each live, joined session gets a fresh, uncached
+`connect` request, exactly as on a policy change: a denial closes it with a
+fatal `forbidden` error (`connection no longer authorized: <reason>`) and is
+audited as `peer.connect_denied` with `on: "reauthorize"`; an allow
+refreshes the session's exit policy. Offline peers are not asked about, but
+their cached decisions are dropped, so their next join is asked afresh.
+There is no separate paused state in ghost: the authorizer denies the
+reconnect as well. In `open` mode there is nothing to ask, and both routes
+answer `409`. Responses are listed in
+[control-plane.md](control-plane.md#control-api).
+
 ### Fail closed
 
 - Timeouts (`access.timeout`, 3 s by default), transport errors, non-200
@@ -203,7 +228,10 @@ Answer `401` to a request that fails verification.
 - These failures are never cached. An outage during enrolment returns `503`,
   and an interactive claim stays retryable.
 - Decisions are cached for `access.cache_ttl` (30 s by default), keyed on
-  action, network, peer, target, roles, tags and labels. Revoking, expiring,
-  moving, updating or deleting a peer drops its cached decisions.
+  action, network, peer, target, roles, tags, labels, public key, enrolment
+  method and pre-auth key id. Revoking, expiring, moving, updating,
+  reauthorizing or deleting a peer drops its cached decisions. A denial is
+  cached too, so a peer denied on a re-check stays out until the entry
+  expires or the peer is reauthorized.
 - Metrics: `ghost_server.authz.decisions{action,result,cached}` and
   `ghost_server.authz.duration`.

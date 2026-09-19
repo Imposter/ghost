@@ -179,20 +179,59 @@ func (r *Relay) Disconnect(peerID, code, message string) bool {
 // pushes the new netmaps.
 func (r *Relay) PolicyChanged(ctx context.Context, network string) {
 	for _, s := range r.joinedIn(network) {
-		r.mu.RLock()
-		peer := s.peer
-		r.mu.RUnlock()
-		d := r.svc.Access().CheckFresh(ctx, connectRequest(peer))
-		if !d.Allow {
-			r.svc.Audit(ctx, network, "peer.connect_denied", peer.ID, map[string]any{"reason": d.Reason, "on": "policy_change"})
-			s.fatal(proto.ErrCodeForbidden, "connection no longer authorized: "+d.Reason)
-			continue
-		}
-		r.mu.Lock()
-		s.override = d.Policy.ExitPolicy(network)
-		r.mu.Unlock()
+		r.recheck(ctx, s, "policy_change")
 	}
 	r.NetworkChanged(ctx, network)
+}
+
+// Reauthorize implements control.Sessions: PolicyChanged's re-check for one
+// peer's joined session.
+func (r *Relay) Reauthorize(ctx context.Context, peerID string) (access.Decision, bool) {
+	r.mu.RLock()
+	s := r.sessions[peerID]
+	joined := s != nil && s.joined
+	var network string
+	if joined {
+		network = s.peer.Network
+	}
+	r.mu.RUnlock()
+	if !joined {
+		return access.Decision{}, false
+	}
+	d := r.recheck(ctx, s, "reauthorize")
+	r.NetworkChanged(ctx, network)
+	return d, true
+}
+
+// ReauthorizeNetwork implements control.Sessions: PolicyChanged's re-check,
+// reporting each decision.
+func (r *Relay) ReauthorizeNetwork(ctx context.Context, network string) map[string]access.Decision {
+	out := map[string]access.Decision{}
+	for _, s := range r.joinedIn(network) {
+		out[s.peerID] = r.recheck(ctx, s, "reauthorize")
+	}
+	r.NetworkChanged(ctx, network)
+	return out
+}
+
+// recheck asks the authorizer, uncached, whether a joined session may stay
+// connected. A denial is audited (on names the trigger) and closes the
+// session with a fatal forbidden error; an allow refreshes the session's exit
+// policy override. The caller pushes netmaps.
+func (r *Relay) recheck(ctx context.Context, s *session, on string) access.Decision {
+	r.mu.RLock()
+	peer := s.peer
+	r.mu.RUnlock()
+	d := r.svc.Access().CheckFresh(ctx, connectRequest(peer))
+	if !d.Allow {
+		r.svc.Audit(ctx, peer.Network, "peer.connect_denied", peer.ID, map[string]any{"reason": d.Reason, "on": on})
+		s.fatal(proto.ErrCodeForbidden, "connection no longer authorized: "+d.Reason)
+		return d
+	}
+	r.mu.Lock()
+	s.override = d.Policy.ExitPolicy(peer.Network)
+	r.mu.Unlock()
+	return d
 }
 
 // NetworkChanged implements control.Sessions: every joined session in the
@@ -376,9 +415,15 @@ func diffNetmap(prev, next proto.Netmap) (proto.NetmapDelta, bool) {
 	return d, changed
 }
 
-func connectRequest(p store.Peer) access.Request {
-	return access.Request{Action: access.ActionConnect, Network: p.Network, Peer: p.ID, Roles: p.Roles, Tags: p.Tags, Labels: p.Labels}
+// peerRequest is an authorizer request about peer p acting.
+func peerRequest(action access.Action, p store.Peer) access.Request {
+	return access.Request{
+		Action: action, Network: p.Network, Peer: p.ID, Roles: p.Roles, Tags: p.Tags, Labels: p.Labels,
+		PublicKey: p.PublicKey, EnrollmentMethod: access.EnrollmentMethod(p.EnrollmentMethod), AuthKeyID: p.AuthKeyID,
+	}
 }
+
+func connectRequest(p store.Peer) access.Request { return peerRequest(access.ActionConnect, p) }
 
 // ServeHTTP upgrades to WebSocket and runs one session.
 func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -621,10 +666,9 @@ func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig 
 		s.sendError(proto.ErrCodeNotFound, "peer not online: "+sig.To)
 		return
 	}
-	d := r.svc.Access().Check(ctx, access.Request{
-		Action: access.ActionConnectPeer, Network: peer.Network, Peer: peer.ID, Target: sig.To,
-		Roles: peer.Roles, Tags: peer.Tags, Labels: peer.Labels,
-	})
+	req := peerRequest(access.ActionConnectPeer, peer)
+	req.Target = sig.To
+	d := r.svc.Access().Check(ctx, req)
 	if !d.Allow {
 		if s.firstDenial(sig.To) {
 			r.svc.Audit(ctx, peer.Network, "signal.denied", peer.ID, map[string]any{"to": sig.To, "type": t, "reason": d.Reason})

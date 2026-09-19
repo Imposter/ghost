@@ -37,7 +37,7 @@ type newPeer struct {
 	ephemeral bool
 	authKeyID string
 	ttl       time.Duration
-	via       string // "auth_key", "interactive" or "control", for the audit log
+	method    access.EnrollmentMethod
 }
 
 // authorizeEnroll consults the authorizer; the decision's tags and labels are
@@ -45,10 +45,11 @@ type newPeer struct {
 func (s *Service) authorizeEnroll(ctx context.Context, np *newPeer) error {
 	d := s.access.Check(ctx, access.Request{
 		Action: access.ActionEnroll, Network: np.network, Roles: np.roles, Tags: np.tags, Labels: np.labels,
+		PublicKey: np.publicKey, EnrollmentMethod: np.method, AuthKeyID: np.authKeyID,
 	})
 	if !d.Allow {
 		s.metrics.Registration(ctx, "denied")
-		s.Audit(ctx, np.network, "peer.enroll_denied", "", map[string]any{"via": np.via, "reason": d.Reason})
+		s.Audit(ctx, np.network, "peer.enroll_denied", "", map[string]any{"via": np.method, "reason": d.Reason})
 		return &DeniedError{Reason: d.Reason, Unavailable: d.Unavailable}
 	}
 	if d.Policy != nil {
@@ -70,7 +71,7 @@ func (s *Service) createPeer(ctx context.Context, np newPeer) (Credentials, erro
 	p := store.Peer{
 		ID: newID("peer_"), TokenHash: HashSecret(token), Network: np.network, Name: np.name,
 		PublicKey: np.publicKey, Roles: np.roles, Tags: unionTags(np.tags), Labels: np.labels,
-		Ephemeral: np.ephemeral, AuthKeyID: np.authKeyID, CreatedAt: now,
+		Ephemeral: np.ephemeral, AuthKeyID: np.authKeyID, EnrollmentMethod: string(np.method), CreatedAt: now,
 	}
 	if np.ttl > 0 {
 		exp := now.Add(np.ttl)
@@ -81,9 +82,9 @@ func (s *Service) createPeer(ctx context.Context, np newPeer) (Credentials, erro
 	}
 	s.metrics.Registration(ctx, "ok")
 	s.Audit(ctx, p.Network, "peer.enrolled", p.ID, map[string]any{
-		"via": np.via, "roles": p.Roles, "tags": p.Tags, "ephemeral": p.Ephemeral, "auth_key": np.authKeyID,
+		"via": np.method, "roles": p.Roles, "tags": p.Tags, "ephemeral": p.Ephemeral, "auth_key": np.authKeyID,
 	})
-	s.publishPeer(events.PeerEnrolled, p, map[string]any{"via": np.via})
+	s.publishPeer(events.PeerEnrolled, p, map[string]any{"via": np.method})
 	s.networkChanged(ctx, p.Network)
 	return Credentials{
 		PeerID: p.ID, PeerToken: token, Network: p.Network, Roles: p.Roles, Tags: p.Tags,
@@ -125,7 +126,7 @@ func (s *Service) CreatePeer(ctx context.Context, network string, in PeerInput) 
 	}
 	np := newPeer{
 		network: network, name: in.Name, publicKey: in.PublicKey, roles: roles, tags: in.Tags,
-		labels: in.Labels, ephemeral: in.Ephemeral, ttl: in.TTL, via: "control",
+		labels: in.Labels, ephemeral: in.Ephemeral, ttl: in.TTL, method: access.EnrollDirect,
 	}
 	if err := s.authorizeEnroll(ctx, &np); err != nil {
 		return Credentials{}, err
@@ -236,7 +237,8 @@ func (s *Service) Enroll(ctx context.Context, in EnrollInput) (Credentials, erro
 	}
 	np := newPeer{
 		network: k.Network, name: in.Name, publicKey: in.PublicKey, roles: k.Roles, tags: k.Tags,
-		labels: mergeLabels(in.Labels, k.Labels), ephemeral: k.Ephemeral, authKeyID: k.ID, ttl: k.PeerTTL, via: "auth_key",
+		labels: mergeLabels(in.Labels, k.Labels), ephemeral: k.Ephemeral, authKeyID: k.ID, ttl: k.PeerTTL,
+		method: access.EnrollAuthKey,
 	}
 	if err := s.authorizeEnroll(ctx, &np); err != nil {
 		return Credentials{}, err
@@ -509,7 +511,7 @@ func (s *Service) PollEnrollment(ctx context.Context, pollToken string) (PollRes
 	}
 	np := newPeer{
 		network: claimed.Network, name: claimed.Name, publicKey: claimed.PublicKey, roles: claimed.Roles,
-		tags: claimed.Tags, labels: claimed.Labels, via: "interactive",
+		tags: claimed.Tags, labels: claimed.Labels, method: access.EnrollInteractive,
 	}
 	if err := s.authorizeEnroll(ctx, &np); err != nil {
 		// A decision denies for good; an outage (or any other failure) puts the

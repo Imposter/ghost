@@ -3,6 +3,52 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## Authorizer request context and on-demand re-checks
+
+Additive: existing authorizers and control API clients keep working. One
+audit value changed (last bullet).
+
+**Authorizer protocol** (see [policy.md](policy.md#request))
+
+- Every request (`enroll`, `connect`, `connect_peer`) carries the acting
+  peer's WireGuard `public_key` when one is known, and its
+  `enrollment_method`: `auth_key` (with `auth_key_id`), `interactive` or
+  `direct`.
+- The decision cache is also keyed on these fields.
+
+**Storage**
+
+- `peers.enrollment_method` (migration `0003_peer_enrollment_method.sql`).
+  Existing peers are backfilled where the method is recoverable: a pre-auth
+  key id means `auth_key`, and a claimed enrolment still naming the peer
+  means `interactive`. Direct creations and interactive peers whose
+  enrolment was already pruned stay unknown, and their requests omit
+  `enrollment_method`.
+
+**HTTP API**
+
+- `POST /control/peers/{id}/reauthorize` and
+  `POST /control/networks/{net}/reauthorize` (`peers:write`) re-ask the
+  authorizer about live sessions and disconnect the denied. `409` in `open`
+  mode.
+- `PeerView` has `enrollment_method` and `auth_key_id`.
+- New audit actions `peer.reauthorized` and `network.reauthorized`.
+  `peer.connect_denied` from a re-check carries `on: "policy_change"` or
+  `on: "reauthorize"`.
+- `via`, in the `peer.enrolled` and `peer.enroll_denied` audit entries and
+  in the `peer.enrolled` watch event, is now `direct` (was `control`) for
+  peers created through the control API, matching `enrollment_method`.
+
+**ghost-server (Go)**
+
+| Old | New |
+| --- | --- |
+| — | `access.Request.PublicKey`, `.EnrollmentMethod`, `.AuthKeyID`; `access.EnrollmentMethod` (`EnrollAuthKey`, `EnrollInteractive`, `EnrollDirect`) |
+| — | `access.Controller.Consulted()` |
+| — | `store.Peer.EnrollmentMethod` |
+| — | `control.Service.ReauthorizePeer`, `control.Service.ReauthorizeNetwork`, `control.Reauthorization`, `control.ErrAuthorizerOpen` (`409`) |
+| `control.Sessions` | adds `Reauthorize(ctx, peerID)` and `ReauthorizeNetwork(ctx, network)`; `signalling.Relay` implements both |
+
 ## Per-network interactive enrolment switch
 
 Networks gain `interactive_enrollment` (default `true`). Existing networks

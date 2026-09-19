@@ -45,6 +45,9 @@ var (
 	// ErrPeerRevoked and ErrPeerExpired refine ErrUnauthorized for peers.
 	ErrPeerRevoked = fmt.Errorf("%w: peer revoked", ErrUnauthorized)
 	ErrPeerExpired = fmt.Errorf("%w: peer credentials expired", ErrUnauthorized)
+	// ErrAuthorizerOpen refines ErrConflict for a reauthorize call while the
+	// access mode is open: there is no authorizer to ask.
+	ErrAuthorizerOpen = fmt.Errorf("%w: access mode is open, there is no authorizer to ask", ErrConflict)
 )
 
 // DeniedError reports a denial by the external authorizer. Unavailable marks
@@ -91,6 +94,14 @@ type Sessions interface {
 	// PolicyChanged re-consults the authorizer for every live session in the
 	// network, then behaves like NetworkChanged.
 	PolicyChanged(ctx context.Context, network string)
+	// Reauthorize re-asks the authorizer, uncached, whether the peer's joined
+	// session may stay, closing it on a denial as PolicyChanged does, then
+	// pushes the network's netmaps. It reports false, without asking, when
+	// the peer has no joined session.
+	Reauthorize(ctx context.Context, peerID string) (access.Decision, bool)
+	// ReauthorizeNetwork does the same for every joined session in the
+	// network and returns each decision by peer id.
+	ReauthorizeNetwork(ctx context.Context, network string) map[string]access.Decision
 }
 
 // Options configures a Service.

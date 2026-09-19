@@ -45,6 +45,8 @@ revision.
 | `endpoints`  | The candidate addresses the peer last reported. |
 | `last_seen`, `expires_at`, `revoked_at` | Timestamps. |
 | `ephemeral`  | Ephemeral peers are deleted after staying offline past `peers.ephemeral_grace`. |
+| `enrollment_method` | How the peer enrolled: `auth_key`, `interactive` or `direct`. Recorded at enrolment and sent to the authorizer with every request about the peer. |
+| `auth_key_id` | The pre-auth key an `auth_key` enrolment used. |
 | `health`     | The last health summary from the peer's heartbeats. |
 
 **Roles.**
@@ -161,7 +163,9 @@ for infrastructure such as hubs.
 - **Reconnects** are refused at `hello`.
 - **Authorizer re-checks.** A policy or isolation change re-asks the
   authorizer about every live peer (in `api` mode), and disconnects the ones
-  it now denies (`forbidden`, fatal).
+  it now denies (`forbidden`, fatal). `POST /control/peers/{id}/reauthorize`
+  and `POST /control/networks/{net}/reauthorize` run the same re-check on
+  demand (see [policy.md](policy.md#re-asking-on-demand)).
 - **The janitor** runs every `peers.janitor_interval`. It disconnects peers
   whose credentials expired while online, deletes stale ephemeral peers, and
   prunes old enrolments.
@@ -216,7 +220,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | ----- | ------ |
 | `networks:read` / `networks:write` | networks, isolation and the interactive enrolment switch |
 | `policy:read` / `policy:write` | the policy document, ACLs, tags, exit policies |
-| `peers:read` / `peers:write` | peers, health, presence, stats |
+| `peers:read` / `peers:write` | peers, health, presence, stats, and reauthorizing peers |
 | `keys:read` / `keys:write` | pre-auth keys and interactive enrolments |
 | `audit:read` | the audit log |
 | `watch` | the watch stream |
@@ -229,6 +233,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | `GET /control/networks/{net}` | `NetworkView {name, pool, isolation, interactive_enrollment, policy_revision, created_at, online}` |
 | `PATCH /control/networks/{net}` | `{isolation?, interactive_enrollment?}` (at least one) → `NetworkView`. Changing `isolation` bumps the policy revision and pushes netmaps. |
 | `DELETE /control/networks/{net}` | `204`. `409` while it has peers. |
+| `POST /control/networks/{net}/reauthorize` | (`peers:write`) re-asks the authorizer about every live peer, disconnecting the denied → `{network, peers: [Reauthorization]}` (live peers only). `409` in `open` mode. |
 | `GET /control/networks/{net}/policy` | `PolicyView {network, isolation, revision, policy}` |
 | `PUT /control/networks/{net}/policy` | a policy document → `PolicyView` |
 | `GET / PUT /control/networks/{net}/acls` | `{acls: [...]}` |
@@ -250,6 +255,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | `POST /control/peers/{id}/revoke` | `PeerView`, and disconnects the peer |
 | `POST /control/peers/{id}/expire` | `PeerView`, and disconnects the peer |
 | `POST /control/peers/{id}/move` | `{network}` → `PeerView`, and disconnects the peer |
+| `POST /control/peers/{id}/reauthorize` | re-asks the authorizer about the peer's live session, disconnecting it on a denial → `Reauthorization`. `409` in `open` mode. |
 | `GET /control/peers/{id}/health` | `HealthView` |
 | `GET /control/health?network=` | `{peers: [HealthView], totals}` |
 | `GET /control/presence?network=` | `{sessions: [Presence]}` |
@@ -262,11 +268,17 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 
 ```
 {id, network, name, public_key, address, roles, tags, labels, endpoints,
- ephemeral, status, created_at, last_seen, expires_at, revoked_at, online,
- session?, health?, health_at?}
+ ephemeral, enrollment_method?, auth_key_id?, status, created_at, last_seen,
+ expires_at, revoked_at, online, session?, health?, health_at?}
 ```
 
 Token and key hashes are never exposed.
+
+**Reauthorization** is
+`{peer_id, network, online, allowed, reason?, disconnected}`. An offline peer
+(`online: false`) is not asked about, and `allowed` and `disconnected` are
+`false`. A denial, including the fail-closed denial of an unreachable
+authorizer, has `disconnected: true`.
 
 **Errors** are `{"error": "..."}`, with these statuses:
 
@@ -276,7 +288,7 @@ Token and key hashes are never exposed.
 | `401` | unauthenticated |
 | `403` | missing scope, an authorizer denial, or interactive enrolment turned off for the network |
 | `404` | not found, or outside the key's networks |
-| `409` | conflict |
+| `409` | conflict, or a reauthorize call in `open` mode (no authorizer to ask) |
 | `503` | authorizer unavailable |
 
 ### Watch stream
@@ -321,6 +333,9 @@ action, target, detail}`) and published on the watch stream.
 - **peers:** `peer.enrolled`, `peer.enroll_denied`, `peer.updated`,
   `peer.moved`, `peer.revoked`, `peer.expired`, `peer.deleted`,
   `peer.credentials_rotated`, `peer.key_rotated`, `peer.connect_denied`
+  (`{reason, on?}`, where `on` is `policy_change` or `reauthorize`),
+  `peer.reauthorized` (`{online, allowed, reason}`), `network.reauthorized`
+  (`{checked, disconnected}`)
 - **signalling:** `signal.denied`
 - **enrolment:** `auth_key.created`, `auth_key.revoked`, `enrollment.started`,
   `enrollment.approved`, `enrollment.denied`

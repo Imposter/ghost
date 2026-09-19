@@ -56,6 +56,7 @@ func (a *ControlAPI) Register(mux *http.ServeMux) {
 	h("GET /control/networks/{net}", control.ScopeNetworksRead, a.getNetwork)
 	h("PATCH /control/networks/{net}", control.ScopeNetworksWrite, a.patchNetwork)
 	h("DELETE /control/networks/{net}", control.ScopeNetworksWrite, a.deleteNetwork)
+	h("POST /control/networks/{net}/reauthorize", control.ScopePeersWrite, a.reauthorizeNetwork)
 	// Policy: the whole document, or its ACLs, tags and exit policies.
 	h("GET /control/networks/{net}/policy", control.ScopePolicyRead, a.getPolicy)
 	h("PUT /control/networks/{net}/policy", control.ScopePolicyWrite, a.putPolicy)
@@ -84,6 +85,7 @@ func (a *ControlAPI) Register(mux *http.ServeMux) {
 	h("POST /control/peers/{id}/revoke", control.ScopePeersWrite, a.revokePeer)
 	h("POST /control/peers/{id}/expire", control.ScopePeersWrite, a.expirePeer)
 	h("POST /control/peers/{id}/move", control.ScopePeersWrite, a.movePeer)
+	h("POST /control/peers/{id}/reauthorize", control.ScopePeersWrite, a.reauthorizePeer)
 	h("GET /control/peers/{id}/health", control.ScopePeersRead, a.peerHealth)
 	// Fleet views.
 	h("GET /control/health", control.ScopePeersRead, a.fleetHealth)
@@ -183,32 +185,36 @@ type PolicyView struct {
 // PeerView is the control API form of a peer. The token hash is never
 // exposed.
 type PeerView struct {
-	ID        string               `json:"id"`
-	Network   string               `json:"network"`
-	Name      string               `json:"name,omitempty"`
-	PublicKey string               `json:"public_key,omitempty"`
-	Address   string               `json:"address,omitempty"`
-	Roles     []proto.Role         `json:"roles"`
-	Tags      []string             `json:"tags"`
-	Labels    map[string]string    `json:"labels"`
-	Endpoints []string             `json:"endpoints,omitempty"`
-	Ephemeral bool                 `json:"ephemeral"`
-	Status    store.PeerStatus     `json:"status"`
-	CreatedAt time.Time            `json:"created_at"`
-	LastSeen  *time.Time           `json:"last_seen,omitempty"`
-	ExpiresAt *time.Time           `json:"expires_at,omitempty"`
-	RevokedAt *time.Time           `json:"revoked_at,omitempty"`
-	Online    bool                 `json:"online"`
-	Session   *signalling.Presence `json:"session,omitempty"`
-	Health    *proto.Health        `json:"health,omitempty"`
-	HealthAt  *time.Time           `json:"health_at,omitempty"`
+	ID        string            `json:"id"`
+	Network   string            `json:"network"`
+	Name      string            `json:"name,omitempty"`
+	PublicKey string            `json:"public_key,omitempty"`
+	Address   string            `json:"address,omitempty"`
+	Roles     []proto.Role      `json:"roles"`
+	Tags      []string          `json:"tags"`
+	Labels    map[string]string `json:"labels"`
+	Endpoints []string          `json:"endpoints,omitempty"`
+	Ephemeral bool              `json:"ephemeral"`
+	// EnrollmentMethod is "auth_key", "interactive" or "direct" (empty when
+	// unknown); AuthKeyID is the pre-auth key an auth_key enrolment used.
+	EnrollmentMethod string               `json:"enrollment_method,omitempty"`
+	AuthKeyID        string               `json:"auth_key_id,omitempty"`
+	Status           store.PeerStatus     `json:"status"`
+	CreatedAt        time.Time            `json:"created_at"`
+	LastSeen         *time.Time           `json:"last_seen,omitempty"`
+	ExpiresAt        *time.Time           `json:"expires_at,omitempty"`
+	RevokedAt        *time.Time           `json:"revoked_at,omitempty"`
+	Online           bool                 `json:"online"`
+	Session          *signalling.Presence `json:"session,omitempty"`
+	Health           *proto.Health        `json:"health,omitempty"`
+	HealthAt         *time.Time           `json:"health_at,omitempty"`
 }
 
 func (a *ControlAPI) peerView(p store.Peer) PeerView {
 	v := PeerView{
 		ID: p.ID, Network: p.Network, Name: p.Name, PublicKey: p.PublicKey, Address: p.Address,
 		Roles: p.Roles, Tags: p.Tags, Labels: p.Labels, Endpoints: p.Endpoints, Ephemeral: p.Ephemeral,
-		Status: p.Status(a.svc.Now()), CreatedAt: p.CreatedAt, LastSeen: p.LastSeen, ExpiresAt: p.ExpiresAt,
+		EnrollmentMethod: p.EnrollmentMethod, AuthKeyID: p.AuthKeyID, Status: p.Status(a.svc.Now()), CreatedAt: p.CreatedAt, LastSeen: p.LastSeen, ExpiresAt: p.ExpiresAt,
 		RevokedAt: p.RevokedAt, Health: p.Health, HealthAt: p.HealthAt,
 	}
 	if v.Tags == nil {
@@ -707,6 +713,35 @@ func (a *ControlAPI) movePeer(w http.ResponseWriter, r *http.Request, p control.
 		return
 	}
 	a.peerResult(w)(a.svc.MovePeer(r.Context(), peer.ID, in.Network))
+}
+
+// reauthorizePeer re-asks the authorizer about the peer's live session and
+// disconnects it on a denial. 409 in open mode.
+func (a *ControlAPI) reauthorizePeer(w http.ResponseWriter, r *http.Request, p control.Principal) {
+	peer, ok := a.peer(w, r, p)
+	if !ok {
+		return
+	}
+	res, err := a.svc.ReauthorizePeer(r.Context(), peer.ID)
+	if err != nil {
+		writeServiceError(w, a.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// reauthorizeNetwork does the same for every live peer in the network.
+func (a *ControlAPI) reauthorizeNetwork(w http.ResponseWriter, r *http.Request, p control.Principal) {
+	name, ok := a.network(w, r, p)
+	if !ok {
+		return
+	}
+	res, err := a.svc.ReauthorizeNetwork(r.Context(), name)
+	if err != nil {
+		writeServiceError(w, a.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"network": name, "peers": res})
 }
 
 // HealthView is one peer's health.

@@ -19,6 +19,7 @@ import (
 // denial.
 type Controller struct {
 	auth    Authorizer
+	open    bool
 	ttl     time.Duration
 	log     *slog.Logger
 	metrics *telemetry.Metrics
@@ -52,8 +53,10 @@ func NewController(auth Authorizer, opts ControllerOptions) *Controller {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	_, open := auth.(Open)
 	return &Controller{
 		auth:    auth,
+		open:    open,
 		ttl:     opts.CacheTTL,
 		log:     opts.Logger,
 		metrics: opts.Metrics,
@@ -61,6 +64,10 @@ func NewController(auth Authorizer, opts ControllerOptions) *Controller {
 		cache:   map[string]cacheEntry{},
 	}
 }
+
+// Consulted reports whether an external authorizer takes part in decisions.
+// It is false in open mode, where every request is allowed.
+func (c *Controller) Consulted() bool { return !c.open }
 
 // Check decides req. Errors from the authorizer deny (fail closed) and are
 // not cached.
@@ -141,6 +148,7 @@ func cacheKey(r Request) string {
 	b, _ := json.Marshal(cacheKeyFields{
 		Action: r.Action, Network: r.Network, Peer: r.Peer, Target: r.Target,
 		Roles: sortedRoles(r.Roles), Tags: sortedStrings(r.Tags), Labels: r.Labels,
+		PublicKey: r.PublicKey, EnrollmentMethod: r.EnrollmentMethod, AuthKeyID: r.AuthKeyID,
 	})
 	return string(b)
 }
@@ -153,6 +161,11 @@ type cacheKeyFields struct {
 	Roles   []string          `json:"r"`
 	Tags    []string          `json:"g"`
 	Labels  map[string]string `json:"l"`
+	// The remaining fields rarely change for a peer, but a new key or method
+	// must not reuse a decision made for the old one.
+	PublicKey        string           `json:"k"`
+	EnrollmentMethod EnrollmentMethod `json:"m"`
+	AuthKeyID        string           `json:"i"`
 }
 
 func sortedStrings(in []string) []string {

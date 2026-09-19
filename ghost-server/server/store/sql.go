@@ -449,7 +449,7 @@ func (s *SQL) UpdateNetwork(ctx context.Context, name string, u NetworkUpdate) (
 
 // ---- peers ----
 
-const peerCols = `id, token_hash, network, name, public_key, address, roles, tags, labels, endpoints, ephemeral, auth_key_id, health, health_at, created_at, last_seen, expires_at, revoked_at`
+const peerCols = `id, token_hash, network, name, public_key, address, roles, tags, labels, endpoints, ephemeral, auth_key_id, enrollment_method, health, health_at, created_at, last_seen, expires_at, revoked_at`
 
 func scanPeer(sc scanner) (Peer, error) {
 	var (
@@ -460,7 +460,7 @@ func scanPeer(sc scanner) (Peer, error) {
 		healthAt, lastSeen, expiresAt, revoked sql.NullInt64
 	)
 	if err := sc.Scan(&p.ID, &p.TokenHash, &p.Network, &p.Name, &p.PublicKey, &address, &roles, &tags, &labels,
-		&endpoints, &ephemeral, &p.AuthKeyID, &health, &healthAt, &created, &lastSeen, &expiresAt, &revoked); err != nil {
+		&endpoints, &ephemeral, &p.AuthKeyID, &p.EnrollmentMethod, &health, &healthAt, &created, &lastSeen, &expiresAt, &revoked); err != nil {
 		return p, err
 	}
 	if err := errors.Join(fromJSON(roles, &p.Roles), fromJSON(tags, &p.Tags), fromJSON(labels, &p.Labels),
@@ -494,11 +494,11 @@ func peerArgs(p Peer) []any {
 	}
 	return []any{p.ID, p.TokenHash, p.Network, p.Name, p.PublicKey, nullString(p.Address),
 		jsonList(p.Roles), jsonList(p.Tags), jsonMap(p.Labels), jsonList(p.Endpoints), b2i(p.Ephemeral),
-		p.AuthKeyID, health, msPtr(p.HealthAt), ms(p.CreatedAt), msPtr(p.LastSeen), msPtr(p.ExpiresAt), msPtr(p.RevokedAt)}
+		p.AuthKeyID, p.EnrollmentMethod, health, msPtr(p.HealthAt), ms(p.CreatedAt), msPtr(p.LastSeen), msPtr(p.ExpiresAt), msPtr(p.RevokedAt)}
 }
 
 func (s *SQL) CreatePeer(ctx context.Context, p Peer) error {
-	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO peers (`+peerCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO peers (`+peerCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		peerArgs(p)...)
 	return mapWriteErr(err)
 }
@@ -553,7 +553,8 @@ func (s *SQL) UpdatePeer(ctx context.Context, id string, fn func(*Peer) error) (
 		p.ID = id
 		args := peerArgs(p)
 		_, err = tx.ExecContext(ctx, s.q(`UPDATE peers SET token_hash = ?, network = ?, name = ?, public_key = ?, address = ?,
-			roles = ?, tags = ?, labels = ?, endpoints = ?, ephemeral = ?, auth_key_id = ?, health = ?, health_at = ?,
+			roles = ?, tags = ?, labels = ?, endpoints = ?, ephemeral = ?, auth_key_id = ?, enrollment_method = ?, health = ?,
+			health_at = ?,
 			created_at = ?, last_seen = ?, expires_at = ?, revoked_at = ? WHERE id = ?`), append(args[1:], id)...)
 		if err != nil {
 			return mapWriteErr(err)

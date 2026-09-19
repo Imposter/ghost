@@ -25,10 +25,23 @@ const (
 	ActionEnroll Action = "enroll"
 	// ActionConnect: a peer joins its network over signalling. It is asked
 	// again, uncached, for every online peer when the network's policy
-	// changes.
+	// changes, and for the peers a control API reauthorize call names.
 	ActionConnect Action = "connect"
 	// ActionConnectPeer: a peer relays offer/answer/candidates to a target.
 	ActionConnectPeer Action = "connect_peer"
+)
+
+// EnrollmentMethod is how a peer enrolled.
+type EnrollmentMethod string
+
+const (
+	// EnrollAuthKey: with a pre-auth key (the request carries AuthKeyID).
+	EnrollAuthKey EnrollmentMethod = "auth_key"
+	// EnrollInteractive: by claiming an approved interactive enrolment code.
+	EnrollInteractive EnrollmentMethod = "interactive"
+	// EnrollDirect: created through the control API
+	// (POST /control/networks/{net}/peers).
+	EnrollDirect EnrollmentMethod = "direct"
 )
 
 // Request is the JSON body sent to the authorizer.
@@ -44,6 +57,16 @@ type Request struct {
 	Roles  []proto.Role      `json:"roles,omitempty"`
 	Tags   []string          `json:"tags,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
+	// PublicKey is the acting (or enrolling) peer's WireGuard public key, when
+	// one is known. An interactive or direct enrolment may not carry one yet.
+	PublicKey string `json:"public_key,omitempty"`
+	// EnrollmentMethod is how the acting (or enrolling) peer enrolled. It is
+	// empty only for peers enrolled before the method was recorded whose
+	// method could not be recovered.
+	EnrollmentMethod EnrollmentMethod `json:"enrollment_method,omitempty"`
+	// AuthKeyID is the pre-auth key the peer enrolled with, when
+	// EnrollmentMethod is auth_key.
+	AuthKeyID string `json:"auth_key_id,omitempty"`
 	// TS is the Unix time in seconds when the request was signed.
 	TS int64 `json:"ts"`
 	// Nonce is a random, single-use hex string.
