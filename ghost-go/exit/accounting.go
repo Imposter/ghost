@@ -1,6 +1,9 @@
 package exit
 
-import "time"
+import (
+	"net"
+	"time"
+)
 
 // Protocol identifies the proxy protocol a connection arrived on.
 type Protocol string
@@ -32,8 +35,9 @@ const (
 // Accountant when the connection finishes. A3b implements Accountant to
 // export these as metrics; the exit package itself only produces the record.
 type ConnInfo struct {
-	// SourcePeer is the tunnel peer (device id / address) that opened the
-	// connection, when known.
+	// SourcePeer is the tunnel peer that opened the connection: its device id
+	// when the server's PeerResolver knows it, else its tunnel IP (never the
+	// ephemeral port, which would be an unbounded label).
 	SourcePeer string
 	// SourceTag is a caller-supplied tag: the SOCKS5 username, or the value of
 	// the configured HTTP-CONNECT header (e.g. "source=tesla-ca").
@@ -48,6 +52,10 @@ type ConnInfo struct {
 	DestPort int
 	// DestIP is the resolved IP actually dialed, if any.
 	DestIP string
+	// PolicyAllowed reports whether the policy permitted the destination. It
+	// can be true with a non-allowed Result (a dial error, a timeout, or a
+	// forbidden resolved address). Only permitted hosts become metric labels.
+	PolicyAllowed bool
 	// Result is the outcome.
 	Result Result
 	// BytesIn is bytes read from the target and written to the client.
@@ -81,3 +89,27 @@ type AccountantFunc func(ConnInfo)
 
 // Record calls f.
 func (f AccountantFunc) Record(ci ConnInfo) { f(ci) }
+
+// PeerResolver maps a client's tunnel address to the device id of the peer
+// that owns it. ghost.Node and ghost.Hub implement it over their live links.
+type PeerResolver interface {
+	// PeerForAddr returns the device id owning addr, or "" when unknown.
+	PeerForAddr(addr net.Addr) string
+}
+
+// sourcePeer resolves the source peer for a client address: the resolver's
+// device id when known, else the bare IP.
+func sourcePeer(r PeerResolver, addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	if r != nil {
+		if id := r.PeerForAddr(addr); id != "" {
+			return id
+		}
+	}
+	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		return host
+	}
+	return addr.String()
+}

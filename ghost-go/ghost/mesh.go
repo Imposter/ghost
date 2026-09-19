@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Imposter/ghost/ghost-go/internal/ice"
 	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
+	"github.com/Imposter/ghost/ghost-go/metrics"
 	"github.com/Imposter/ghost/ghost-go/signal"
 	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
@@ -85,6 +87,10 @@ type mesh struct {
 	closed   bool
 
 	tmetrics *tunnelMetrics
+	hubID    string       // the hub this node joined through (nodes only)
+	msrv     *http.Server // tunnel-side metrics endpoint, when configured
+	mfetch   *metrics.Client
+	mfetchMu sync.Mutex
 
 	events chan Event
 	ctx    context.Context
@@ -248,8 +254,18 @@ func (m *mesh) handleJoined(j proto.Joined) {
 		}
 	}
 	m.network = j.Network
+	if j.Hub != nil {
+		m.hubID = j.Hub.DeviceID
+	}
+	var metricsErr error
+	if m.cfg.Metrics != nil && m.msrv == nil {
+		metricsErr = m.serveMetricsLocked()
+	}
 	addr := m.address
 	m.mu.Unlock()
+	if metricsErr != nil {
+		m.emit(Event{Kind: EventError, Err: metricsErr})
+	}
 
 	m.emit(Event{Kind: EventJoined, Address: addr})
 
@@ -573,10 +589,14 @@ func (m *mesh) Close() error {
 	dev := m.device
 	bind := m.bind
 	sig := m.sig
+	msrv := m.msrv
 	m.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
+	}
+	if msrv != nil {
+		_ = msrv.Close()
 	}
 	for _, l := range links {
 		if l.conn != nil {

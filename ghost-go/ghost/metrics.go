@@ -101,10 +101,12 @@ func (m *mesh) registerMetrics() error {
 // linkStat is a per-peer metric snapshot.
 type linkStat struct {
 	peerID              string
+	address             string
 	candType            string
 	added               bool
 	rttSeconds          float64
 	handshakeAgeSeconds float64
+	lastHandshake       time.Time
 	rx                  uint64
 	tx                  uint64
 }
@@ -132,6 +134,7 @@ func (m *mesh) linkSnapshot() []linkStat {
 	for _, l := range links {
 		st := linkStat{
 			peerID:              l.peerID,
+			address:             l.address,
 			candType:            l.candType,
 			added:               l.added,
 			handshakeAgeSeconds: -1,
@@ -143,6 +146,7 @@ func (m *mesh) linkSnapshot() []linkStat {
 			st.rx, st.tx = bind.Counters(l.epKey)
 		}
 		if t, ok := handshakes[l.publicKey]; ok && !t.IsZero() {
+			st.lastHandshake = t
 			st.handshakeAgeSeconds = time.Since(t).Seconds()
 		}
 		out = append(out, st)
