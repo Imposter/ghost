@@ -30,12 +30,32 @@ these layers:
 | Layer | Package | Role |
 | ----- | ------- | ---- |
 | API | `ghost` | `Config`, `NewNode`/`NewHub`, `Start`, `Events`, `Status`, `Netmap`, `Policy`, `DialContext`, `Listen`, `IsHubSource`, `Snapshot`. |
+| Signaller seam | `ghost` | `ghost.Signaller` is everything a member needs from signalling: identity and address, the netmap, and the swap of ICE descriptions. `Config.Signaller` picks one; the default is the control-plane client. |
 | Signalling | `signal`, `signal/proto` | A reconnecting WebSocket client for [signalling v1](signalling-v1.md), with exponential backoff. `signal.FakeServer` is an in-memory server for tests. |
+| Peer to peer | `ghost/direct` | A standalone `Signaller`: invite/answer tokens swapped out of band, and static WireGuard peers. See [peer to peer](p2p.md). |
 | NAT traversal | `internal/ice` | One Pion ICE agent per linked peer. `MultiBind` is a single WireGuard `conn.Bind` that multiplexes every per-peer ICE connection under an opaque endpoint key, so a connection can be swapped (after an ICE restart, say) without touching WireGuard. |
 | Encryption | `internal/wireguard` | wireguard-go with one WireGuard peer per link. Each link's AllowedIPs is the other peer's own `/32`. |
 | Network stack | `internal/wireguard` | A gVisor userspace netstack (`CreateNetTUN`). It accepts only packets addressed to its own tunnel address and never forwards; drops are counted in `ForwardDrops`. No OS TUN device or privileges are needed. |
 | Exit | `exit` | An optional SOCKS5 (CONNECT only) and HTTP-CONNECT proxy served on the member's tunnel address. It dials allowlisted destinations through the host network, refuses loopback and private destinations, and enforces a daily byte cap, a rate limit and a pause switch. |
 | Metrics | `metrics`, `otelsetup` | See [Metrics](#metrics). The libraries use only the OpenTelemetry API; `otelsetup` wires the SDK, the Prometheus exporter and optional OTLP for binaries. |
+
+### The Signaller seam
+
+```
+            ghost.Node / ghost.Hub (mesh)
+                        │  ghost.Signaller
+                        │  Start · Join · Events · Link · Send · ReportHealth
+          ┌─────────────┴──────────────┐
+  control plane (default)         ghost/direct
+  signal.Client ⇄ ghost-server    tokens swapped out of band,
+                                  static WireGuard peers
+```
+
+The mesh reads `signal.Event` values from `Events` (state, welcome, joined,
+netmap, deltas, and the remote offer, answer and candidates) and hands its own
+description to `Send`. `Link` tells it, per peer, which side controls ICE, or
+gives it a ready connection so it skips ICE. The lifecycle below is the
+control-plane one; `ghost/direct` produces the same events locally.
 
 ### A member's lifecycle
 

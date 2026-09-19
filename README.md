@@ -70,6 +70,23 @@ for ev := range node.Events() {
 A hub is the same thing built with `ghost.NewHub`. It needs a peer that holds
 the `hub` role, which you can create with `POST /control/networks/{net}/peers`.
 
+## Using ghost without the control plane
+
+The control plane is optional. Set `ghost.Config.Signaller` to a
+`ghost/direct` signaller and two members connect with no server:
+
+- **Tokens.** One side calls `CreateInvite`, the other `AcceptInvite` (which
+  returns an answer), then the first calls `AcceptAnswer`. The tokens are
+  versioned base64url JSON holding only public material, and can travel by
+  copy and paste, a QR code, or your own `direct.Exchanger`. ICE and
+  WireGuard then run directly between the peers; STUN and TURN are optional.
+- **Static peers.** `direct.Config.Static` lists peers by public key, tunnel
+  address and endpoint, for plain WireGuard without ICE when one side has a
+  fixed, reachable endpoint.
+
+There is no netmap policy, isolation or health reporting in this mode. See
+[docs/p2p.md](docs/p2p.md) and [`examples/p2p`](ghost-go/examples/p2p).
+
 ## Glossary
 
 - **peer**: an enrolled identity in one network. It has an id (`peer_…`), a
@@ -102,6 +119,7 @@ the `hub` role, which you can create with `POST /control/networks/{net}/peers`.
   authorizer.
 - [Signalling v1](docs/signalling-v1.md): the WebSocket protocol between peers
   and the control plane.
+- [Peer to peer](docs/p2p.md): using the library without the control plane.
 - [Development](docs/development.md): building, testing, linting, CI, and
   image publishing.
 - [API changes](docs/api-changes.md): breaking changes and removals.
@@ -110,7 +128,9 @@ the `hub` role, which you can create with `POST /control/networks/{net}/peers`.
 
 ```
 ghost-go/                  library module
-  ghost/                   Node, Hub, Config, keys, events, the tunnel netstack
+  ghost/                   Node, Hub, Config, Signaller, keys, events, the tunnel netstack
+  ghost/direct/            standalone Signaller: invite/answer tokens, static peers
+  examples/p2p/            two members linked by pasted tokens
   exit/                    SOCKS5 / HTTP-CONNECT exit: allowlist, caps, accounting
   metrics/                 a node's strict metrics: collector, handler, hub-side client
   signal/                  signalling client (and an in-memory fake server)

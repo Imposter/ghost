@@ -3,6 +3,20 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## Peer to peer without the control plane
+
+Additions only; existing code keeps working unchanged.
+
+- `ghost.Signaller`, `ghost.SignalSelf` and `ghost.LinkPlan`: the seam between
+  a member and its signalling. `ghost.Config.Signaller` selects one; nil keeps
+  the control-plane client.
+- New package `ghost/direct`: `New`, `Config`, `StaticPeer`, `Signaller`
+  (`CreateInvite`, `AcceptInvite`, `AcceptAnswer`, `ID`), `Token`,
+  `ParseToken`, `Exchanger`, `Invite`, `Answer` and `Pipe`.
+- A member now links to a netmap peer listed without a public key, and
+  configures WireGuard once the key arrives. The control plane never lists
+  such peers.
+
 ## Repository cleanup
 
 Everything removed here was internal or unused, so the public API is
