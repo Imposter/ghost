@@ -84,7 +84,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	})
 	defer ex.Close()
 	col.AttachExit(ex)
-	exLn, err := node.Listen("tcp", net.JoinHostPort(nodeIP, "1080"))
+	exLn, err := node.Listen("tcp", net.JoinHostPort(nodeIP, strconv.Itoa(exit.DefaultPort)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool { return len(hub.Peers()) == 1 })
 
 	// The hub proxies one request through the node's exit (HTTP CONNECT).
-	body := connectThrough(t, hub, nodeIP+":1080", fmt.Sprintf("%s:%d", tHost, tPort), "job=metrics")
+	body := connectThrough(t, hub, net.JoinHostPort(nodeIP, strconv.Itoa(exit.DefaultPort)), fmt.Sprintf("%s:%d", tHost, tPort), "job=metrics")
 	if !strings.Contains(body, "hello via exit") {
 		t.Fatalf("exit body %q", body)
 	}

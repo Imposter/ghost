@@ -17,6 +17,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// DefaultPort is the conventional tunnel-side TCP port an exit serves SOCKS5
+// and HTTP-CONNECT on. A hub dials a node's exit at its tunnel IP on this port
+// unless the deployment agrees on another one.
+const DefaultPort = 1080
+
 // errCapExhausted is returned internally when the daily byte budget runs out
 // mid-transfer.
 var errCapExhausted = errors.New("exit: bandwidth cap exhausted")

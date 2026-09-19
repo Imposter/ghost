@@ -288,5 +288,5 @@ func (l *oneConnListener) Close() error {
 }
 
 func (l *oneConnListener) Addr() net.Addr {
-	return &net.TCPAddr{IP: net.IPv4(100, 64, 0, 2), Port: 1080}
+	return &net.TCPAddr{IP: net.IPv4(100, 64, 0, 2), Port: exit.DefaultPort}
 }
