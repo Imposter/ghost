@@ -186,7 +186,7 @@ func TestHubNeverForwards(t *testing.T) {
 // packet filter, exit and metrics admit only hub source addresses, whatever
 // the filter rules or MetricsConfig.AllowPeers say.
 func TestHubOnlySourceChecks(t *testing.T) {
-	m, err := newMesh(Config{Metrics: &MetricsConfig{AllowPeers: []string{"exit1"}}}, nil)
+	m, err := newMesh(Config{Metrics: &MetricsConfig{AllowPeers: []string{"exit1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

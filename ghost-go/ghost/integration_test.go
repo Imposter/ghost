@@ -12,6 +12,7 @@ import (
 
 	"github.com/Imposter/ghost/ghost-go/internal/nettest"
 	"github.com/Imposter/ghost/ghost-go/signal"
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 // loopbackTuner restricts a mesh's ICE to the loopback interface (host
@@ -184,5 +185,43 @@ func TestNodeStatusBeforeJoin(t *testing.T) {
 	}
 	if st.Peers != 0 {
 		t.Errorf("expected 0 peers before start")
+	}
+}
+
+// TestNodeRequestsExitRole: a node asks for the exit role through
+// Config.Roles. The server grants it only when the peer is enrolled with it,
+// and refuses the session otherwise; an unknown role fails at construction.
+func TestNodeRequestsExitRole(t *testing.T) {
+	fake := signal.NewFakeServer("100.64.0.0/10")
+	fake.AddPeer("exit-token", signal.FakePeer{ID: "exit-1", Roles: []proto.Role{proto.RoleExit, proto.RoleNode}})
+	fake.AddPeer("node-token", signal.FakePeer{ID: "node-1"})
+
+	start := func(token string) *Node {
+		cfg := Config{SignalDialer: fake.Dialer(), PeerToken: token, Network: "m", Roles: []proto.Role{proto.RoleExit}}
+		loopbackTuner(&cfg)
+		n, err := NewNode(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := n.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = n.Close() })
+		return n
+	}
+
+	exitNode := start("exit-token")
+	waitEvent(t, exitNode.Events(), EventNetmap, 10*time.Second)
+	if st := exitNode.Status(); st.PeerID != "exit-1" || !proto.HasRole(st.Roles, proto.RoleExit) {
+		t.Fatalf("status=%+v want exit-1 holding exit", st)
+	}
+
+	plain := start("node-token")
+	if ev := waitEvent(t, plain.Events(), EventError, 10*time.Second); !strings.Contains(ev.Err.Error(), "exit role") {
+		t.Fatalf("error=%v want a refused exit role", ev.Err)
+	}
+
+	if _, err := NewNode(Config{Roles: []proto.Role{"boss"}}); err == nil {
+		t.Fatal("NewNode accepted an unknown role")
 	}
 }

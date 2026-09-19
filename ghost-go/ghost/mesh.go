@@ -34,7 +34,8 @@ type Status struct {
 	// Peers is the number of connected tunnel peers.
 	Peers int
 	// Roles are this peer's roles as the control plane reports them (the
-	// constructor's expected roles until the first netmap arrives).
+	// requested roles, Config.Roles plus hub for a Hub, until the first
+	// netmap arrives).
 	Roles []proto.Role
 	// NetmapPeers is the number of peers in the current netmap.
 	NetmapPeers int
@@ -93,7 +94,7 @@ type mesh struct {
 	cfg       Config
 	keys      *Keys
 	log       *slog.Logger
-	wantRoles []proto.Role // roles the constructor expects this peer to hold
+	wantRoles []proto.Role // roles this member asks to hold (Config.Roles, plus hub for a Hub)
 
 	sig  Signaller
 	bind *ice.MultiBind
@@ -139,7 +140,11 @@ type peerLink struct {
 	failed      bool
 }
 
-func newMesh(cfg Config, wantRoles []proto.Role) (*mesh, error) {
+func newMesh(cfg Config, extraRoles ...proto.Role) (*mesh, error) {
+	wantRoles, err := cfg.roles(extraRoles...)
+	if err != nil {
+		return nil, err
+	}
 	keys, err := LoadOrCreateKeys(cfg.KeyStorePath)
 	if err != nil {
 		return nil, fmt.Errorf("keys: %w", err)

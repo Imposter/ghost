@@ -50,7 +50,10 @@ prompt. In practice:
 - Don't contact external hosts. Exit tests use a local target and set
   `exit.Config.AllowLoopbackForTest`, which production code must never set.
 - `signal.FakeServer` runs the signalling protocol in memory when a test
-  doesn't need ghost-server.
+  doesn't need ghost-server. `AddPeer(token, signal.FakePeer{ID, Name, Roles, Tags,
+  Labels})` registers an enrolled peer, for example one holding the exit
+  role; a hello asking for a role the peer lacks is refused, as ghost-server
+  refuses it.
 
 These rules are what let the suite run on the Windows CI runner.
 

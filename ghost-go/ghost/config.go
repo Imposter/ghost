@@ -1,7 +1,9 @@
 package ghost
 
 import (
+	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/Imposter/ghost/ghost-go/internal/ice"
 	"github.com/Imposter/ghost/ghost-go/signal"
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 // iceConfig is an alias so the unexported test tuner can reference the ICE
@@ -59,6 +62,14 @@ type Config struct {
 
 	// Network is the name of the network to join.
 	Network string
+
+	// Roles are roles this member asks to hold, for example proto.RoleExit
+	// for a node that serves an exit. They are sent in the hello, and the
+	// control plane refuses the session unless the peer's enrolled roles
+	// include every one of them: a member can require a role but never grant
+	// itself one. NewHub always asks for proto.RoleHub as well. With a
+	// ghost/direct Signaller they become this member's netmap roles.
+	Roles []proto.Role
 
 	// KeyStorePath is where the WireGuard key pair is persisted. If empty,
 	// keys are ephemeral (generated per run). If the file is missing it is
@@ -125,6 +136,21 @@ func (c *Config) logger() *slog.Logger {
 		return c.Logger
 	}
 	return slog.Default()
+}
+
+// roles returns the configured roles plus extra, validated and deduplicated,
+// in the order first given.
+func (c *Config) roles(extra ...proto.Role) ([]proto.Role, error) {
+	var out []proto.Role
+	for _, r := range append(slices.Clone(c.Roles), extra...) {
+		if !r.Valid() {
+			return nil, fmt.Errorf("ghost: unknown role %q", r)
+		}
+		if !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func (c *Config) mtu() int {

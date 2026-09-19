@@ -61,8 +61,9 @@ control-plane one; `ghost/direct` produces the same events locally.
 
 1. **Start.** Load or create the WireGuard key pair (`KeyStorePath`), dial the
    signalling URL, and send `hello` with the peer token and public key.
-   `NewHub` also sends `roles: ["hub"]`, so the server refuses the session if
-   the peer doesn't hold the hub role.
+   It also sends the roles it asks to hold, `Config.Roles` (plus `hub` for
+   `NewHub`), and the server refuses the session if the peer doesn't hold
+   every one of them.
 2. **Join.** After `welcome`, which carries the ICE servers and any TURN
    credentials, send `join_network`. `joined` returns the peer's `/32` from
    the pool. The member then builds the netstack and the WireGuard device on a

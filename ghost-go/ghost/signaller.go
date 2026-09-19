@@ -54,7 +54,9 @@ type Signaller interface {
 type SignalSelf struct {
 	// PublicKey is the member's WireGuard public key (base64).
 	PublicKey string
-	// Roles are the roles the member expects to hold (NewHub: hub).
+	// Roles are the roles the member asks to hold (Config.Roles, plus hub
+	// for NewHub). The control plane requires the peer to hold them; a
+	// standalone signaller may simply adopt them.
 	Roles []proto.Role
 	// Health returns the member's current health summary.
 	Health func() *proto.Health

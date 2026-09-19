@@ -48,10 +48,13 @@ gets `expired`. The socket then closes.
 
 **Fields:**
 - `peer_id`, if sent, must match the token's peer.
-- `roles`, if sent, lists roles the client expects to hold. The hello is
-  rejected (`unauthorized`) unless the peer holds every one of them; for
-  example, `ghost.NewHub` sends `["hub"]`. Roles are assigned by the control
-  plane and are never taken from the client.
+- `roles`, if sent, lists roles the client asks to hold. The hello is
+  rejected (`unauthorized`) unless the peer holds every one of them. ghost-go
+  sends `ghost.Config.Roles` here, and `ghost.NewHub` adds `hub`; a node
+  that serves an exit sends `["exit"]`, so a peer enrolled without the exit
+  role never comes up as one. Roles are assigned by the control plane (the
+  pre-auth key, the approval, or the control API) and are never taken from
+  the client: asking for a role can only refuse a session, never grant one.
 - `public_key` (a base64 32-byte WireGuard key) is recorded on the peer. A
   different key from the stored one is a key rotation, which is audited and
   pushed to the peers that see this one. A peer must have a key before it

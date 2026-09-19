@@ -3,6 +3,7 @@ package signal
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -12,7 +13,9 @@ import (
 
 // FakeServer is an in-memory signalling server for tests. It implements the
 // v1 protocol with a permissive policy: it authenticates any non-empty peer
-// token, takes a peer's roles from its hello (default node), assigns
+// token, takes a peer's roles from its hello (default node) unless the token
+// was registered with AddPeer (then the registered roles, tags and labels
+// apply, and a hello asking for a role the peer lacks is refused), assigns
 // addresses from a pool, gives every joined peer a netmap of every other
 // joined peer in its network (full mesh, no packet filter), sends deltas as
 // peers join and leave, and relays offer/answer/candidate. With HubOnly set it
@@ -25,7 +28,8 @@ type FakeServer struct {
 	mu       sync.Mutex
 	pool     netip.Prefix
 	nextHost uint32
-	tokens   map[string]bool // allowed peer tokens; nil means allow any
+	tokens   map[string]bool     // allowed peer tokens; nil means allow any
+	peers    map[string]FakePeer // registered peers by token
 	sessions map[string]*fakeSession
 	networks map[string]map[string]*fakeSession // network -> peerID -> session
 	policies map[string]*proto.ExitPolicy
@@ -55,9 +59,28 @@ func (s *FakeServer) visibleLocked(a, b *fakeSession) bool {
 	return !s.HubOnly || s.IgnoreIsolation || proto.HasRole(a.roles, proto.RoleHub) || proto.HasRole(b.roles, proto.RoleHub)
 }
 
+// FakePeer is what a FakeServer knows about a registered peer token: the
+// identity and attributes a control plane holds for an enrolled peer.
+type FakePeer struct {
+	// ID is the peer id. Empty derives one, as for unregistered tokens.
+	ID string
+	// Name is the peer's display name in netmaps.
+	Name string
+	// Roles are the peer's enrolled roles (empty: node). They are the
+	// session's roles whatever the hello asks for, and a hello asking for a
+	// role not listed here is refused with unauthorized.
+	Roles []proto.Role
+	// Tags and Labels are sent in netmaps.
+	Tags   []string
+	Labels map[string]string
+}
+
 type fakeSession struct {
 	peerID   string
+	name     string
 	roles    []proto.Role
+	tags     []string
+	labels   map[string]string
 	pubKey   string
 	network  string
 	address  string
@@ -93,6 +116,25 @@ func (s *FakeServer) AllowToken(token string) {
 		s.tokens = make(map[string]bool)
 	}
 	s.tokens[token] = true
+}
+
+// AddPeer registers token as an enrolled peer with p's id, name, roles, tags
+// and labels. Like AllowToken, it restricts accepted tokens to the registered
+// and allowed ones.
+func (s *FakeServer) AddPeer(token string, p FakePeer) {
+	p.Roles = slices.Clone(p.Roles)
+	p.Tags = slices.Clone(p.Tags)
+	p.Labels = maps.Clone(p.Labels)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokens == nil {
+		s.tokens = make(map[string]bool)
+	}
+	s.tokens[token] = true
+	if s.peers == nil {
+		s.peers = make(map[string]FakePeer)
+	}
+	s.peers[token] = p
 }
 
 // SetPolicy sets a network's exit policy and pushes it to joined peers as a
@@ -186,8 +228,8 @@ func (sess *fakeSession) sendDelta(d proto.NetmapDelta) {
 // infoLocked describes sess for other peers. Caller holds srv.mu.
 func (sess *fakeSession) infoLocked() proto.PeerInfo {
 	return proto.PeerInfo{
-		PeerID: sess.peerID, PublicKey: sess.pubKey, Address: sess.address,
-		Roles: slices.Clone(sess.roles), Online: true,
+		PeerID: sess.peerID, Name: sess.name, PublicKey: sess.pubKey, Address: sess.address,
+		Roles: slices.Clone(sess.roles), Tags: slices.Clone(sess.tags), Labels: maps.Clone(sess.labels), Online: true,
 	}
 }
 
@@ -224,12 +266,37 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 			}
 		}
 		s.mu.Lock()
+		reg, registered := s.peers[h.PeerToken]
+		roles := slices.Clone(h.Roles)
+		if registered {
+			if reg.ID != "" {
+				if h.PeerID != "" && h.PeerID != reg.ID {
+					s.mu.Unlock()
+					sess.sendToClient(proto.TypeError, proto.Error{Code: proto.ErrCodeUnauthorized, Message: "peer id does not match token", Fatal: true})
+					return nil
+				}
+				peerID = reg.ID
+			}
+			roles = slices.Clone(reg.Roles)
+			if len(roles) == 0 {
+				roles = []proto.Role{proto.RoleNode}
+			}
+			for _, want := range h.Roles {
+				if !proto.HasRole(roles, want) {
+					s.mu.Unlock()
+					sess.sendToClient(proto.TypeError, proto.Error{Code: proto.ErrCodeUnauthorized,
+						Message: fmt.Sprintf("peer does not hold the %s role", want), Fatal: true})
+					return nil
+				}
+			}
+			sess.name, sess.tags, sess.labels = reg.Name, slices.Clone(reg.Tags), maps.Clone(reg.Labels)
+		}
 		s.seq++
 		if peerID == "" {
 			peerID = fmt.Sprintf("peer-%d", s.seq)
 		}
 		sess.peerID = peerID
-		sess.roles = h.Roles
+		sess.roles = roles
 		if len(sess.roles) == 0 {
 			sess.roles = []proto.Role{proto.RoleNode}
 		}

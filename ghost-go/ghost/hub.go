@@ -13,10 +13,11 @@ type Hub struct {
 	*mesh
 }
 
-// NewHub creates a Hub from cfg. Call Start to connect. The control plane must
-// have assigned the peer the hub role; otherwise its hello is rejected.
+// NewHub creates a Hub from cfg. Call Start to connect. It asks for the hub
+// role on top of cfg.Roles: the control plane must have assigned the peer the
+// hub role, otherwise its hello is rejected.
 func NewHub(cfg Config) (*Hub, error) {
-	m, err := newMesh(cfg, []proto.Role{proto.RoleHub})
+	m, err := newMesh(cfg, proto.RoleHub)
 	if err != nil {
 		return nil, err
 	}
