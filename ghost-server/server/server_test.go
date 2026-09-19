@@ -22,7 +22,7 @@ import (
 var (
 	hubRoles  = []proto.Role{proto.RoleHub}
 	nodeRoles = []proto.Role{proto.RoleNode}
-	exitRoles = []proto.Role{proto.RoleNode, proto.RoleExit}
+	exitRoles = []proto.Role{proto.RoleExit, proto.RoleNode} // roles are kept sorted
 )
 
 type authKeyResp struct {
@@ -356,8 +356,8 @@ func TestWatchStream(t *testing.T) {
 	other := h.watch("network=othernet")
 
 	hubC := h.peer("testnet", "hub", hubRoles)
+	w.next(events.Audit, "") // the audit entry is published first
 	enrolled := w.next(events.PeerEnrolled, hubC.PeerID)
-	w.next(events.Audit, "")
 	hub := h.joined(hubC)
 	w.next(events.PeerOnline, hubC.PeerID)
 	w.next(events.NetmapUpdated, "")
@@ -560,7 +560,7 @@ func TestControlAPI(t *testing.T) {
 
 	// Peers.
 	creds := h.peer("lab", "e", exitRoles, "tag:exit")
-	h.ctl("DELETE", "/control/networks/lab/tags/tag:exit", nil, nil, http.StatusConflict) // still carried
+	h.ctl("DELETE", "/control/networks/lab/tags/tag:exit", nil, nil, http.StatusBadRequest) // an ACL still references it
 	h.ctl("DELETE", "/control/networks/lab", nil, nil, http.StatusConflict)               // still has peers
 	var pv httpapi.PeerView
 	h.ctl("PATCH", "/control/peers/"+creds.PeerID, map[string]any{"name": "renamed", "roles": []string{"hub"}, "tags": []string{}}, &pv, http.StatusOK)
@@ -581,6 +581,7 @@ func TestControlAPI(t *testing.T) {
 	h.ctl("DELETE", "/control/peers/"+creds.PeerID, nil, nil, http.StatusNoContent)
 	h.ctl("GET", "/control/peers/"+creds.PeerID, nil, nil, http.StatusNotFound)
 	h.ctl("DELETE", "/control/networks/lab/exit-policies/web", nil, nil, http.StatusOK)
+	h.meshACL("lab")
 	h.ctl("DELETE", "/control/networks/lab/tags/tag:exit", nil, nil, http.StatusOK)
 	h.ctl("DELETE", "/control/networks/lab", nil, nil, http.StatusNoContent)
 	h.ctl("GET", "/control/networks/lab", nil, nil, http.StatusNotFound)

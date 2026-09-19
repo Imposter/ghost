@@ -112,6 +112,9 @@ func TestNodeHubThroughServer(t *testing.T) {
 	}
 	h := newHarness(t, nil)
 	h.ctl("POST", "/control/networks", map[string]any{"name": "iso", "isolation": "hub-only"}, nil, http.StatusCreated)
+	// A mesh ACL, so nodes may open connections to the hub; hub-only
+	// isolation still keeps the nodes apart.
+	h.meshACL("iso")
 	hubC := h.peer("iso", "hub", hubRoles)
 	node1C := h.peer("iso", "node1", nodeRoles)
 	node2C := h.peer("iso", "node2", nodeRoles)

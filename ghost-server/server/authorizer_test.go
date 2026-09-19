@@ -194,7 +194,8 @@ func TestAuthorizerFailClosed(t *testing.T) {
 	}
 
 	fa.set(func(fa *fakeAuthorizer) { fa.status = http.StatusInternalServerError })
-	if _, status := h.enroll(key.Key, nil); status != http.StatusServiceUnavailable {
+	// Distinct labels, so the cached allow for the first request does not apply.
+	if _, status := h.enroll(key.Key, map[string]string{"attempt": "2"}); status != http.StatusServiceUnavailable {
 		t.Fatalf("authorizer 500: status %d", status)
 	}
 	s := h.dial(creds)
@@ -222,7 +223,7 @@ func TestAuthorizerFailClosed(t *testing.T) {
 
 	// Unreachable authorizer.
 	fa.srv.Close()
-	if _, status := h.enroll(key.Key, nil); status != http.StatusServiceUnavailable {
+	if _, status := h.enroll(key.Key, map[string]string{"attempt": "3"}); status != http.StatusServiceUnavailable {
 		t.Fatalf("unreachable authorizer: status %d", status)
 	}
 }
