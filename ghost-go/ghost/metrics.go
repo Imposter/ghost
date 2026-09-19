@@ -2,7 +2,7 @@ package ghost
 
 import (
 	"context"
-	"github.com/Imposter/ghost/ghost-go/internal/ice"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"encoding/hex"
-
+	"github.com/Imposter/ghost/ghost-go/internal/ice"
 	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
 )
 
