@@ -106,6 +106,12 @@ type Config struct {
 	// restrict candidates to the loopback interface (host candidates only, no
 	// STUN/TURN) so the suite never triggers a Windows firewall prompt.
 	iceTuner func(*iceConfig)
+
+	// allowedIPsOverride, when set, replaces the WireGuard AllowedIPs of every
+	// link. It is unexported and exists only for tests that model a
+	// misbehaving peer (for example one routing the whole pool through its
+	// hub to reach another peer).
+	allowedIPsOverride func(peerID, address string) []string
 }
 
 func (c *Config) logger() *slog.Logger {

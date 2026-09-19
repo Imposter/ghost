@@ -15,8 +15,9 @@ import (
 // token, takes a peer's roles from its hello (default node), assigns
 // addresses from a pool, gives every joined peer a netmap of every other
 // joined peer in its network (full mesh, no packet filter), sends deltas as
-// peers join and leave, and relays offer/answer/candidate. It is safe for
-// concurrent use.
+// peers join and leave, and relays offer/answer/candidate. With HubOnly set it
+// applies hub-only isolation instead: peers without the hub role see, and may
+// signal, only hubs. It is safe for concurrent use.
 //
 // Obtain a Dialer with (*FakeServer).Dialer and set it on signal.Config.Dialer
 // (or ghost.Config.SignalDialer) to run a Node/Hub entirely in memory.
@@ -33,6 +34,20 @@ type FakeServer struct {
 	// AuthFunc, if set, decides whether a hello is accepted. It returns a
 	// peer id to use (empty to derive one) and an error to reject.
 	AuthFunc func(h proto.Hello) (peerID string, err error)
+	// HubOnly applies hub-only isolation. Set it before any peer connects.
+	HubOnly bool
+}
+
+func (s *FakeServer) isolation() proto.Isolation {
+	if s.HubOnly {
+		return proto.IsolationHubOnly
+	}
+	return proto.IsolationNone
+}
+
+// visibleLocked reports whether a and b may see each other. Caller holds s.mu.
+func (s *FakeServer) visibleLocked(a, b *fakeSession) bool {
+	return !s.HubOnly || proto.HasRole(a.roles, proto.RoleHub) || proto.HasRole(b.roles, proto.RoleHub)
 }
 
 type fakeSession struct {
@@ -238,6 +253,9 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 		var peers []proto.PeerInfo
 		var notify []*fakeSession
 		for _, other := range members {
+			if !s.visibleLocked(sess, other) {
+				continue
+			}
 			peers = append(peers, other.infoLocked())
 			notify = append(notify, other)
 		}
@@ -252,7 +270,9 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 		sess.seq++
 		seq := sess.seq
 		sess.mu.Unlock()
-		sess.sendToClient(proto.TypeNetmap, proto.Netmap{Network: j.Network, Seq: seq, Self: self, Peers: peers, Policy: policy})
+		sess.sendToClient(proto.TypeNetmap, proto.Netmap{
+			Network: j.Network, Isolation: s.isolation(), Seq: seq, Self: self, Peers: peers, Policy: policy,
+		})
 		for _, other := range notify {
 			other.sendDelta(proto.NetmapDelta{Network: j.Network, Upsert: []proto.PeerInfo{self}})
 		}
@@ -267,6 +287,9 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 		}
 		s.mu.Lock()
 		target := s.sessions[sig.To]
+		if target != nil && !s.visibleLocked(sess, target) {
+			target = nil
+		}
 		s.mu.Unlock()
 		if target == nil {
 			sess.sendToClient(proto.TypeError, proto.Error{Code: proto.ErrCodeNotFound, Message: "peer not found: " + sig.To})
@@ -277,9 +300,6 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 
 	case proto.TypeHeartbeat:
 		sess.sendToClient(proto.TypeHeartbeat, proto.Heartbeat{})
-		return nil
-
-	case proto.TypeHealth:
 		return nil
 	}
 	return nil
@@ -307,7 +327,9 @@ func (sess *fakeSession) close() {
 	if members := s.networks[sess.network]; members != nil && members[sess.peerID] == sess {
 		delete(members, sess.peerID)
 		for _, other := range members {
-			notify = append(notify, other)
+			if s.visibleLocked(sess, other) {
+				notify = append(notify, other)
+			}
 		}
 	}
 	network := sess.network

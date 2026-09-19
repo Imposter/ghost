@@ -228,6 +228,7 @@ func (m *mesh) Start(ctx context.Context) error {
 		PublicKey: m.keys.PublicKey(),
 		Roles:     m.wantRoles,
 		Logger:    m.log,
+		Health:    m.healthSummary,
 	}
 	m.sig = signal.New(sigCfg, signal.Handlers{})
 	m.sig.Start(m.ctx)
@@ -624,21 +625,32 @@ func (m *mesh) wireUpPeer(l *peerLink) {
 
 // allowedIPsFor returns the WireGuard AllowedIPs for a link: the peer's own
 // tunnel address. Every reachable peer has its own link, so no peer routes
-// for another.
+// for another; a packet for any other address has no route and is dropped.
 func (m *mesh) allowedIPsFor(l *peerLink) []string {
+	if m.cfg.allowedIPsOverride != nil {
+		return m.cfg.allowedIPsOverride(l.peerID, l.address)
+	}
 	if l.address != "" {
 		return []string{normalizeCIDR(l.address, true)}
 	}
 	return nil
 }
 
-// reportHealth sends the current link states to the control plane.
+// reportHealth sends a heartbeat carrying the current health summary now,
+// instead of waiting for the next heartbeat tick.
 func (m *mesh) reportHealth() {
 	if m.sig == nil || m.sig.State() != signal.StateConnected {
 		return
 	}
+	_ = m.sig.SendHeartbeat(m.ctx)
+}
+
+// healthSummary builds the compact health summary carried by heartbeats: one
+// entry per link, plus the exit's cap usage and pause state when metrics are
+// configured.
+func (m *mesh) healthSummary() *proto.Health {
 	stats := m.linkSnapshot()
-	h := proto.Health{Links: make([]proto.LinkHealth, 0, len(stats))}
+	h := &proto.Health{Links: make([]proto.LinkHealth, 0, len(stats))}
 	m.mu.Lock()
 	failed := map[string]bool{}
 	for id, l := range m.links {
@@ -660,8 +672,8 @@ func (m *mesh) reportHealth() {
 		case failed[s.peerID]:
 			lh.State = proto.LinkFailed
 		}
-		if !s.lastHandshake.IsZero() {
-			lh.LastHandshake = s.lastHandshake.Unix()
+		if s.handshakeAgeSeconds >= 0 {
+			lh.HandshakeAgeSeconds = s.handshakeAgeSeconds
 		}
 		h.Links = append(h.Links, lh)
 	}
@@ -674,7 +686,11 @@ func (m *mesh) reportHealth() {
 		}
 		return 0
 	})
-	_ = m.sig.SendHealth(m.ctx, h)
+	if c := m.collector(); c != nil {
+		t := c.Snapshot().Totals
+		h.Exit = &proto.ExitHealth{CapUsedBytes: t.CapUsedBytes, CapLimitBytes: t.CapLimitBytes, Paused: t.Paused}
+	}
+	return h
 }
 
 func (m *mesh) iceConfig() *ice.ICEConfig {

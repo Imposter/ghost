@@ -5,9 +5,10 @@
 //
 // A session authenticates a peer (hello/welcome), joins its network
 // (join_network/joined), and then receives a netmap: a snapshot of the peers
-// it may reach under the network's ACLs, followed by live deltas. ICE offers,
-// answers and candidates are relayed only between peer pairs the netmap
-// allows. See docs/signalling-v1.md.
+// it may reach under the network's isolation mode and ACLs, followed by live
+// deltas. ICE offers, answers and candidates are relayed only between peer
+// pairs the netmap allows. Heartbeats carry a compact health summary. See
+// docs/signalling-v1.md.
 package proto
 
 import "encoding/json"
@@ -42,9 +43,8 @@ const (
 	TypeAnswer Type = "answer"
 	// TypeCandidate relays an ICE candidate between peers. Payload: Signal.
 	TypeCandidate Type = "candidate"
-	// TypeHealth reports tunnel health (client->server). Payload: Health.
-	TypeHealth Type = "health"
-	// TypeHeartbeat is a keepalive in either direction. Payload: Heartbeat.
+	// TypeHeartbeat is a keepalive in either direction. Client heartbeats
+	// carry the peer's health summary. Payload: Heartbeat.
 	TypeHeartbeat Type = "heartbeat"
 	// TypeError reports a protocol or authorization error. Payload: Error.
 	TypeError Type = "error"
@@ -221,9 +221,22 @@ type PacketFilter struct {
 	Rules []FilterRule `json:"rules"`
 }
 
+// Isolation mirrors the network's isolation mode in a netmap.
+type Isolation string
+
+const (
+	// IsolationNone: the ACLs alone decide who sees whom.
+	IsolationNone Isolation = "none"
+	// IsolationHubOnly: peers without the hub role only ever see hubs, and
+	// must accept inbound connections only from hubs.
+	IsolationHubOnly Isolation = "hub-only"
+)
+
 // Netmap is a full snapshot of what a peer may reach.
 type Netmap struct {
 	Network string `json:"network"`
+	// Isolation is the network's isolation mode.
+	Isolation Isolation `json:"isolation,omitempty"`
 	// Seq increases with every netmap or delta sent in the session.
 	Seq int64 `json:"seq"`
 	// Self is this peer as the control plane sees it.
@@ -252,6 +265,8 @@ type NetmapDelta struct {
 	Policy *ExitPolicy `json:"policy,omitempty"`
 	// Filter replaces the packet filter when set.
 	Filter *PacketFilter `json:"filter,omitempty"`
+	// Isolation replaces the isolation mode when set.
+	Isolation Isolation `json:"isolation,omitempty"`
 }
 
 // Apply returns the netmap that results from applying d to n.
@@ -266,6 +281,9 @@ func (n Netmap) Apply(d NetmapDelta) Netmap {
 	}
 	if d.Filter != nil {
 		out.Filter = d.Filter
+	}
+	if d.Isolation != "" {
+		out.Isolation = d.Isolation
 	}
 	if len(d.Upsert) == 0 && len(d.Remove) == 0 {
 		return out
@@ -344,7 +362,7 @@ const (
 	LinkDisconnected LinkState = "disconnected"
 )
 
-// LinkHealth is one peer link in a health report.
+// LinkHealth is one peer link in a health summary.
 type LinkHealth struct {
 	PeerID string    `json:"peer_id"`
 	State  LinkState `json:"state"`
@@ -352,23 +370,35 @@ type LinkHealth struct {
 	// prflx, relay).
 	CandidateType string  `json:"candidate_type,omitempty"`
 	RTTSeconds    float64 `json:"rtt_seconds,omitempty"`
-	// LastHandshake is the Unix time of the last WireGuard handshake.
-	LastHandshake int64  `json:"last_handshake,omitempty"`
-	RxBytes       uint64 `json:"rx_bytes,omitempty"`
-	TxBytes       uint64 `json:"tx_bytes,omitempty"`
+	// HandshakeAgeSeconds is the age of the last WireGuard handshake (absent
+	// before the first handshake).
+	HandshakeAgeSeconds float64 `json:"handshake_age_seconds,omitempty"`
+	RxBytes             uint64  `json:"rx_bytes,omitempty"`
+	TxBytes             uint64  `json:"tx_bytes,omitempty"`
 }
 
-// Health is a peer's tunnel health report, sent on link changes and
-// periodically.
+// ExitHealth summarises a peer's exit: today's usage against its daily cap
+// and whether it is paused.
+type ExitHealth struct {
+	CapUsedBytes  int64 `json:"cap_used_bytes"`
+	CapLimitBytes int64 `json:"cap_limit_bytes,omitempty"`
+	Paused        bool  `json:"paused"`
+}
+
+// Health is a peer's compact health summary, carried by its heartbeats.
 type Health struct {
 	Links []LinkHealth `json:"links"`
+	// Exit is present on peers that run an exit with metrics configured.
+	Exit *ExitHealth `json:"exit,omitempty"`
 	// Endpoints are the peer's own candidate addresses (host:port).
 	Endpoints []string `json:"endpoints,omitempty"`
 }
 
 // Heartbeat is a keepalive. Nonce lets the sender match a reply if it wants.
+// Client heartbeats carry the peer's health summary; server heartbeats do not.
 type Heartbeat struct {
-	Nonce int64 `json:"nonce,omitempty"`
+	Nonce  int64   `json:"nonce,omitempty"`
+	Health *Health `json:"health,omitempty"`
 }
 
 // Error reports a protocol or authorization failure. When Fatal is true the

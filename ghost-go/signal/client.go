@@ -1,7 +1,7 @@
 // Package signal is a versioned WebSocket JSON signalling client for ghost.
 // It speaks the protocol defined in ghost-go/signal/proto (v1): hello/auth
 // with a peer token, join-network, netmap snapshots and deltas,
-// offer/answer/candidate relay, health reports, and heartbeats. It reconnects
+// offer/answer/candidate relay, and heartbeats carrying health summaries. It reconnects
 // with exponential backoff and exposes both Go channels and callbacks.
 package signal
 
@@ -46,6 +46,8 @@ type Config struct {
 	// HeartbeatInterval is how often to send heartbeats (0 uses the server's
 	// suggested interval, or a default).
 	HeartbeatInterval time.Duration
+	// Health, if set, supplies the health summary each heartbeat carries.
+	Health func() *proto.Health
 }
 
 func (c *Config) applyDefaults() {
@@ -295,7 +297,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 			case <-serveCtx.Done():
 				return
 			case <-t.C:
-				_ = c.send(serveCtx, proto.TypeHeartbeat, proto.Heartbeat{Nonce: time.Now().UnixNano()})
+				_ = c.SendHeartbeat(serveCtx)
 			}
 		}
 	}()
@@ -386,9 +388,15 @@ func (c *Client) Join(ctx context.Context, network string) error {
 	return c.send(ctx, proto.TypeJoinNetwork, proto.JoinNetwork{Network: network})
 }
 
-// SendHealth reports tunnel health to the server.
-func (c *Client) SendHealth(ctx context.Context, h proto.Health) error {
-	return c.send(ctx, proto.TypeHealth, h)
+// SendHeartbeat sends a heartbeat now, carrying the current health summary
+// when Config.Health is set. Members call it on link changes so the control
+// plane sees them without waiting for the next tick.
+func (c *Client) SendHeartbeat(ctx context.Context) error {
+	hb := proto.Heartbeat{Nonce: time.Now().UnixNano()}
+	if c.cfg.Health != nil {
+		hb.Health = c.cfg.Health()
+	}
+	return c.send(ctx, proto.TypeHeartbeat, hb)
 }
 
 // SendOffer relays an ICE offer to a peer.

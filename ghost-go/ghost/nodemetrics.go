@@ -152,8 +152,9 @@ func (m *mesh) collector() *metrics.Collector {
 	return m.cfg.Metrics.Collector
 }
 
-// authorizeMetrics admits netmap peers holding the hub role and the configured
-// AllowPeers, identified by their tunnel source address.
+// authorizeMetrics admits netmap peers holding the hub role and, unless the
+// network is hub-only, the configured AllowPeers, identified by their tunnel
+// source address.
 func (m *mesh) authorizeMetrics(r *http.Request) bool {
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
@@ -166,7 +167,12 @@ func (m *mesh) authorizeMetrics(r *http.Request) bool {
 	if p, ok := m.netmapPeer(id); ok && proto.HasRole(p.Roles, proto.RoleHub) {
 		return true
 	}
-	return slices.Contains(m.cfg.Metrics.AllowPeers, id)
+	m.mu.Lock()
+	hubOnly := m.hubOnlyLocked()
+	m.mu.Unlock()
+	// Under hub-only isolation only hubs may read metrics, whatever
+	// AllowPeers says.
+	return !hubOnly && slices.Contains(m.cfg.Metrics.AllowPeers, id)
 }
 
 // serveMetricsLocked starts the metrics endpoint on the tunnel IP inside the

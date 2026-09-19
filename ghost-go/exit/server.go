@@ -49,6 +49,11 @@ type Config struct {
 	// IdleTimeout closes idle proxied connections (0 = no idle timeout).
 	IdleTimeout time.Duration
 
+	// AllowSource, when set, admits a client connection only if it returns
+	// true for the client's address; others are closed before any bytes are
+	// read. Pass ghost.Node.IsHubSource so an exit serves only its hubs.
+	AllowSource func(net.Addr) bool
+
 	// PeerResolver maps a client's tunnel address to its peer id for
 	// ConnInfo.SourcePeer. When nil, or when it does not know the address, the
 	// client's tunnel IP is used. Pass the ghost.Node or ghost.Hub serving the
@@ -236,6 +241,11 @@ func (s *Server) trackConn(c net.Conn, add bool) {
 }
 
 func (s *Server) handle(client net.Conn) {
+	if s.cfg.AllowSource != nil && !s.cfg.AllowSource(client.RemoteAddr()) {
+		s.log.Debug("exit: source refused", "remote", client.RemoteAddr())
+		_ = client.Close()
+		return
+	}
 	s.trackConn(client, true)
 	defer s.trackConn(client, false)
 	defer client.Close()
