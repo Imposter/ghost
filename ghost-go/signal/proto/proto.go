@@ -44,6 +44,10 @@ const (
 	TypeAddressAssignment Type = "address_assignment"
 	// TypeError reports a protocol or authorization error. Payload: Error.
 	TypeError Type = "error"
+	// TypePolicy pushes the effective exit policy for a joined network to a
+	// member. The server sends it whenever the policy changes. Payload:
+	// ExitPolicy.
+	TypePolicy Type = "policy"
 )
 
 // Envelope is the outer frame for every signalling message. Payload holds the
@@ -125,6 +129,29 @@ type Joined struct {
 	Hub *PeerInfo `json:"hub,omitempty"`
 	// Peers are the members already online in the network.
 	Peers []PeerInfo `json:"peers,omitempty"`
+	// Policy is the effective exit policy for this member at join time. Later
+	// changes arrive as policy messages.
+	Policy *ExitPolicy `json:"policy,omitempty"`
+}
+
+// ExitPolicy is the exit policy a network (or the access-control authorizer)
+// imposes on a member. Allow entries use the exit.Allowlist syntax:
+// "host", "host:port" or "*.example.com:443". An empty Allow denies every
+// destination.
+type ExitPolicy struct {
+	Network string `json:"network"`
+	// Allow is the host:port allowlist.
+	Allow []string `json:"allow"`
+	// DailyBytes caps bytes per UTC day (0 = unlimited).
+	DailyBytes int64 `json:"daily_bytes,omitempty"`
+	// BytesPerSecond caps throughput (0 = unlimited).
+	BytesPerSecond int64 `json:"bytes_per_second,omitempty"`
+	// Paused refuses new exit connections while true.
+	Paused bool `json:"paused,omitempty"`
+	// Labels are free-form policy labels (e.g. from the authorizer).
+	Labels map[string]string `json:"labels,omitempty"`
+	// Revision increases each time the policy changes.
+	Revision int64 `json:"revision"`
 }
 
 // PeerInfo describes another member of a network.
@@ -198,6 +225,12 @@ const (
 	ErrCodeBadRequest         = "bad_request"
 	ErrCodeNotFound           = "not_found"
 	ErrCodeInternal           = "internal"
+	// ErrCodeForbidden reports an authenticated request that access control
+	// denied (for example a join or a peer connection).
+	ErrCodeForbidden = "forbidden"
+	// ErrCodeRevoked reports that the device was revoked; the server closes
+	// the session after sending it.
+	ErrCodeRevoked = "revoked"
 )
 
 // Encode marshals a payload into an Envelope of the given type.

@@ -89,6 +89,7 @@ type Handlers struct {
 	OnPeerOffline func(proto.PeerEvent)
 	OnAddress     func(proto.AddressAssignment)
 	OnError       func(proto.Error)
+	OnPolicy      func(proto.ExitPolicy)
 	// OnStateChange reports connection state transitions.
 	OnStateChange func(State)
 }
@@ -132,6 +133,7 @@ type Event struct {
 	Peer    *proto.PeerEvent
 	Address *proto.AddressAssignment
 	Err     *proto.Error
+	Policy  *proto.ExitPolicy
 	// State is set for connection-state change events (Type == "").
 	State State
 }
@@ -371,6 +373,13 @@ func (c *Client) dispatch(env proto.Envelope) {
 		c.emit(Event{Type: env.Type, Address: &a})
 		if c.handlers.OnAddress != nil {
 			c.handlers.OnAddress(a)
+		}
+	case proto.TypePolicy:
+		var p proto.ExitPolicy
+		_ = env.Decode(&p)
+		c.emit(Event{Type: env.Type, Policy: &p})
+		if c.handlers.OnPolicy != nil {
+			c.handlers.OnPolicy(p)
 		}
 	case proto.TypeHeartbeat:
 		// Server keepalive; nothing to do.
