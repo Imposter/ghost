@@ -26,11 +26,11 @@ func signed(t *testing.T, req Request) ([]byte, string) {
 func TestVerifier(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	v := NewVerifier(secret, 5*time.Minute, func() time.Time { return now })
-	req := Request{Action: ActionJoinNetwork, Network: "n", Device: "d", TS: now.Unix(), Nonce: NewNonce()}
+	req := Request{Action: ActionConnect, Network: "n", Peer: "p", TS: now.Unix(), Nonce: NewNonce()}
 	body, sig := signed(t, req)
 
 	got, err := v.Verify(body, sig)
-	if err != nil || got.Device != "d" {
+	if err != nil || got.Peer != "p" {
 		t.Fatalf("valid request: %v %+v", err, got)
 	}
 	if _, err := v.Verify(body, sig); !errors.Is(err, ErrReplay) {
@@ -49,12 +49,12 @@ func TestVerifier(t *testing.T) {
 		t.Fatalf("wrong secret: %v", err)
 	}
 
-	stale := Request{Action: ActionRegister, TS: now.Add(-10 * time.Minute).Unix(), Nonce: NewNonce()}
+	stale := Request{Action: ActionEnroll, TS: now.Add(-10 * time.Minute).Unix(), Nonce: NewNonce()}
 	b, s := signed(t, stale)
 	if _, err := v.Verify(b, s); !errors.Is(err, ErrStale) {
 		t.Fatalf("stale: %v", err)
 	}
-	b, s = signed(t, Request{Action: ActionRegister, TS: now.Unix()})
+	b, s = signed(t, Request{Action: ActionEnroll, TS: now.Unix()})
 	if _, err := v.Verify(b, s); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("missing nonce: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestWebhookSignsVerifiably(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d, err := NewWebhook(srv.URL, secret, time.Second, nil, nil).Authorize(context.Background(), Request{Action: ActionPair, Network: "n"})
+	d, err := NewWebhook(srv.URL, secret, time.Second, nil, nil).Authorize(context.Background(), Request{Action: ActionEnroll, Network: "n"})
 	if err != nil || !d.Allow {
 		t.Fatalf("authorize: %v %+v", err, d)
 	}
@@ -104,7 +104,7 @@ func TestControllerCacheAndFailClosed(t *testing.T) {
 	clock := func() time.Time { return now }
 	auth := &countingAuth{}
 	c := NewController(auth, ControllerOptions{CacheTTL: 30 * time.Second, Now: clock})
-	req := Request{Action: ActionConnectPeer, Network: "n", Device: "a", Peer: "b"}
+	req := Request{Action: ActionConnectPeer, Network: "n", Peer: "a", Target: "b"}
 
 	for range 3 {
 		if !c.Check(context.Background(), req).Allow {
@@ -114,7 +114,7 @@ func TestControllerCacheAndFailClosed(t *testing.T) {
 	if auth.n.Load() != 1 {
 		t.Fatalf("authorizer calls = %d, want 1 (cached)", auth.n.Load())
 	}
-	c.Forget("b") // the peer was revoked
+	c.Forget("b") // the target was revoked
 	c.Check(context.Background(), req)
 	if auth.n.Load() != 2 {
 		t.Fatalf("Forget(peer) should drop the entry; calls = %d", auth.n.Load())

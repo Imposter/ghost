@@ -1,6 +1,7 @@
-// Command ghost-server is the ghost signalling and coordination server:
-// networks, devices, pairing, presence, the v1 signalling WebSocket, TURN
-// credentials, access control, and the admin API.
+// Command ghost-server is the ghost peer control plane: networks and their
+// policies, peers and their enrolment, netmap distribution over the v1
+// signalling WebSocket, TURN credentials, the optional external authorizer,
+// and the control API with its watch stream.
 //
 // Configuration comes from an optional JSON file (-config) and GHOST_*
 // environment variables; see docs/ghost-server.md.

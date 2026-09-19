@@ -1,17 +1,20 @@
 // Package signalling is ghost-server's WebSocket signalling endpoint. It
-// speaks the ghost-go signal/proto v1 protocol: it authenticates a device's
-// hello, assigns its address on join, relays offer/answer/candidate between a
-// node and the hub(s) of its network, announces presence, answers
-// heartbeats, pushes exit-policy changes, and disconnects revoked devices.
+// speaks the ghost-go signal/proto v1 protocol: it authenticates a peer's
+// hello, assigns its address on join, sends each joined peer its netmap (the
+// peers the network's isolation mode and ACLs let it reach) and live deltas,
+// relays offer/answer/candidate only between pairs the netmap allows, records
+// the health summaries carried by heartbeats, and disconnects revoked,
+// expired or moved peers.
 package signalling
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -24,6 +27,8 @@ import (
 
 	"github.com/Imposter/ghost/ghost-server/server/access"
 	"github.com/Imposter/ghost/ghost-server/server/control"
+	"github.com/Imposter/ghost/ghost-server/server/events"
+	"github.com/Imposter/ghost/ghost-server/server/policy"
 	"github.com/Imposter/ghost/ghost-server/server/store"
 	"github.com/Imposter/ghost/ghost-server/server/telemetry"
 	"github.com/Imposter/ghost/ghost-server/server/turn"
@@ -62,8 +67,12 @@ type Relay struct {
 
 	seq atomic.Uint64
 
+	// netmapMu serialises netmap computation so every session sees its
+	// deltas in order.
+	netmapMu sync.Mutex
+
 	mu       sync.RWMutex
-	sessions map[string]*session // device id -> session
+	sessions map[string]*session // peer id -> session
 	closed   bool
 }
 
@@ -101,17 +110,19 @@ func New(opts Options) *Relay {
 
 // Presence describes one live session.
 type Presence struct {
-	DeviceID    string     `json:"device_id"`
-	SessionID   string     `json:"session_id"`
-	Name        string     `json:"name"`
-	Role        proto.Role `json:"role"`
-	Network     string     `json:"network,omitempty"`
-	Address     string     `json:"address,omitempty"`
-	Joined      bool       `json:"joined"`
-	Remote      string     `json:"remote"`
-	ConnectedAt time.Time  `json:"connected_at"`
-	LastSeen    time.Time  `json:"last_seen"`
-	// PolicyRevision is the revision of the last exit policy sent.
+	PeerID      string       `json:"peer_id"`
+	SessionID   string       `json:"session_id"`
+	Name        string       `json:"name,omitempty"`
+	Roles       []proto.Role `json:"roles"`
+	Network     string       `json:"network,omitempty"`
+	Address     string       `json:"address,omitempty"`
+	Joined      bool         `json:"joined"`
+	Remote      string       `json:"remote"`
+	ConnectedAt time.Time    `json:"connected_at"`
+	LastSeen    time.Time    `json:"last_seen"`
+	// NetmapPeers is how many peers this session's netmap lists.
+	NetmapPeers int `json:"netmap_peers"`
+	// PolicyRevision is the revision of the policy in its last netmap.
 	PolicyRevision int64 `json:"policy_revision"`
 }
 
@@ -121,7 +132,7 @@ func (r *Relay) Presence(network string) []Presence {
 	r.mu.RLock()
 	out := make([]Presence, 0, len(r.sessions))
 	for _, s := range r.sessions {
-		if network != "" && s.network != network {
+		if network != "" && s.peer.Network != network {
 			continue
 		}
 		out = append(out, s.presenceLocked())
@@ -131,21 +142,29 @@ func (r *Relay) Presence(network string) []Presence {
 	return out
 }
 
-// Online returns one device's presence, if it has a live session.
-func (r *Relay) Online(deviceID string) (Presence, bool) {
+// Session returns one peer's presence, if it has a live session.
+func (r *Relay) Session(peerID string) (Presence, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	s, ok := r.sessions[deviceID]
+	s, ok := r.sessions[peerID]
 	if !ok {
 		return Presence{}, false
 	}
 	return s.presenceLocked(), true
 }
 
-// Disconnect implements control.Sessions.
-func (r *Relay) Disconnect(deviceID, code, message string) bool {
+// Online implements control.Sessions.
+func (r *Relay) Online(peerID string) bool {
 	r.mu.RLock()
-	s := r.sessions[deviceID]
+	defer r.mu.RUnlock()
+	s, ok := r.sessions[peerID]
+	return ok && s.joined
+}
+
+// Disconnect implements control.Sessions.
+func (r *Relay) Disconnect(peerID, code, message string) bool {
+	r.mu.RLock()
+	s := r.sessions[peerID]
 	r.mu.RUnlock()
 	if s == nil {
 		return false
@@ -154,30 +173,100 @@ func (r *Relay) Disconnect(deviceID, code, message string) bool {
 	return true
 }
 
-// PushNetworkPolicy implements control.Sessions. Every joined session in the
-// network receives its effective policy (the network policy, or its
-// authorizer override with the network's pause switch applied).
-func (r *Relay) PushNetworkPolicy(p proto.ExitPolicy) int {
-	type target struct {
-		s      *session
-		policy proto.ExitPolicy
+// PolicyChanged implements control.Sessions: it re-asks the authorizer,
+// uncached, whether each live session in the network may stay connected and
+// which exit policy it contributes, disconnects the ones it now denies, and
+// pushes the new netmaps.
+func (r *Relay) PolicyChanged(ctx context.Context, network string) {
+	for _, s := range r.joinedIn(network) {
+		r.mu.RLock()
+		peer := s.peer
+		r.mu.RUnlock()
+		d := r.svc.Access().CheckFresh(ctx, connectRequest(peer))
+		if !d.Allow {
+			r.svc.Audit(ctx, network, "peer.connect_denied", peer.ID, map[string]any{"reason": d.Reason, "on": "policy_change"})
+			s.fatal(proto.ErrCodeForbidden, "connection no longer authorized: "+d.Reason)
+			continue
+		}
+		r.mu.Lock()
+		s.override = d.Policy.ExitPolicy(network)
+		r.mu.Unlock()
 	}
-	r.mu.Lock()
-	var targets []target
+	r.NetworkChanged(ctx, network)
+}
+
+// NetworkChanged implements control.Sessions: every joined session in the
+// network gets a delta against its last netmap (or its first snapshot).
+func (r *Relay) NetworkChanged(ctx context.Context, network string) {
+	r.netmapMu.Lock()
+	defer r.netmapMu.Unlock()
+
+	sessions := r.joinedIn(network)
+	if len(sessions) == 0 {
+		return
+	}
+	n, err := r.svc.Network(ctx, network)
+	if err != nil {
+		r.log.Warn("signalling: netmap: network", "network", network, "error", err)
+		return
+	}
+	peers, err := r.svc.Store().ListPeers(ctx, store.PeerFilter{Network: network})
+	if err != nil {
+		r.log.Warn("signalling: netmap: peers", "network", network, "error", err)
+		return
+	}
+	byID := make(map[string]store.Peer, len(peers))
+	for _, p := range peers {
+		byID[p.ID] = p
+	}
+	online := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		online[s.peerID] = true
+	}
+	now := r.svc.Now()
+	for _, s := range sessions {
+		fresh, ok := byID[s.peerID]
+		if !ok || fresh.Status(now) != store.PeerActive {
+			continue // revoked, expired or deleted: its disconnect is in flight
+		}
+		r.mu.Lock()
+		s.peer = fresh
+		override := s.override
+		prev := s.netmap
+		r.mu.Unlock()
+
+		nm := buildNetmap(n, fresh, peers, online, override, now)
+		if prev == nil {
+			s.seq++
+			nm.Seq = s.seq
+			s.send(proto.TypeNetmap, nm)
+		} else if d, changed := diffNetmap(*prev, nm); changed {
+			s.seq++
+			d.Seq, nm.Seq = s.seq, s.seq
+			s.send(proto.TypeNetmapDelta, d)
+		} else {
+			nm.Seq = prev.Seq
+		}
+		r.mu.Lock()
+		s.netmap = &nm
+		r.mu.Unlock()
+	}
+	r.svc.Bus().Publish(events.Event{Type: events.NetmapUpdated, Network: network, Data: map[string]any{
+		"revision": n.PolicyRevision, "sessions": len(sessions),
+	}})
+}
+
+// joinedIn returns the joined sessions of a network.
+func (r *Relay) joinedIn(network string) []*session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*session
 	for _, s := range r.sessions {
-		if s.joined && s.network == p.Network {
-			s.policyRev = p.Revision
-			targets = append(targets, target{s, effectivePolicy(p, s.override)})
+		if s.joined && s.peer.Network == network {
+			out = append(out, s)
 		}
 	}
-	r.mu.Unlock()
-	n := 0
-	for _, t := range targets {
-		if t.s.send(proto.TypePolicy, t.policy) {
-			n++
-		}
-	}
-	return n
+	return out
 }
 
 // Close disconnects every session.
@@ -194,21 +283,101 @@ func (r *Relay) Close() {
 	}
 }
 
-// effectivePolicy returns the policy a session should enforce. An authorizer
-// override replaces the allowlist, caps and labels; the network's pause
-// switch and revision always apply.
-func effectivePolicy(network proto.ExitPolicy, override *proto.ExitPolicy) proto.ExitPolicy {
-	if override == nil {
-		return network
+// buildNetmap computes self's netmap: the active, addressed peers that the
+// isolation mode and ACLs let self reach or be reached by, its packet filter,
+// and its exit policy (the network's, with the authorizer's override).
+func buildNetmap(n store.Network, self store.Peer, peers []store.Peer, online map[string]bool,
+	override *proto.ExitPolicy, now time.Time) proto.Netmap {
+
+	selfSubj := self.Subject()
+	infos := []proto.PeerInfo{}
+	var visible []store.Peer
+	for _, p := range peers {
+		if p.ID == self.ID || p.Address == "" || p.PublicKey == "" || p.Status(now) != store.PeerActive {
+			continue
+		}
+		if !n.Policy.Visible(n.Isolation, selfSubj, p.Subject()) {
+			continue
+		}
+		visible = append(visible, p)
+		infos = append(infos, peerInfo(p, online[p.ID]))
 	}
-	p := *override
-	p.Network = network.Network
-	p.Paused = network.Paused || override.Paused
-	p.Revision = network.Revision
-	if p.Allow == nil {
-		p.Allow = []string{}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].PeerID < infos[j].PeerID })
+
+	subjects := make([]policy.Subject, 0, len(visible))
+	for _, p := range visible {
+		subjects = append(subjects, p.Subject())
 	}
-	return p
+	filter := n.Policy.Filter(n.Isolation, selfSubj, subjects)
+	exit := n.Policy.ExitPolicy(n.Name, n.PolicyRevision, selfSubj)
+	if override != nil {
+		exit.Allow = slices.Clone(override.Allow)
+		exit.DailyBytes = override.DailyBytes
+		exit.BytesPerSecond = override.BytesPerSecond
+		exit.Paused = exit.Paused || override.Paused
+		if override.Labels != nil {
+			exit.Labels = override.Labels
+		}
+	}
+	if exit.Allow == nil {
+		exit.Allow = []string{}
+	}
+	return proto.Netmap{
+		Network:   n.Name,
+		Isolation: proto.Isolation(n.Isolation),
+		Self:      peerInfo(self, true),
+		Peers:     infos,
+		Policy:    &exit,
+		Filter:    &filter,
+	}
+}
+
+func peerInfo(p store.Peer, online bool) proto.PeerInfo {
+	return proto.PeerInfo{
+		PeerID: p.ID, Name: p.Name, PublicKey: p.PublicKey, Address: p.Address,
+		Roles: slices.Clone(p.Roles), Tags: slices.Clone(p.Tags), Endpoints: slices.Clone(p.Endpoints), Online: online,
+	}
+}
+
+// diffNetmap returns the delta from prev to next and whether anything changed.
+func diffNetmap(prev, next proto.Netmap) (proto.NetmapDelta, bool) {
+	d := proto.NetmapDelta{Network: next.Network}
+	changed := false
+	if !reflect.DeepEqual(prev.Self, next.Self) {
+		self := next.Self
+		d.Self, changed = &self, true
+	}
+	old := make(map[string]proto.PeerInfo, len(prev.Peers))
+	for _, p := range prev.Peers {
+		old[p.PeerID] = p
+	}
+	for _, p := range next.Peers {
+		if o, ok := old[p.PeerID]; !ok || !reflect.DeepEqual(o, p) {
+			d.Upsert = append(d.Upsert, p)
+		}
+		delete(old, p.PeerID)
+	}
+	for id := range old {
+		d.Remove = append(d.Remove, id)
+	}
+	sort.Strings(d.Remove)
+	if len(d.Upsert) > 0 || len(d.Remove) > 0 {
+		changed = true
+	}
+	if !reflect.DeepEqual(prev.Policy, next.Policy) {
+		d.Policy, changed = next.Policy, true
+	}
+	if !reflect.DeepEqual(prev.Filter, next.Filter) {
+		d.Filter, changed = next.Filter, true
+	}
+	if prev.Isolation != next.Isolation {
+		d.Isolation, changed = next.Isolation, true
+	}
+	return d, changed
+}
+
+func connectRequest(p store.Peer) access.Request {
+	return access.Request{Action: access.ActionConnect, Network: p.Network, Peer: p.ID, Roles: p.Roles, Tags: p.Tags, Labels: p.Labels}
 }
 
 // ServeHTTP upgrades to WebSocket and runs one session.
@@ -220,23 +389,24 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ws.SetReadLimit(64 << 10)
 	ctx := req.Context()
 
-	dev, hello, err := r.handshake(ctx, ws)
+	peer, err := r.handshake(ctx, ws)
 	if err != nil {
 		r.log.Debug("signalling: handshake failed", "remote", req.RemoteAddr, "error", err)
 		_ = ws.Close(websocket.StatusPolicyViolation, "handshake failed")
 		return
 	}
+	ctx = control.WithActor(ctx, "peer:"+peer.ID)
 
 	now := r.svc.Now()
 	s := &session{
 		relay:       r,
 		ws:          ws,
 		id:          "sess_" + strconv.FormatUint(r.seq.Add(1), 10),
-		dev:         dev,
-		pubKey:      hello.PublicKey,
+		peerID:      peer.ID,
+		peer:        peer,
 		remote:      req.RemoteAddr,
 		connectedAt: now,
-		out:         make(chan outFrame, 128),
+		out:         make(chan outFrame, 256),
 		done:        make(chan struct{}),
 	}
 	s.lastSeen.Store(now.UnixMilli())
@@ -245,8 +415,8 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_ = ws.Close(websocket.StatusGoingAway, "server shutting down")
 		return
 	}
-	r.metrics.SessionOpened(ctx, string(dev.Role))
-	_ = r.svc.Store().TouchDevice(ctx, dev.ID, now.UTC())
+	r.metrics.SessionOpened(ctx, primaryRole(peer.Roles))
+	_ = r.svc.Store().TouchPeer(ctx, peer.ID, now.UTC())
 
 	writerDone := make(chan struct{})
 	go func() {
@@ -259,70 +429,69 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.shutdown()
 	<-writerDone
 	_ = ws.CloseNow()
-	r.unregister(s)
-	r.metrics.SessionClosed(context.Background(), string(dev.Role))
-	_ = r.svc.Store().TouchDevice(context.Background(), dev.ID, r.svc.Now().UTC())
-	r.log.Debug("signalling: session closed", "device", dev.ID, "session", s.id, "error", readErr)
+	r.unregister(context.WithoutCancel(ctx), s)
+	r.metrics.SessionClosed(context.Background(), primaryRole(peer.Roles))
+	r.log.Debug("signalling: session closed", "peer", peer.ID, "session", s.id, "error", readErr)
+}
+
+func primaryRole(roles []proto.Role) string {
+	best := proto.RoleNode
+	for _, r := range roles {
+		if r.Rank() > best.Rank() {
+			best = r
+		}
+	}
+	return string(best)
 }
 
 var errHandshake = errors.New("signalling: handshake rejected")
 
 // handshake reads and authenticates the hello frame, replying with a fatal
 // error frame on failure.
-func (r *Relay) handshake(ctx context.Context, ws *websocket.Conn) (store.Device, proto.Hello, error) {
-	var hello proto.Hello
+func (r *Relay) handshake(ctx context.Context, ws *websocket.Conn) (store.Peer, error) {
 	rctx, cancel := context.WithTimeout(ctx, r.helloTTL)
 	env, err := readEnvelope(rctx, ws)
 	cancel()
 	if err != nil {
-		return store.Device{}, hello, err
+		return store.Peer{}, err
 	}
 	r.metrics.Message(ctx, string(env.Type), "in")
-	reject := func(code, msg string) (store.Device, proto.Hello, error) {
+	reject := func(code, msg string) (store.Peer, error) {
 		writeFrame(ctx, ws, proto.TypeError, proto.Error{Code: code, Message: msg, Fatal: true})
-		return store.Device{}, hello, fmt.Errorf("%w: %s", errHandshake, msg)
+		return store.Peer{}, fmt.Errorf("%w: %s", errHandshake, msg)
 	}
+	var hello proto.Hello
 	if env.Type != proto.TypeHello || env.Decode(&hello) != nil {
 		return reject(proto.ErrCodeBadRequest, "first frame must be hello")
 	}
 	if env.V != proto.Version || hello.Version != proto.Version {
 		return reject(proto.ErrCodeUnsupportedVersion, fmt.Sprintf("server speaks v%d", proto.Version))
 	}
-	dev, err := r.svc.Authenticate(ctx, hello.DeviceToken)
+	peer, err := r.svc.Authenticate(ctx, hello.PeerToken)
 	if err != nil {
-		return reject(proto.ErrCodeUnauthorized, "invalid or revoked device token")
+		return reject(control.DisconnectCodeFor(err), err.Error())
 	}
-	if hello.DeviceID != "" && hello.DeviceID != dev.ID {
-		return reject(proto.ErrCodeUnauthorized, "device id does not match token")
+	if hello.PeerID != "" && hello.PeerID != peer.ID {
+		return reject(proto.ErrCodeUnauthorized, "peer id does not match token")
 	}
-	if hello.Role != "" && hello.Role != dev.Role {
-		return reject(proto.ErrCodeUnauthorized, fmt.Sprintf("device is registered as %s", dev.Role))
+	for _, want := range hello.Roles {
+		if !proto.HasRole(peer.Roles, want) {
+			return reject(proto.ErrCodeUnauthorized, fmt.Sprintf("peer does not hold the %s role", want))
+		}
 	}
 	if hello.PublicKey != "" {
-		if !validWireGuardKey(hello.PublicKey) {
-			return reject(proto.ErrCodeBadRequest, "public_key must be a base64 32-byte key")
+		actx := control.WithActor(ctx, "peer:"+peer.ID)
+		if peer, err = r.svc.SetPublicKey(actx, peer, hello.PublicKey); err != nil {
+			return reject(proto.ErrCodeBadRequest, err.Error())
 		}
-		if hello.PublicKey != dev.PublicKey {
-			if err := r.svc.Store().SetDevicePublicKey(ctx, dev.ID, hello.PublicKey); err != nil {
-				return reject(proto.ErrCodeInternal, "could not store public key")
-			}
-			dev.PublicKey = hello.PublicKey
-		}
-	} else {
-		hello.PublicKey = dev.PublicKey
 	}
-	return dev, hello, nil
-}
-
-func validWireGuardKey(k string) bool {
-	b, err := base64.StdEncoding.DecodeString(k)
-	return err == nil && len(b) == 32
+	return peer, nil
 }
 
 func (r *Relay) welcome(s *session) proto.Welcome {
 	w := proto.Welcome{
 		Version:           proto.Version,
-		DeviceID:          s.dev.ID,
+		PeerID:            s.peerID,
 		SessionID:         s.id,
 		HeartbeatInterval: int(r.hbEvery / time.Second),
 	}
@@ -330,21 +499,21 @@ func (r *Relay) welcome(s *session) proto.Welcome {
 		w.ICEServers = append(w.ICEServers, proto.ICEServer{URLs: r.stunURLs})
 	}
 	if len(r.turnURLs) > 0 && r.turn != nil {
-		c := r.turn.Issue(s.dev.ID, r.svc.Now())
+		c := r.turn.Issue(s.peerID, r.svc.Now())
 		w.ICEServers = append(w.ICEServers, proto.ICEServer{URLs: r.turnURLs, Username: c.Username, Credential: c.Password})
 	}
 	return w
 }
 
-// register adds s, replacing (and closing) any older session of the device.
+// register adds s, replacing (and closing) any older session of the peer.
 func (r *Relay) register(s *session) bool {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return false
 	}
-	old := r.sessions[s.dev.ID]
-	r.sessions[s.dev.ID] = s
+	old := r.sessions[s.peerID]
+	r.sessions[s.peerID] = s
 	r.mu.Unlock()
 	if old != nil {
 		old.replaced.Store(true)
@@ -353,139 +522,130 @@ func (r *Relay) register(s *session) bool {
 	return true
 }
 
-// unregister removes s (unless already replaced) and announces it offline.
-func (r *Relay) unregister(s *session) {
+// unregister removes s (unless a newer session replaced it) and tells the
+// network the peer went offline.
+func (r *Relay) unregister(ctx context.Context, s *session) {
 	r.mu.Lock()
-	if r.sessions[s.dev.ID] == s {
-		delete(r.sessions, s.dev.ID)
+	current := r.sessions[s.peerID] == s
+	if current {
+		delete(r.sessions, s.peerID)
 	}
-	var notify []*session
-	info := s.peerInfoLocked()
-	network, joined := s.network, s.joined
-	if joined && !s.replaced.Load() {
-		notify = r.audienceLocked(s)
-	}
+	peer, joined := s.peer, s.joined
 	r.mu.Unlock()
-	for _, o := range notify {
-		o.send(proto.TypePeerOffline, proto.PeerEvent{Network: network, Peer: info})
+	_ = r.svc.Store().TouchPeer(ctx, peer.ID, r.svc.Now().UTC())
+	if !current || !joined {
+		return
 	}
-}
-
-// audienceLocked returns the joined sessions that should see s's presence: a
-// hub is visible to everyone in its network, a node only to the hubs.
-func (r *Relay) audienceLocked(s *session) []*session {
-	var out []*session
-	for _, o := range r.sessions {
-		if o == s || !o.joined || o.network != s.network {
-			continue
-		}
-		if s.dev.Role == proto.RoleHub || o.dev.Role == proto.RoleHub {
-			out = append(out, o)
-		}
-	}
-	return out
+	r.svc.Bus().Publish(events.Event{Type: events.PeerOffline, Network: peer.Network, PeerID: peer.ID})
+	r.NetworkChanged(ctx, peer.Network)
 }
 
 // handleJoin authorizes a join, assigns the address, replies with joined and
-// announces the member.
+// sends the first netmap; the rest of the network gets a delta.
 func (r *Relay) handleJoin(ctx context.Context, s *session, j proto.JoinNetwork) {
-	if j.Network != s.dev.Network {
-		s.sendError(proto.ErrCodeForbidden, fmt.Sprintf("device belongs to network %q", s.dev.Network))
+	r.mu.RLock()
+	peer, joined := s.peer, s.joined
+	r.mu.RUnlock()
+	if joined {
+		s.sendError(proto.ErrCodeBadRequest, "already joined")
 		return
 	}
-	if s.pubKey == "" {
+	if j.Network != peer.Network {
+		s.sendError(proto.ErrCodeForbidden, fmt.Sprintf("peer belongs to network %q", peer.Network))
+		return
+	}
+	if peer.PublicKey == "" {
 		s.sendError(proto.ErrCodeBadRequest, "hello must carry a public_key before join")
 		return
 	}
-	d := r.svc.Access().Check(ctx, access.Request{
-		Action: access.ActionJoinNetwork, Network: j.Network, Device: s.dev.ID,
-		Role: s.dev.Role, Labels: s.dev.Labels,
-	})
+	d := r.svc.Access().Check(ctx, connectRequest(peer))
 	if !d.Allow {
+		r.svc.Audit(ctx, peer.Network, "peer.connect_denied", peer.ID, map[string]any{"reason": d.Reason})
 		s.sendError(proto.ErrCodeForbidden, "join denied: "+d.Reason)
 		return
 	}
-	addr, err := r.svc.EnsureAddress(ctx, s.dev)
+	peer, err := r.svc.EnsureAddress(ctx, peer.ID)
 	if err != nil {
-		r.log.Error("signalling: address assignment", "device", s.dev.ID, "error", err)
+		r.log.Error("signalling: address assignment", "peer", peer.ID, "error", err)
 		s.sendError(proto.ErrCodeInternal, "address assignment failed")
 		return
 	}
-	n, err := r.svc.Network(ctx, j.Network)
+	n, err := r.svc.Network(ctx, peer.Network)
 	if err != nil {
 		s.sendError(proto.ErrCodeInternal, "network lookup failed")
 		return
 	}
-	override := d.Policy.ExitPolicy(n.Name)
 
 	r.mu.Lock()
-	if r.sessions[s.dev.ID] != s {
+	if r.sessions[peer.ID] != s {
 		r.mu.Unlock()
 		return
 	}
-	s.network, s.address, s.joined, s.override = n.Name, addr, true, override
-	s.policyRev = n.Policy.Revision
-	self := s.peerInfoLocked()
-	var (
-		peers []proto.PeerInfo
-		hub   *proto.PeerInfo
-		hubAt time.Time
-	)
-	audience := r.audienceLocked(s)
-	for _, o := range audience {
-		pi := o.peerInfoLocked()
-		peers = append(peers, pi)
-		if o.dev.Role == proto.RoleHub && s.dev.Role == proto.RoleNode && (hub == nil || o.connectedAt.Before(hubAt)) {
-			h := pi
-			hub, hubAt = &h, o.connectedAt
-		}
-	}
+	s.peer, s.joined, s.override = peer, true, d.Policy.ExitPolicy(n.Name)
 	r.mu.Unlock()
 
-	sort.Slice(peers, func(a, b int) bool { return peers[a].DeviceID < peers[b].DeviceID })
-	policy := effectivePolicy(n.Policy, override)
-	s.send(proto.TypeJoined, proto.Joined{
-		Network: n.Name, Address: addr, Pool: n.Pool, Hub: hub, Peers: peers, Policy: &policy,
-	})
-	for _, o := range audience {
-		o.send(proto.TypePeerOnline, proto.PeerEvent{Network: n.Name, Peer: self})
-	}
+	s.send(proto.TypeJoined, proto.Joined{Network: n.Name, Address: peer.Address, Pool: n.Pool})
+	r.svc.Bus().Publish(events.Event{Type: events.PeerOnline, Network: n.Name, PeerID: peer.ID,
+		Data: map[string]any{"address": peer.Address, "roles": peer.Roles}})
+	r.NetworkChanged(ctx, n.Name)
 }
 
-// handleSignal relays an offer, answer or candidate between a node and a hub
-// of the same network.
+// handleSignal relays an offer, answer or candidate, but only to a peer in the
+// sender's netmap that is online; anything else is refused and audited once
+// per pair and session.
 func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig proto.Signal) {
 	r.mu.RLock()
-	joined, network := s.joined, s.network
+	peer, joined, nm := s.peer, s.joined, s.netmap
 	target := r.sessions[sig.To]
-	var targetOK bool
-	if target != nil {
-		targetOK = target.joined && target.network == network
-	}
 	r.mu.RUnlock()
 
-	if !joined {
+	if !joined || nm == nil {
 		s.sendError(proto.ErrCodeBadRequest, "join a network before signalling")
 		return
 	}
-	if !targetOK {
-		s.sendError(proto.ErrCodeNotFound, "peer not online in this network: "+sig.To)
+	allowed := false
+	for _, p := range nm.Peers {
+		if p.PeerID == sig.To {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		if s.firstDenial(sig.To) {
+			r.svc.Audit(ctx, peer.Network, "signal.denied", peer.ID, map[string]any{"to": sig.To, "type": t})
+		}
+		s.sendError(proto.ErrCodeForbidden, "signalling to "+sig.To+" is not allowed by the network policy")
 		return
 	}
-	// Exactly one side must be a hub: nodes never talk to each other.
-	if (s.dev.Role == proto.RoleHub) == (target.dev.Role == proto.RoleHub) {
-		s.sendError(proto.ErrCodeForbidden, "signalling is only allowed between a node and a hub")
+	if target == nil || !r.Online(sig.To) {
+		s.sendError(proto.ErrCodeNotFound, "peer not online: "+sig.To)
 		return
 	}
 	d := r.svc.Access().Check(ctx, access.Request{
-		Action: access.ActionConnectPeer, Network: network, Device: s.dev.ID, Peer: target.dev.ID,
-		Role: s.dev.Role, Labels: s.dev.Labels,
+		Action: access.ActionConnectPeer, Network: peer.Network, Peer: peer.ID, Target: sig.To,
+		Roles: peer.Roles, Tags: peer.Tags, Labels: peer.Labels,
 	})
 	if !d.Allow {
-		s.sendError(proto.ErrCodeForbidden, "connection to "+target.dev.ID+" denied: "+d.Reason)
+		if s.firstDenial(sig.To) {
+			r.svc.Audit(ctx, peer.Network, "signal.denied", peer.ID, map[string]any{"to": sig.To, "type": t, "reason": d.Reason})
+		}
+		s.sendError(proto.ErrCodeForbidden, "connection to "+sig.To+" denied: "+d.Reason)
 		return
 	}
-	sig.From = s.dev.ID
-	sig.Network = network
+	sig.From = peer.ID
+	sig.Network = peer.Network
 	target.send(t, sig)
+}
+
+// handleHeartbeat answers a heartbeat and records its health summary.
+func (r *Relay) handleHeartbeat(ctx context.Context, s *session, hb proto.Heartbeat) {
+	s.send(proto.TypeHeartbeat, proto.Heartbeat{Nonce: hb.Nonce})
+	r.mu.RLock()
+	peer := s.peer
+	r.mu.RUnlock()
+	if hb.Health != nil {
+		r.svc.RecordHealth(ctx, peer, *hb.Health)
+		return
+	}
+	_ = r.svc.Store().TouchPeer(ctx, peer.ID, r.svc.Now().UTC())
 }

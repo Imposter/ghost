@@ -1,8 +1,9 @@
-// Package access implements ghost-server's access control. In open mode every
-// authenticated request is allowed. In api mode the server asks an external
-// authorizer webhook (POST {url}/ghost/authorize, HMAC-SHA256 signed) before
-// a device may register, pair, join a network, or connect to a peer. Decisions
-// are cached briefly, and any failure to reach the authorizer denies (fail
+// Package access implements ghost-server's external authorizer: an optional
+// policy source consulted when a peer enrols, when it connects (joins its
+// network, and again whenever the network's policy changes), and when a pair
+// of peers signal each other. In open mode it is not consulted. In api mode
+// the server POSTs a signed request to {url}/ghost/authorize; decisions are
+// cached briefly, and any failure to reach the authorizer denies (fail
 // closed).
 //
 // The package also ships Verifier, which an authorizer implementation uses to
@@ -19,13 +20,14 @@ import (
 type Action string
 
 const (
-	// ActionRegister: a device self-registers into a network.
-	ActionRegister Action = "register"
-	// ActionPair: a device redeems a pairing code.
-	ActionPair Action = "pair"
-	// ActionJoinNetwork: a device joins its network over signalling.
-	ActionJoinNetwork Action = "join_network"
-	// ActionConnectPeer: a device relays offer/answer/candidates to a peer.
+	// ActionEnroll: a peer enrols (pre-auth key, or claiming an approved
+	// interactive enrolment).
+	ActionEnroll Action = "enroll"
+	// ActionConnect: a peer joins its network over signalling. It is asked
+	// again, uncached, for every online peer when the network's policy
+	// changes.
+	ActionConnect Action = "connect"
+	// ActionConnectPeer: a peer relays offer/answer/candidates to a target.
 	ActionConnectPeer Action = "connect_peer"
 )
 
@@ -33,15 +35,14 @@ const (
 type Request struct {
 	Action  Action `json:"action"`
 	Network string `json:"network"`
-	// Device is the acting device id. It is empty for register and pair,
-	// where the device does not exist yet.
-	Device string `json:"device,omitempty"`
-	// Peer is the target device id for connect_peer.
+	// Peer is the acting peer id. It is empty for enroll, where the peer does
+	// not exist yet.
 	Peer string `json:"peer,omitempty"`
-	// Role is the acting device's role (node or hub).
-	Role proto.Role `json:"role,omitempty"`
-	// Labels are the acting device's labels (requested labels for register
-	// and pair).
+	// Target is the other peer for connect_peer.
+	Target string `json:"target,omitempty"`
+	// Roles, Tags and Labels describe the acting (or enrolling) peer.
+	Roles  []proto.Role      `json:"roles,omitempty"`
+	Tags   []string          `json:"tags,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
 	// TS is the Unix time in seconds when the request was signed.
 	TS int64 `json:"ts"`
@@ -57,12 +58,16 @@ type Caps struct {
 
 // Policy is the optional policy in an allow decision.
 type Policy struct {
-	// ExitAllowlist overrides the network's exit allowlist for this device.
+	// ExitAllowlist, on connect, replaces the exit allowlist the network
+	// policy gives this peer. An explicit [] denies every destination.
 	ExitAllowlist []string `json:"exit_allowlist"`
 	Caps          Caps     `json:"caps,omitempty"`
-	// Labels are stored as the device's labels (register, pair) or attached
-	// to its exit policy (join_network).
+	// Labels are merged into the peer's labels (enroll) or attached to its
+	// exit policy (connect).
 	Labels map[string]string `json:"labels,omitempty"`
+	// Tags, on enroll, are added to the peer's tags; they must be defined in
+	// the network's policy.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Decision is the authorizer's JSON response.
@@ -70,11 +75,15 @@ type Decision struct {
 	Allow  bool    `json:"allow"`
 	Reason string  `json:"reason,omitempty"`
 	Policy *Policy `json:"policy,omitempty"`
+	// Unavailable is set (never by the authorizer) when the denial is the
+	// fail-closed result of an unreachable or broken authorizer, so callers
+	// can tell an outage from a decision.
+	Unavailable bool `json:"-"`
 }
 
 // ExitPolicy converts an authorizer policy into a wire exit policy for
 // network. It returns nil when the decision carries no exit allowlist, so the
-// network's own policy applies.
+// network policy applies unchanged.
 func (p *Policy) ExitPolicy(network string) *proto.ExitPolicy {
 	if p == nil || p.ExitAllowlist == nil {
 		return nil

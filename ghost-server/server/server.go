@@ -1,5 +1,6 @@
-// Package server assembles ghost-server from its parts: storage, access
-// control, the control service, the signalling relay, and the HTTP APIs.
+// Package server assembles ghost-server, the ghost peer control plane, from
+// its parts: storage, the policy engine, the external authorizer, the control
+// service, the event bus, the signalling relay, and the HTTP APIs.
 // cmd/ghost-server wires it to configuration, OpenTelemetry and a listener;
 // tests use it directly.
 package server
@@ -18,7 +19,9 @@ import (
 	"github.com/Imposter/ghost/ghost-server/server/access"
 	"github.com/Imposter/ghost/ghost-server/server/config"
 	"github.com/Imposter/ghost/ghost-server/server/control"
+	"github.com/Imposter/ghost/ghost-server/server/events"
 	"github.com/Imposter/ghost/ghost-server/server/httpapi"
+	"github.com/Imposter/ghost/ghost-server/server/policy"
 	"github.com/Imposter/ghost/ghost-server/server/signalling"
 	"github.com/Imposter/ghost/ghost-server/server/store"
 	"github.com/Imposter/ghost/ghost-server/server/telemetry"
@@ -36,8 +39,6 @@ type Options struct {
 	// AuthorizerClient is the HTTP client for the authorizer webhook
 	// (optional).
 	AuthorizerClient *http.Client
-	// DeviceMetrics plugs in the admin device-metrics proxy (optional).
-	DeviceMetrics httpapi.DeviceMetricsProxy
 	// Now overrides the clock (optional).
 	Now func() time.Time
 }
@@ -46,6 +47,7 @@ type Options struct {
 type Server struct {
 	Service *control.Service
 	Relay   *signalling.Relay
+	Bus     *events.Bus
 	handler http.Handler
 	log     *slog.Logger
 
@@ -86,12 +88,15 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 		CacheTTL: cacheTTL, Logger: log, Metrics: metrics, Now: now,
 	})
 
+	bus := events.NewBus(4096, now)
 	svc := control.New(control.Options{
-		Store: opts.Store, Access: ac, DefaultPool: cfg.DefaultPool,
-		PairingTTL: cfg.Pairing.TTL.Std(), Logger: log, Metrics: metrics, Now: now,
+		Store: opts.Store, Access: ac, Bus: bus, DefaultPool: cfg.DefaultPool,
+		EnrollmentTTL: cfg.Enrollment.CodeTTL.Std(), PollInterval: cfg.Enrollment.PollInterval.Std(),
+		EphemeralGrace: cfg.Peers.EphemeralGrace.Std(), Logger: log, Metrics: metrics, Now: now,
 	})
+	sysCtx := control.WithActor(ctx, "system")
 	for _, n := range cfg.Networks {
-		if err := svc.EnsureNetwork(ctx, n.Name, n.Pool); err != nil {
+		if err := svc.EnsureNetwork(sysCtx, control.NetworkInput{Name: n.Name, Pool: n.Pool, Isolation: policy.Isolation(n.Isolation)}); err != nil {
 			return nil, fmt.Errorf("server: network %s: %w", n.Name, err)
 		}
 	}
@@ -107,23 +112,24 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	})
 
 	mux := http.NewServeMux()
-	httpapi.NewPublic(svc, relay, log).Register(mux)
-	if cfg.Admin.Token != "" {
-		httpapi.NewAdmin(httpapi.AdminOptions{
-			Service: svc, Relay: relay, Token: cfg.Admin.Token, Metrics: opts.DeviceMetrics, Logger: log,
+	httpapi.NewPeerAPI(svc, relay, log).Register(mux)
+	if cfg.Control.ServiceToken != "" {
+		httpapi.NewControlAPI(httpapi.ControlOptions{
+			Service: svc, Relay: relay, ServiceToken: cfg.Control.ServiceToken, Logger: log,
 		}).Register(mux)
 	} else {
-		log.Warn("admin API disabled: no admin token configured")
+		log.Warn("control API disabled: no service token configured")
 	}
 
 	jctx, stop := context.WithCancel(context.Background())
-	s := &Server{Service: svc, Relay: relay, handler: mux, log: log, stop: stop}
+	s := &Server{Service: svc, Relay: relay, Bus: bus, handler: mux, log: log, stop: stop}
 	s.janitor.Add(1)
-	go s.sweepPairingCodes(jctx, opts.Store, now)
+	go s.housekeeping(jctx, cfg.Peers.JanitorInterval.Std())
 	return s, nil
 }
 
-// Handler returns the HTTP handler for the public, signalling and admin APIs.
+// Handler returns the HTTP handler for the peer API, signalling and the
+// control API.
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close disconnects every session and stops background work.
@@ -133,20 +139,16 @@ func (s *Server) Close() {
 	s.janitor.Wait()
 }
 
-func (s *Server) sweepPairingCodes(ctx context.Context, st store.Store, now func() time.Time) {
+func (s *Server) housekeeping(ctx context.Context, every time.Duration) {
 	defer s.janitor.Done()
-	t := time.NewTicker(10 * time.Minute)
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := st.DeleteExpiredPairingCodes(ctx, now()); err != nil {
-				s.log.Warn("pairing: sweep expired codes", "error", err)
-			} else if n > 0 {
-				s.log.Debug("pairing: swept expired codes", "count", n)
-			}
+			s.Service.Sweep(ctx)
 		}
 	}
 }

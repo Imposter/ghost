@@ -1,6 +1,7 @@
-// Package httpapi serves ghost-server's HTTP surface: the public device API
-// (register, pair, the signalling WebSocket) and the admin API protected by a
-// bearer service token.
+// Package httpapi serves ghost-server's HTTP surface: the peer API
+// (enrolment, credential rotation, the signalling WebSocket) and the control
+// API (networks, policy, peers, keys, health, audit and the watch stream),
+// which requires the bearer service token or a scoped API key.
 package httpapi
 
 import (
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/Imposter/ghost/ghost-server/server/control"
 )
@@ -33,6 +35,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func writeServiceError(w http.ResponseWriter, log *slog.Logger, err error) {
 	var denied *control.DeniedError
 	switch {
+	case errors.As(err, &denied) && denied.Unavailable:
+		writeError(w, http.StatusServiceUnavailable, denied.Error())
 	case errors.As(err, &denied):
 		writeError(w, http.StatusForbidden, denied.Error())
 	case errors.Is(err, control.ErrInvalid):
@@ -42,7 +46,7 @@ func writeServiceError(w http.ResponseWriter, log *slog.Logger, err error) {
 	case errors.Is(err, control.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, control.ErrUnauthorized):
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, err.Error())
 	default:
 		log.Error("httpapi: internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -51,11 +55,17 @@ func writeServiceError(w http.ResponseWriter, log *slog.Logger, err error) {
 
 // decodeJSON reads a bounded JSON body, rejecting unknown fields.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+	dec := json.NewDecoder(io.LimitReader(r.Body, 256<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return false
 	}
 	return true
+}
+
+// bearer returns the bearer token of a request.
+func bearer(r *http.Request) (string, bool) {
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(tok), ok && tok != ""
 }

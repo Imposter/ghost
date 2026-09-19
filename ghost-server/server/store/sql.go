@@ -18,6 +18,8 @@ import (
 	_ "modernc.org/sqlite"             // registers the "sqlite" driver
 
 	"github.com/Imposter/ghost/ghost-go/signal/proto"
+
+	"github.com/Imposter/ghost/ghost-server/server/policy"
 )
 
 //go:embed migrations/*.sql
@@ -84,6 +86,8 @@ func sqliteDSN(path string) string {
 // Close closes the database.
 func (s *SQL) Close() error { return s.db.Close() }
 
+// ---- migrations ----
+
 // migrate applies embedded migrations in version order, each in its own
 // transaction, recording them in schema_migrations.
 func (s *SQL) migrate(ctx context.Context) error {
@@ -136,22 +140,17 @@ func (s *SQL) migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		for _, stmt := range splitStatements(string(body)) {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("store: migration %s: %w", m.name, err)
+		err = s.inTx(ctx, func(tx *sql.Tx) error {
+			for _, stmt := range splitStatements(string(body)) {
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return fmt.Errorf("store: migration %s: %w", m.name, err)
+				}
 			}
-		}
-		if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`),
-			m.version, time.Now().UnixMilli()); err != nil {
-			_ = tx.Rollback()
+			_, err := tx.ExecContext(ctx, s.q(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`),
+				m.version, time.Now().UnixMilli())
 			return err
-		}
-		if err := tx.Commit(); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -183,6 +182,8 @@ func splitStatements(body string) []string {
 	return out
 }
 
+// ---- helpers ----
+
 // q rewrites "?" placeholders to "$n" for PostgreSQL.
 func (s *SQL) q(query string) string {
 	if s.dialect != Postgres {
@@ -201,13 +202,67 @@ func (s *SQL) q(query string) string {
 	return b.String()
 }
 
-func isUniqueViolation(err error) bool {
+// forUpdate locks a selected row inside a transaction on PostgreSQL (SQLite
+// serialises writers already).
+func (s *SQL) forUpdate() string {
+	if s.dialect == Postgres {
+		return " FOR UPDATE"
+	}
+	return ""
+}
+
+func (s *SQL) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQL) execOne(ctx context.Context, query string, args ...any) error {
+	res, err := s.db.ExecContext(ctx, s.q(query), args...)
+	if err != nil {
+		return mapWriteErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func mapWriteErr(err error) error {
+	if err == nil {
+		return nil
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
+		if pgErr.Code == "23505" || pgErr.Code == "23503" {
+			return fmt.Errorf("%w: %s", ErrConflict, pgErr.Message)
+		}
+		return err
 	}
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	if msg := err.Error(); strings.Contains(msg, "UNIQUE constraint failed") || strings.Contains(msg, "FOREIGN KEY constraint failed") {
+		return fmt.Errorf("%w: %s", ErrConflict, msg)
+	}
+	return err
 }
+
+func notFound(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+type scanner interface{ Scan(...any) error }
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
 
@@ -228,75 +283,81 @@ func fromNullMs(v sql.NullInt64) *time.Time {
 	return &t
 }
 
-func encodeJSON(v any) (string, error) {
+func b2i(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
+// jsonList marshals a slice, writing nil as [].
+func jsonList[T any](v []T) string {
+	if v == nil {
+		return "[]"
+	}
+	return mustJSON(v)
+}
+
+// jsonMap marshals a map, writing nil as {}.
+func jsonMap[V any](v map[string]V) string {
+	if v == nil {
+		return "{}"
+	}
+	return mustJSON(v)
+}
+
+func mustJSON(v any) string {
 	b, err := json.Marshal(v)
-	return string(b), err
-}
-
-func labelsJSON(l map[string]string) (string, error) {
-	if l == nil {
-		l = map[string]string{}
+	if err != nil {
+		panic(fmt.Sprintf("store: marshal %T: %v", v, err))
 	}
-	return encodeJSON(l)
+	return string(b)
 }
 
-func decodeLabels(s string) (map[string]string, error) {
-	out := map[string]string{}
+func fromJSON[T any](s string, dst *T) error {
 	if s == "" {
-		return out, nil
+		return nil
 	}
-	return out, json.Unmarshal([]byte(s), &out)
+	return json.Unmarshal([]byte(s), dst)
 }
 
 // ---- networks ----
 
-func (s *SQL) CreateNetwork(ctx context.Context, n Network) error {
-	pol := n.Policy
-	pol.Network = n.Name
-	pol.Revision = 0
-	polJSON, err := encodeJSON(pol)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO networks (name, pool, policy, policy_revision, created_at) VALUES (?, ?, ?, 0, ?)`),
-		n.Name, n.Pool, polJSON, ms(n.CreatedAt))
-	if isUniqueViolation(err) {
-		return ErrConflict
-	}
-	return err
-}
+const networkCols = `name, pool, isolation, policy, policy_revision, created_at`
 
-const networkCols = `name, pool, policy, policy_revision, created_at`
-
-func scanNetwork(sc interface{ Scan(...any) error }) (Network, error) {
+func scanNetwork(sc scanner) (Network, error) {
 	var (
 		n       Network
-		polJSON string
-		rev     int64
+		iso     string
+		doc     string
 		created int64
 	)
-	if err := sc.Scan(&n.Name, &n.Pool, &polJSON, &rev, &created); err != nil {
+	if err := sc.Scan(&n.Name, &n.Pool, &iso, &doc, &n.PolicyRevision, &created); err != nil {
 		return n, err
 	}
-	if err := json.Unmarshal([]byte(polJSON), &n.Policy); err != nil {
+	if err := fromJSON(doc, &n.Policy); err != nil {
 		return n, fmt.Errorf("store: network %s policy: %w", n.Name, err)
 	}
-	n.Policy.Network = n.Name
-	n.Policy.Revision = rev
-	if n.Policy.Allow == nil {
-		n.Policy.Allow = []string{}
-	}
+	n.Isolation = policy.Isolation(iso)
+	n.Policy = n.Policy.Normalize()
 	n.CreatedAt = fromMs(created)
 	return n, nil
 }
 
-func (s *SQL) GetNetwork(ctx context.Context, name string) (Network, error) {
-	row := s.db.QueryRowContext(ctx, s.q(`SELECT `+networkCols+` FROM networks WHERE name = ?`), name)
-	n, err := scanNetwork(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return n, ErrNotFound
+func (s *SQL) CreateNetwork(ctx context.Context, n Network) error {
+	if n.Isolation == "" {
+		n.Isolation = policy.IsolationNone
 	}
-	return n, err
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO networks (`+networkCols+`) VALUES (?, ?, ?, ?, ?, ?)`),
+		n.Name, n.Pool, string(n.Isolation), mustJSON(n.Policy.Normalize()), n.PolicyRevision, ms(n.CreatedAt))
+	return mapWriteErr(err)
+}
+
+func (s *SQL) GetNetwork(ctx context.Context, name string) (Network, error) {
+	n, err := scanNetwork(s.db.QueryRowContext(ctx, s.q(`SELECT `+networkCols+` FROM networks WHERE name = ?`), name))
+	return n, notFound(err)
 }
 
 func (s *SQL) ListNetworks(ctx context.Context) ([]Network, error) {
@@ -316,103 +377,128 @@ func (s *SQL) ListNetworks(ctx context.Context) ([]Network, error) {
 	return out, rows.Err()
 }
 
-func (s *SQL) SetNetworkPolicy(ctx context.Context, name string, p proto.ExitPolicy) (proto.ExitPolicy, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return p, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var rev int64
-	err = tx.QueryRowContext(ctx, s.q(`SELECT policy_revision FROM networks WHERE name = ?`), name).Scan(&rev)
-	if errors.Is(err, sql.ErrNoRows) {
-		return p, ErrNotFound
-	}
-	if err != nil {
-		return p, err
-	}
-	p.Network = name
-	p.Revision = rev + 1
-	if p.Allow == nil {
-		p.Allow = []string{}
-	}
-	polJSON, err := encodeJSON(p)
-	if err != nil {
-		return p, err
-	}
-	if _, err := tx.ExecContext(ctx, s.q(`UPDATE networks SET policy = ?, policy_revision = ? WHERE name = ?`),
-		polJSON, p.Revision, name); err != nil {
-		return p, err
-	}
-	return p, tx.Commit()
+func (s *SQL) DeleteNetwork(ctx context.Context, name string) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		var peers int
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM peers WHERE network = ?`), name).Scan(&peers); err != nil {
+			return err
+		}
+		if peers > 0 {
+			return fmt.Errorf("%w: network %s still has %d peers", ErrConflict, name, peers)
+		}
+		for _, q := range []string{`DELETE FROM auth_keys WHERE network = ?`, `DELETE FROM enrollments WHERE network = ?`} {
+			if _, err := tx.ExecContext(ctx, s.q(q), name); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, s.q(`DELETE FROM networks WHERE name = ?`), name)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
-// ---- devices ----
+// updateNetwork reads a network under lock, applies fn, bumps the revision and
+// writes the policy fields back.
+func (s *SQL) updateNetwork(ctx context.Context, name string, fn func(*Network)) (Network, error) {
+	var out Network
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		n, err := scanNetwork(tx.QueryRowContext(ctx, s.q(`SELECT `+networkCols+` FROM networks WHERE name = ?`+s.forUpdate()), name))
+		if err != nil {
+			return notFound(err)
+		}
+		fn(&n)
+		n.PolicyRevision++
+		if _, err := tx.ExecContext(ctx, s.q(`UPDATE networks SET isolation = ?, policy = ?, policy_revision = ? WHERE name = ?`),
+			string(n.Isolation), mustJSON(n.Policy.Normalize()), n.PolicyRevision, name); err != nil {
+			return err
+		}
+		out = n
+		return nil
+	})
+	return out, err
+}
 
-const deviceCols = `id, token_hash, network, role, name, labels, public_key, address, created_at, last_seen, revoked_at`
+func (s *SQL) SetNetworkPolicy(ctx context.Context, name string, doc policy.Document) (Network, error) {
+	return s.updateNetwork(ctx, name, func(n *Network) { n.Policy = doc.Normalize() })
+}
 
-func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
+func (s *SQL) SetNetworkIsolation(ctx context.Context, name string, iso policy.Isolation) (Network, error) {
+	return s.updateNetwork(ctx, name, func(n *Network) { n.Isolation = iso })
+}
+
+// ---- peers ----
+
+const peerCols = `id, token_hash, network, name, public_key, address, roles, tags, labels, endpoints, ephemeral, auth_key_id, health, health_at, created_at, last_seen, expires_at, revoked_at`
+
+func scanPeer(sc scanner) (Peer, error) {
 	var (
-		d         Device
-		role      string
-		labels    string
-		address   sql.NullString
-		created   int64
-		lastSeen  sql.NullInt64
-		revokedAt sql.NullInt64
+		p                                      Peer
+		address                                sql.NullString
+		roles, tags, labels, endpoints, health string
+		ephemeral, created                     int64
+		healthAt, lastSeen, expiresAt, revoked sql.NullInt64
 	)
-	if err := sc.Scan(&d.ID, &d.TokenHash, &d.Network, &role, &d.Name, &labels, &d.PublicKey,
-		&address, &created, &lastSeen, &revokedAt); err != nil {
-		return d, err
+	if err := sc.Scan(&p.ID, &p.TokenHash, &p.Network, &p.Name, &p.PublicKey, &address, &roles, &tags, &labels,
+		&endpoints, &ephemeral, &p.AuthKeyID, &health, &healthAt, &created, &lastSeen, &expiresAt, &revoked); err != nil {
+		return p, err
 	}
-	var err error
-	if d.Labels, err = decodeLabels(labels); err != nil {
-		return d, fmt.Errorf("store: device %s labels: %w", d.ID, err)
+	if err := errors.Join(fromJSON(roles, &p.Roles), fromJSON(tags, &p.Tags), fromJSON(labels, &p.Labels),
+		fromJSON(endpoints, &p.Endpoints)); err != nil {
+		return p, fmt.Errorf("store: peer %s: %w", p.ID, err)
 	}
-	d.Role = proto.Role(role)
-	d.Address = address.String
-	d.CreatedAt = fromMs(created)
-	d.LastSeen = fromNullMs(lastSeen)
-	d.RevokedAt = fromNullMs(revokedAt)
-	return d, nil
+	if health != "" {
+		var h proto.Health
+		if err := fromJSON(health, &h); err != nil {
+			return p, fmt.Errorf("store: peer %s health: %w", p.ID, err)
+		}
+		p.Health = &h
+	}
+	if p.Labels == nil {
+		p.Labels = map[string]string{}
+	}
+	p.Address = address.String
+	p.Ephemeral = ephemeral != 0
+	p.HealthAt = fromNullMs(healthAt)
+	p.CreatedAt = fromMs(created)
+	p.LastSeen = fromNullMs(lastSeen)
+	p.ExpiresAt = fromNullMs(expiresAt)
+	p.RevokedAt = fromNullMs(revoked)
+	return p, nil
 }
 
-func (s *SQL) CreateDevice(ctx context.Context, d Device) error {
-	labels, err := labelsJSON(d.Labels)
-	if err != nil {
-		return err
+func peerArgs(p Peer) []any {
+	health := ""
+	if p.Health != nil {
+		health = mustJSON(p.Health)
 	}
-	var address sql.NullString
-	if d.Address != "" {
-		address = sql.NullString{String: d.Address, Valid: true}
-	}
-	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO devices (`+deviceCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		d.ID, d.TokenHash, d.Network, string(d.Role), d.Name, labels, d.PublicKey, address,
-		ms(d.CreatedAt), msPtr(d.LastSeen), msPtr(d.RevokedAt))
-	if isUniqueViolation(err) {
-		return ErrConflict
-	}
-	return err
+	return []any{p.ID, p.TokenHash, p.Network, p.Name, p.PublicKey, nullString(p.Address),
+		jsonList(p.Roles), jsonList(p.Tags), jsonMap(p.Labels), jsonList(p.Endpoints), b2i(p.Ephemeral),
+		p.AuthKeyID, health, msPtr(p.HealthAt), ms(p.CreatedAt), msPtr(p.LastSeen), msPtr(p.ExpiresAt), msPtr(p.RevokedAt)}
 }
 
-func (s *SQL) getDevice(ctx context.Context, where string, arg any) (Device, error) {
-	row := s.db.QueryRowContext(ctx, s.q(`SELECT `+deviceCols+` FROM devices WHERE `+where+` = ?`), arg)
-	d, err := scanDevice(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return d, ErrNotFound
-	}
-	return d, err
+func (s *SQL) CreatePeer(ctx context.Context, p Peer) error {
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO peers (`+peerCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		peerArgs(p)...)
+	return mapWriteErr(err)
 }
 
-func (s *SQL) GetDevice(ctx context.Context, id string) (Device, error) {
-	return s.getDevice(ctx, "id", id)
+func (s *SQL) GetPeer(ctx context.Context, id string) (Peer, error) {
+	p, err := scanPeer(s.db.QueryRowContext(ctx, s.q(`SELECT `+peerCols+` FROM peers WHERE id = ?`), id))
+	return p, notFound(err)
 }
 
-func (s *SQL) GetDeviceByTokenHash(ctx context.Context, hash string) (Device, error) {
-	return s.getDevice(ctx, "token_hash", hash)
+func (s *SQL) GetPeerByTokenHash(ctx context.Context, hash string) (Peer, error) {
+	p, err := scanPeer(s.db.QueryRowContext(ctx, s.q(`SELECT `+peerCols+` FROM peers WHERE token_hash = ?`), hash))
+	return p, notFound(err)
 }
 
-func (s *SQL) ListDevices(ctx context.Context, f DeviceFilter) ([]Device, error) {
-	query := `SELECT ` + deviceCols + ` FROM devices WHERE 1 = 1`
+func (s *SQL) ListPeers(ctx context.Context, f PeerFilter) ([]Peer, error) {
+	query := `SELECT ` + peerCols + ` FROM peers WHERE 1 = 1`
 	var args []any
 	if f.Network != "" {
 		query += ` AND network = ?`
@@ -427,19 +513,47 @@ func (s *SQL) ListDevices(ctx context.Context, f DeviceFilter) ([]Device, error)
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Device
+	var out []Peer
 	for rows.Next() {
-		d, err := scanDevice(rows)
+		p, err := scanPeer(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, d)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
+func (s *SQL) UpdatePeer(ctx context.Context, id string, fn func(*Peer) error) (Peer, error) {
+	var out Peer
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		p, err := scanPeer(tx.QueryRowContext(ctx, s.q(`SELECT `+peerCols+` FROM peers WHERE id = ?`+s.forUpdate()), id))
+		if err != nil {
+			return notFound(err)
+		}
+		if err := fn(&p); err != nil {
+			return err
+		}
+		p.ID = id
+		args := peerArgs(p)
+		_, err = tx.ExecContext(ctx, s.q(`UPDATE peers SET token_hash = ?, network = ?, name = ?, public_key = ?, address = ?,
+			roles = ?, tags = ?, labels = ?, endpoints = ?, ephemeral = ?, auth_key_id = ?, health = ?, health_at = ?,
+			created_at = ?, last_seen = ?, expires_at = ?, revoked_at = ? WHERE id = ?`), append(args[1:], id)...)
+		if err != nil {
+			return mapWriteErr(err)
+		}
+		out = p
+		return nil
+	})
+	return out, err
+}
+
+func (s *SQL) DeletePeer(ctx context.Context, id string) error {
+	return s.execOne(ctx, `DELETE FROM peers WHERE id = ?`, id)
+}
+
 func (s *SQL) UsedAddresses(ctx context.Context, network string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT address FROM devices WHERE network = ? AND address IS NOT NULL`), network)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT address FROM peers WHERE network = ? AND address IS NOT NULL`), network)
 	if err != nil {
 		return nil, err
 	}
@@ -455,135 +569,293 @@ func (s *SQL) UsedAddresses(ctx context.Context, network string) ([]string, erro
 	return out, rows.Err()
 }
 
-func (s *SQL) execOne(ctx context.Context, query string, args ...any) error {
-	res, err := s.db.ExecContext(ctx, s.q(query), args...)
-	if isUniqueViolation(err) {
-		return ErrConflict
-	}
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+func (s *SQL) TouchPeer(ctx context.Context, id string, at time.Time) error {
+	return s.execOne(ctx, `UPDATE peers SET last_seen = ? WHERE id = ?`, ms(at), id)
 }
 
-func (s *SQL) SetDeviceAddress(ctx context.Context, id, address string) error {
-	return s.execOne(ctx, `UPDATE devices SET address = ? WHERE id = ?`, address, id)
+func (s *SQL) SetPeerHealth(ctx context.Context, id string, h proto.Health, at time.Time) error {
+	return s.execOne(ctx, `UPDATE peers SET health = ?, health_at = ?, last_seen = ? WHERE id = ?`, mustJSON(h), ms(at), ms(at), id)
 }
 
-func (s *SQL) SetDevicePublicKey(ctx context.Context, id, key string) error {
-	return s.execOne(ctx, `UPDATE devices SET public_key = ? WHERE id = ?`, key, id)
-}
+// ---- pre-auth keys ----
 
-func (s *SQL) TouchDevice(ctx context.Context, id string, at time.Time) error {
-	return s.execOne(ctx, `UPDATE devices SET last_seen = ? WHERE id = ?`, ms(at), id)
-}
+const authKeyCols = `id, key_hash, network, reusable, ephemeral, roles, tags, labels, peer_ttl_ms, uses, created_at, expires_at, last_used_at, revoked_at`
 
-func (s *SQL) RevokeDevice(ctx context.Context, id string, at time.Time) error {
-	// Revoking twice keeps the first timestamp.
-	if err := s.execOne(ctx, `UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, ms(at), id); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			if _, gerr := s.GetDevice(ctx, id); gerr == nil {
-				return nil
-			}
-		}
-		return err
-	}
-	return nil
-}
-
-func (s *SQL) MoveDevice(ctx context.Context, id, network string) error {
-	return s.execOne(ctx, `UPDATE devices SET network = ?, address = NULL WHERE id = ?`, network, id)
-}
-
-// ---- pairing codes ----
-
-func (s *SQL) CreatePairingCode(ctx context.Context, c PairingCode) error {
-	labels, err := labelsJSON(c.Labels)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO pairing_codes (code_hash, network, role, name, labels, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-		c.CodeHash, c.Network, string(c.Role), c.Name, labels, ms(c.CreatedAt), ms(c.ExpiresAt))
-	if isUniqueViolation(err) {
-		return ErrConflict
-	}
-	return err
-}
-
-const pairingCols = `code_hash, network, role, name, labels, created_at, expires_at, used_at, device_id`
-
-func scanPairingCode(sc interface{ Scan(...any) error }) (PairingCode, error) {
+func scanAuthKey(sc scanner) (AuthKey, error) {
 	var (
-		c                PairingCode
-		role, labels     string
-		created, expires int64
-		usedAt           sql.NullInt64
-		deviceID         sql.NullString
+		k                                      AuthKey
+		reusable, ephemeral, ttl, created, exp int64
+		roles, tags, labels                    string
+		lastUsed, revoked                      sql.NullInt64
 	)
-	if err := sc.Scan(&c.CodeHash, &c.Network, &role, &c.Name, &labels, &created, &expires, &usedAt, &deviceID); err != nil {
-		return c, err
+	if err := sc.Scan(&k.ID, &k.KeyHash, &k.Network, &reusable, &ephemeral, &roles, &tags, &labels, &ttl, &k.Uses,
+		&created, &exp, &lastUsed, &revoked); err != nil {
+		return k, err
 	}
-	var err error
-	if c.Labels, err = decodeLabels(labels); err != nil {
-		return c, err
+	if err := errors.Join(fromJSON(roles, &k.Roles), fromJSON(tags, &k.Tags), fromJSON(labels, &k.Labels)); err != nil {
+		return k, fmt.Errorf("store: auth key %s: %w", k.ID, err)
 	}
-	c.Role = proto.Role(role)
-	c.CreatedAt = fromMs(created)
-	c.ExpiresAt = fromMs(expires)
-	c.UsedAt = fromNullMs(usedAt)
-	c.DeviceID = deviceID.String
-	return c, nil
+	k.Reusable, k.Ephemeral = reusable != 0, ephemeral != 0
+	k.PeerTTL = time.Duration(ttl) * time.Millisecond
+	k.CreatedAt, k.ExpiresAt = fromMs(created), fromMs(exp)
+	k.LastUsedAt, k.RevokedAt = fromNullMs(lastUsed), fromNullMs(revoked)
+	return k, nil
 }
 
-func (s *SQL) GetPairingCode(ctx context.Context, codeHash string) (PairingCode, error) {
-	c, err := scanPairingCode(s.db.QueryRowContext(ctx, s.q(`SELECT `+pairingCols+` FROM pairing_codes WHERE code_hash = ?`), codeHash))
-	if errors.Is(err, sql.ErrNoRows) {
-		return c, ErrNotFound
-	}
-	return c, err
+func (s *SQL) CreateAuthKey(ctx context.Context, k AuthKey) error {
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO auth_keys (`+authKeyCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		k.ID, k.KeyHash, k.Network, b2i(k.Reusable), b2i(k.Ephemeral), jsonList(k.Roles), jsonList(k.Tags), jsonMap(k.Labels),
+		k.PeerTTL.Milliseconds(), k.Uses, ms(k.CreatedAt), ms(k.ExpiresAt), msPtr(k.LastUsedAt), msPtr(k.RevokedAt))
+	return mapWriteErr(err)
 }
 
-func (s *SQL) RedeemPairingCode(ctx context.Context, codeHash string, now time.Time) (PairingCode, error) {
-	var c PairingCode
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *SQL) GetAuthKeyByHash(ctx context.Context, hash string) (AuthKey, error) {
+	k, err := scanAuthKey(s.db.QueryRowContext(ctx, s.q(`SELECT `+authKeyCols+` FROM auth_keys WHERE key_hash = ?`), hash))
+	return k, notFound(err)
+}
+
+func (s *SQL) ListAuthKeys(ctx context.Context, network string) ([]AuthKey, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT `+authKeyCols+` FROM auth_keys WHERE network = ? ORDER BY created_at, id`), network)
 	if err != nil {
-		return c, err
+		return nil, err
 	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, s.q(`UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`),
-		ms(now), codeHash, ms(now))
-	if err != nil {
-		return c, err
+	defer rows.Close()
+	var out []AuthKey
+	for rows.Next() {
+		k, err := scanAuthKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return c, err
-	} else if n == 0 {
-		return c, ErrNotFound
-	}
-	c, err = scanPairingCode(tx.QueryRowContext(ctx, s.q(`SELECT `+pairingCols+` FROM pairing_codes WHERE code_hash = ?`), codeHash))
-	if err != nil {
-		return c, err
-	}
-	return c, tx.Commit()
+	return out, rows.Err()
 }
 
-func (s *SQL) BindPairingCode(ctx context.Context, codeHash, deviceID string) error {
-	return s.execOne(ctx, `UPDATE pairing_codes SET device_id = ? WHERE code_hash = ?`, deviceID, codeHash)
+func (s *SQL) UseAuthKey(ctx context.Context, id string, now time.Time) (AuthKey, error) {
+	var out AuthKey
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, s.q(`UPDATE auth_keys SET uses = uses + 1, last_used_at = ?
+			WHERE id = ? AND revoked_at IS NULL AND expires_at > ? AND (reusable = 1 OR uses = 0)`), ms(now), id, ms(now))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		out, err = scanAuthKey(tx.QueryRowContext(ctx, s.q(`SELECT `+authKeyCols+` FROM auth_keys WHERE id = ?`), id))
+		return err
+	})
+	return out, err
 }
 
-func (s *SQL) DeleteExpiredPairingCodes(ctx context.Context, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM pairing_codes WHERE expires_at <= ?`), ms(now))
+func (s *SQL) RevokeAuthKey(ctx context.Context, id string, at time.Time) (AuthKey, error) {
+	if _, err := s.db.ExecContext(ctx, s.q(`UPDATE auth_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`), ms(at), id); err != nil {
+		return AuthKey{}, err
+	}
+	k, err := scanAuthKey(s.db.QueryRowContext(ctx, s.q(`SELECT `+authKeyCols+` FROM auth_keys WHERE id = ?`), id))
+	return k, notFound(err)
+}
+
+// ---- enrolments ----
+
+const enrollmentCols = `code_hash, poll_hash, network, name, public_key, labels, status, roles, tags, reason, peer_id, created_at, expires_at, decided_at`
+
+func scanEnrollment(sc scanner) (Enrollment, error) {
+	var (
+		e                           Enrollment
+		labels, status, roles, tags string
+		created, exp                int64
+		decided                     sql.NullInt64
+	)
+	if err := sc.Scan(&e.CodeHash, &e.PollHash, &e.Network, &e.Name, &e.PublicKey, &labels, &status, &roles, &tags,
+		&e.Reason, &e.PeerID, &created, &exp, &decided); err != nil {
+		return e, err
+	}
+	if err := errors.Join(fromJSON(labels, &e.Labels), fromJSON(roles, &e.Roles), fromJSON(tags, &e.Tags)); err != nil {
+		return e, fmt.Errorf("store: enrollment: %w", err)
+	}
+	e.Status = EnrollmentStatus(status)
+	e.CreatedAt, e.ExpiresAt, e.DecidedAt = fromMs(created), fromMs(exp), fromNullMs(decided)
+	return e, nil
+}
+
+func enrollmentArgs(e Enrollment) []any {
+	return []any{e.CodeHash, e.PollHash, e.Network, e.Name, e.PublicKey, jsonMap(e.Labels), string(e.Status),
+		jsonList(e.Roles), jsonList(e.Tags), e.Reason, e.PeerID, ms(e.CreatedAt), ms(e.ExpiresAt), msPtr(e.DecidedAt)}
+}
+
+func (s *SQL) CreateEnrollment(ctx context.Context, e Enrollment) error {
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO enrollments (`+enrollmentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		enrollmentArgs(e)...)
+	return mapWriteErr(err)
+}
+
+func (s *SQL) GetEnrollmentByCode(ctx context.Context, codeHash string) (Enrollment, error) {
+	e, err := scanEnrollment(s.db.QueryRowContext(ctx, s.q(`SELECT `+enrollmentCols+` FROM enrollments WHERE code_hash = ?`), codeHash))
+	return e, notFound(err)
+}
+
+func (s *SQL) GetEnrollmentByPoll(ctx context.Context, pollHash string) (Enrollment, error) {
+	e, err := scanEnrollment(s.db.QueryRowContext(ctx, s.q(`SELECT `+enrollmentCols+` FROM enrollments WHERE poll_hash = ?`), pollHash))
+	return e, notFound(err)
+}
+
+func (s *SQL) ListEnrollments(ctx context.Context, network string, status EnrollmentStatus) ([]Enrollment, error) {
+	query := `SELECT ` + enrollmentCols + ` FROM enrollments WHERE network = ?`
+	args := []any{network}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, string(status))
+	}
+	rows, err := s.db.QueryContext(ctx, s.q(query+` ORDER BY created_at`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Enrollment
+	for rows.Next() {
+		e, err := scanEnrollment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQL) UpdateEnrollment(ctx context.Context, codeHash string, fn func(*Enrollment) error) (Enrollment, error) {
+	var out Enrollment
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		e, err := scanEnrollment(tx.QueryRowContext(ctx, s.q(`SELECT `+enrollmentCols+` FROM enrollments WHERE code_hash = ?`+s.forUpdate()), codeHash))
+		if err != nil {
+			return notFound(err)
+		}
+		if err := fn(&e); err != nil {
+			return err
+		}
+		args := enrollmentArgs(e)
+		_, err = tx.ExecContext(ctx, s.q(`UPDATE enrollments SET poll_hash = ?, network = ?, name = ?, public_key = ?, labels = ?,
+			status = ?, roles = ?, tags = ?, reason = ?, peer_id = ?, created_at = ?, expires_at = ?, decided_at = ?
+			WHERE code_hash = ?`), append(args[1:], codeHash)...)
+		out = e
+		return mapWriteErr(err)
+	})
+	return out, err
+}
+
+func (s *SQL) DeleteEnrollmentsBefore(ctx context.Context, t time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM enrollments WHERE expires_at < ?`), ms(t))
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ---- API keys ----
+
+const apiKeyCols = `id, key_hash, name, scopes, networks, created_at, expires_at, last_used_at, revoked_at`
+
+func scanAPIKey(sc scanner) (APIKey, error) {
+	var (
+		k                          APIKey
+		scopes, networks           string
+		created                    int64
+		expires, lastUsed, revoked sql.NullInt64
+	)
+	if err := sc.Scan(&k.ID, &k.KeyHash, &k.Name, &scopes, &networks, &created, &expires, &lastUsed, &revoked); err != nil {
+		return k, err
+	}
+	if err := errors.Join(fromJSON(scopes, &k.Scopes), fromJSON(networks, &k.Networks)); err != nil {
+		return k, fmt.Errorf("store: api key %s: %w", k.ID, err)
+	}
+	k.CreatedAt = fromMs(created)
+	k.ExpiresAt, k.LastUsedAt, k.RevokedAt = fromNullMs(expires), fromNullMs(lastUsed), fromNullMs(revoked)
+	return k, nil
+}
+
+func (s *SQL) CreateAPIKey(ctx context.Context, k APIKey) error {
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO api_keys (`+apiKeyCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		k.ID, k.KeyHash, k.Name, jsonList(k.Scopes), jsonList(k.Networks), ms(k.CreatedAt), msPtr(k.ExpiresAt),
+		msPtr(k.LastUsedAt), msPtr(k.RevokedAt))
+	return mapWriteErr(err)
+}
+
+func (s *SQL) GetAPIKeyByHash(ctx context.Context, hash string) (APIKey, error) {
+	k, err := scanAPIKey(s.db.QueryRowContext(ctx, s.q(`SELECT `+apiKeyCols+` FROM api_keys WHERE key_hash = ?`), hash))
+	return k, notFound(err)
+}
+
+func (s *SQL) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+apiKeyCols+` FROM api_keys ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []APIKey
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQL) RevokeAPIKey(ctx context.Context, id string, at time.Time) (APIKey, error) {
+	if _, err := s.db.ExecContext(ctx, s.q(`UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`), ms(at), id); err != nil {
+		return APIKey{}, err
+	}
+	k, err := scanAPIKey(s.db.QueryRowContext(ctx, s.q(`SELECT `+apiKeyCols+` FROM api_keys WHERE id = ?`), id))
+	return k, notFound(err)
+}
+
+func (s *SQL) TouchAPIKey(ctx context.Context, id string, at time.Time) error {
+	return s.execOne(ctx, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, ms(at), id)
+}
+
+// ---- audit ----
+
+func (s *SQL) AppendAudit(ctx context.Context, e AuditEvent) error {
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO audit_events (id, ts, network, actor, action, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		e.ID, ms(e.Time), e.Network, e.Actor, e.Action, e.Target, jsonMap(e.Detail))
+	return mapWriteErr(err)
+}
+
+func (s *SQL) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error) {
+	query := `SELECT id, ts, network, actor, action, target, detail FROM audit_events WHERE ts >= ?`
+	args := []any{ms(f.Since)}
+	if f.Network != "" {
+		query += ` AND network = ?`
+		args = append(args, f.Network)
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	query += ` ORDER BY ts, id LIMIT ` + strconv.Itoa(limit)
+	rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEvent
+	for rows.Next() {
+		var (
+			e      AuditEvent
+			ts     int64
+			detail string
+		)
+		if err := rows.Scan(&e.ID, &ts, &e.Network, &e.Actor, &e.Action, &e.Target, &detail); err != nil {
+			return nil, err
+		}
+		e.Time = fromMs(ts)
+		if err := fromJSON(detail, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // ---- stats ----
@@ -592,8 +864,8 @@ func (s *SQL) Stats(ctx context.Context) (Stats, error) {
 	var st Stats
 	err := s.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM networks),
-		(SELECT COUNT(*) FROM devices),
-		(SELECT COUNT(*) FROM devices WHERE revoked_at IS NOT NULL)`).
-		Scan(&st.Networks, &st.Devices, &st.RevokedDevices)
+		(SELECT COUNT(*) FROM peers),
+		(SELECT COUNT(*) FROM peers WHERE revoked_at IS NOT NULL)`).
+		Scan(&st.Networks, &st.Peers, &st.RevokedPeers)
 	return st, err
 }

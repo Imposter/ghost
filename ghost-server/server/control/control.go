@@ -1,8 +1,9 @@
-// Package control holds ghost-server's domain operations: networks, device
-// registration and pairing, device authentication, address assignment,
-// revocation, moves, and exit policies. HTTP handlers and the signalling relay
-// both call into it; it applies access control and keeps live sessions in
-// step through the Sessions interface.
+// Package control is ghost-server's peer control plane: networks and their
+// policy documents, peers, enrolment (pre-auth keys and interactive codes),
+// credential rotation and expiry, scoped API keys, health, and the audit log.
+// The HTTP APIs and the signalling relay call into it; it keeps live sessions
+// in step through the Sessions interface and publishes every change on the
+// event bus.
 package control
 
 import (
@@ -16,7 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ import (
 	"github.com/Imposter/ghost/ghost-go/signal/proto"
 
 	"github.com/Imposter/ghost/ghost-server/server/access"
-	"github.com/Imposter/ghost/ghost-server/server/ipam"
+	"github.com/Imposter/ghost/ghost-server/server/events"
 	"github.com/Imposter/ghost/ghost-server/server/store"
 	"github.com/Imposter/ghost/ghost-server/server/telemetry"
 )
@@ -34,53 +35,88 @@ import (
 var (
 	ErrInvalid      = errors.New("invalid request")
 	ErrNotFound     = errors.New("not found")
-	ErrConflict     = errors.New("already exists")
+	ErrConflict     = errors.New("conflict")
 	ErrUnauthorized = errors.New("unauthorized")
+	// ErrPeerRevoked and ErrPeerExpired refine ErrUnauthorized for peers.
+	ErrPeerRevoked = fmt.Errorf("%w: peer revoked", ErrUnauthorized)
+	ErrPeerExpired = fmt.Errorf("%w: peer credentials expired", ErrUnauthorized)
 )
 
-// DeniedError reports an access-control denial.
-type DeniedError struct{ Reason string }
+// DeniedError reports a denial by the external authorizer. Unavailable marks
+// the fail-closed denial of an unreachable authorizer.
+type DeniedError struct {
+	Reason      string
+	Unavailable bool
+}
 
 func (e *DeniedError) Error() string {
 	if e.Reason == "" {
-		return "denied by access control"
+		return "denied by the authorizer"
 	}
-	return "denied by access control: " + e.Reason
+	return "denied by the authorizer: " + e.Reason
+}
+
+func invalidf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+}
+
+func mapStoreErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, store.ErrNotFound):
+		return ErrNotFound
+	case errors.Is(err, store.ErrConflict):
+		return fmt.Errorf("%w: %v", ErrConflict, err)
+	}
+	return err
 }
 
 // Sessions is implemented by the signalling relay so the service can act on
 // live sessions.
 type Sessions interface {
-	// Disconnect sends a fatal error with code/message to the device's live
+	// Disconnect sends a fatal error with code/message to the peer's live
 	// session, if any, and closes it. It reports whether one was closed.
-	Disconnect(deviceID, code, message string) bool
-	// PushNetworkPolicy sends p to every session in its network that has no
-	// per-device override. It returns the number of sessions reached.
-	PushNetworkPolicy(p proto.ExitPolicy) int
+	Disconnect(peerID, code, message string) bool
+	// Online reports whether the peer has a live, joined session.
+	Online(peerID string) bool
+	// NetworkChanged recomputes the netmaps of the network's live sessions
+	// and sends each the resulting delta.
+	NetworkChanged(ctx context.Context, network string)
+	// PolicyChanged re-consults the authorizer for every live session in the
+	// network, then behaves like NetworkChanged.
+	PolicyChanged(ctx context.Context, network string)
 }
 
 // Options configures a Service.
 type Options struct {
-	Store       store.Store
-	Access      *access.Controller
-	DefaultPool string
-	PairingTTL  time.Duration
-	Logger      *slog.Logger
-	Metrics     *telemetry.Metrics
-	Now         func() time.Time
+	Store          store.Store
+	Access         *access.Controller
+	Bus            *events.Bus
+	DefaultPool    string
+	EnrollmentTTL  time.Duration
+	PollInterval   time.Duration
+	EphemeralGrace time.Duration
+	Logger         *slog.Logger
+	Metrics        *telemetry.Metrics
+	Now            func() time.Time
 }
 
-// Service implements the domain operations.
+// Service implements the control plane's operations.
 type Service struct {
-	st          store.Store
-	access      *access.Controller
-	defaultPool string
-	pairingTTL  time.Duration
-	log         *slog.Logger
-	metrics     *telemetry.Metrics
-	now         func() time.Time
+	st             store.Store
+	access         *access.Controller
+	bus            *events.Bus
+	defaultPool    string
+	enrollmentTTL  time.Duration
+	pollInterval   time.Duration
+	ephemeralGrace time.Duration
+	log            *slog.Logger
+	metrics        *telemetry.Metrics
+	now            func() time.Time
 
 	allocMu  sync.Mutex // serialises address allocation
+	policyMu sync.Mutex // serialises read-modify-write edits of policy documents
 	sessMu   sync.RWMutex
 	sessions Sessions
 }
@@ -93,25 +129,37 @@ func New(opts Options) *Service {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Bus == nil {
+		opts.Bus = events.NewBus(0, opts.Now)
+	}
 	if opts.DefaultPool == "" {
 		opts.DefaultPool = "100.64.0.0/10"
 	}
-	if opts.PairingTTL <= 0 {
-		opts.PairingTTL = 10 * time.Minute
+	if opts.EnrollmentTTL <= 0 {
+		opts.EnrollmentTTL = 10 * time.Minute
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = 2 * time.Second
+	}
+	if opts.EphemeralGrace < 0 {
+		opts.EphemeralGrace = 0
 	}
 	return &Service{
-		st:          opts.Store,
-		access:      opts.Access,
-		defaultPool: opts.DefaultPool,
-		pairingTTL:  opts.PairingTTL,
-		log:         opts.Logger,
-		metrics:     opts.Metrics,
-		now:         opts.Now,
+		st:             opts.Store,
+		access:         opts.Access,
+		bus:            opts.Bus,
+		defaultPool:    opts.DefaultPool,
+		enrollmentTTL:  opts.EnrollmentTTL,
+		pollInterval:   opts.PollInterval,
+		ephemeralGrace: opts.EphemeralGrace,
+		log:            opts.Logger,
+		metrics:        opts.Metrics,
+		now:            opts.Now,
 	}
 }
 
-// SetSessions attaches the signalling relay. Until set, revocations and
-// policy changes only touch storage.
+// SetSessions attaches the signalling relay. Until set, changes only touch
+// storage.
 func (s *Service) SetSessions(sess Sessions) {
 	s.sessMu.Lock()
 	s.sessions = sess
@@ -124,8 +172,23 @@ func (s *Service) live() Sessions {
 	return s.sessions
 }
 
-// Access returns the access controller.
+func (s *Service) networkChanged(ctx context.Context, network string) {
+	if l := s.live(); l != nil {
+		l.NetworkChanged(ctx, network)
+	}
+}
+
+func (s *Service) disconnect(peerID, code, msg string) {
+	if l := s.live(); l != nil {
+		l.Disconnect(peerID, code, msg)
+	}
+}
+
+// Access returns the authorizer controller.
 func (s *Service) Access() *access.Controller { return s.access }
+
+// Bus returns the event bus.
+func (s *Service) Bus() *events.Bus { return s.bus }
 
 // Store returns the underlying store (read access for handlers).
 func (s *Service) Store() store.Store { return s.st }
@@ -133,125 +196,49 @@ func (s *Service) Store() store.Store { return s.st }
 // Now returns the service clock's current time.
 func (s *Service) Now() time.Time { return s.now() }
 
-func mapStoreErr(err error) error {
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return ErrNotFound
-	case errors.Is(err, store.ErrConflict):
-		return ErrConflict
-	}
-	return err
+// ---- actors and audit ----
+
+type actorKey struct{}
+
+// WithActor records who is acting (for the audit log): "service",
+// "apikey:<id>", "peer:<id>" or "system".
+func WithActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, actorKey{}, actor)
 }
 
-// ---- networks ----
-
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
-
-// ValidName reports whether s is a valid network name.
-func ValidName(s string) bool { return nameRE.MatchString(s) }
-
-// CreateNetwork creates a network. pool may be empty for the default pool.
-func (s *Service) CreateNetwork(ctx context.Context, name, pool string) (store.Network, error) {
-	if !ValidName(name) {
-		return store.Network{}, fmt.Errorf("%w: network name must match %s", ErrInvalid, nameRE)
+// ActorFrom returns the actor recorded by WithActor ("system" if none).
+func ActorFrom(ctx context.Context) string {
+	if a, ok := ctx.Value(actorKey{}).(string); ok && a != "" {
+		return a
 	}
-	if pool == "" {
-		pool = s.defaultPool
-	}
-	p, err := ipam.ParsePool(pool)
-	if err != nil {
-		return store.Network{}, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	n := store.Network{
-		Name:      name,
-		Pool:      p.String(),
-		Policy:    proto.ExitPolicy{Network: name, Allow: []string{}},
-		CreatedAt: s.now().UTC(),
-	}
-	if err := s.st.CreateNetwork(ctx, n); err != nil {
-		return store.Network{}, mapStoreErr(err)
-	}
-	return n, nil
+	return "system"
 }
 
-// EnsureNetwork creates a network if it does not exist.
-func (s *Service) EnsureNetwork(ctx context.Context, name, pool string) error {
-	if _, err := s.st.GetNetwork(ctx, name); err == nil {
-		return nil
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return err
+// Audit appends an audit entry and publishes it on the bus. Failures to
+// persist are logged, never returned: auditing must not break the operation
+// it records.
+func (s *Service) Audit(ctx context.Context, network, action, target string, detail map[string]any) {
+	e := store.AuditEvent{
+		ID:      newAuditID(s.now()),
+		Time:    s.now().UTC(),
+		Network: network,
+		Actor:   ActorFrom(ctx),
+		Action:  action,
+		Target:  target,
+		Detail:  detail,
 	}
-	_, err := s.CreateNetwork(ctx, name, pool)
-	if errors.Is(err, ErrConflict) {
-		return nil
+	if err := s.st.AppendAudit(context.WithoutCancel(ctx), e); err != nil {
+		s.log.Error("audit: append", "action", action, "error", err)
 	}
-	return err
+	s.bus.Publish(events.Event{Type: events.Audit, Network: network, Time: e.Time, Data: e})
 }
 
-// Network returns a network.
-func (s *Service) Network(ctx context.Context, name string) (store.Network, error) {
-	n, err := s.st.GetNetwork(ctx, name)
-	return n, mapStoreErr(err)
+// ListAudit returns audit entries.
+func (s *Service) ListAudit(ctx context.Context, f store.AuditFilter) ([]store.AuditEvent, error) {
+	return s.st.ListAudit(ctx, f)
 }
 
-// PolicyInput is an admin-supplied exit policy.
-type PolicyInput struct {
-	Allow          []string          `json:"allow"`
-	DailyBytes     int64             `json:"daily_bytes"`
-	BytesPerSecond int64             `json:"bytes_per_second"`
-	Paused         bool              `json:"paused"`
-	Labels         map[string]string `json:"labels"`
-}
-
-// SetNetworkPolicy stores a network's exit policy and pushes it to the live
-// sessions in that network. It returns the stored policy and how many sessions
-// received it.
-func (s *Service) SetNetworkPolicy(ctx context.Context, network string, in PolicyInput) (proto.ExitPolicy, int, error) {
-	if in.DailyBytes < 0 || in.BytesPerSecond < 0 {
-		return proto.ExitPolicy{}, 0, fmt.Errorf("%w: caps must not be negative", ErrInvalid)
-	}
-	allow := make([]string, 0, len(in.Allow))
-	for _, a := range in.Allow {
-		a = strings.TrimSpace(a)
-		if a == "" || a == "*" || strings.HasPrefix(a, "*:") {
-			return proto.ExitPolicy{}, 0, fmt.Errorf("%w: allow entry %q would open the exit to every host", ErrInvalid, a)
-		}
-		allow = append(allow, a)
-	}
-	p, err := s.st.SetNetworkPolicy(ctx, network, proto.ExitPolicy{
-		Allow:          allow,
-		DailyBytes:     in.DailyBytes,
-		BytesPerSecond: in.BytesPerSecond,
-		Paused:         in.Paused,
-		Labels:         in.Labels,
-	})
-	if err != nil {
-		return p, 0, mapStoreErr(err)
-	}
-	pushed := 0
-	if live := s.live(); live != nil {
-		pushed = live.PushNetworkPolicy(p)
-	}
-	s.metrics.PolicyPushed(ctx, pushed)
-	return p, pushed, nil
-}
-
-// ---- credentials ----
-
-// Credentials are returned once, when a device is created. Only the token's
-// hash is stored.
-type Credentials struct {
-	DeviceID    string     `json:"device_id"`
-	DeviceToken string     `json:"device_token"`
-	Network     string     `json:"network"`
-	Role        proto.Role `json:"role"`
-}
-
-// HashToken returns the stored hash of a device token.
-func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
+// ---- identifiers and secrets ----
 
 func randomBytes(n int) []byte {
 	b := make([]byte, n)
@@ -261,23 +248,60 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-func newDeviceID() string {
-	return "dev_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(randomBytes(10)))
+var idEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
+
+func newID(prefix string) string { return prefix + idEncoding.EncodeToString(randomBytes(10)) }
+
+// newAuditID sorts by time, then randomly within a millisecond.
+func newAuditID(t time.Time) string {
+	return fmt.Sprintf("%013d-%s", t.UnixMilli(), hex.EncodeToString(randomBytes(4)))
 }
 
-func newDeviceToken() string {
-	return "gdt_" + base64.RawURLEncoding.EncodeToString(randomBytes(32))
+func newSecret(prefix string) string {
+	return prefix + base64.RawURLEncoding.EncodeToString(randomBytes(32))
 }
 
-func validRole(r proto.Role) bool { return r == proto.RoleNode || r == proto.RoleHub }
+// HashSecret returns the stored hash of a bearer secret (peer token, pre-auth
+// key, API key, enrolment code or poll token).
+func HashSecret(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
+// Secret prefixes identify what a bearer secret is.
+const (
+	PeerTokenPrefix = "gpt_"
+	AuthKeyPrefix   = "gak_"
+	APIKeyPrefix    = "gck_"
+	PollTokenPrefix = "gpl_"
+)
+
+// ---- validation helpers ----
+
+func normalizeRoles(roles []proto.Role) ([]proto.Role, error) {
+	if len(roles) == 0 {
+		return []proto.Role{proto.RoleNode}, nil
+	}
+	out := make([]proto.Role, 0, len(roles))
+	for _, r := range roles {
+		if !r.Valid() {
+			return nil, invalidf("unknown role %q", r)
+		}
+		if !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
 
 func validLabels(l map[string]string) error {
 	if len(l) > 32 {
-		return fmt.Errorf("%w: at most 32 labels", ErrInvalid)
+		return invalidf("at most 32 labels")
 	}
 	for k, v := range l {
 		if k == "" || len(k) > 64 || len(v) > 256 {
-			return fmt.Errorf("%w: label %q is empty or too long", ErrInvalid, k)
+			return invalidf("label %q is empty or too long", k)
 		}
 	}
 	return nil
@@ -291,305 +315,30 @@ func mergeLabels(layers ...map[string]string) map[string]string {
 	return out
 }
 
-// ---- register ----
-
-// RegisterInput is a self-registration request.
-type RegisterInput struct {
-	Network   string            `json:"network"`
-	Name      string            `json:"name"`
-	Role      proto.Role        `json:"role"`
-	Labels    map[string]string `json:"labels"`
-	PublicKey string            `json:"public_key"`
-}
-
-// Register creates a device directly in a network, subject to access control
-// (action register).
-func (s *Service) Register(ctx context.Context, in RegisterInput) (Credentials, error) {
-	if in.Role == "" {
-		in.Role = proto.RoleNode
-	}
-	if !validRole(in.Role) {
-		return Credentials{}, fmt.Errorf("%w: role must be node or hub", ErrInvalid)
-	}
-	if err := validLabels(in.Labels); err != nil {
-		return Credentials{}, err
-	}
-	if _, err := s.st.GetNetwork(ctx, in.Network); err != nil {
-		return Credentials{}, mapStoreErr(err)
-	}
-	d := s.access.Check(ctx, access.Request{
-		Action: access.ActionRegister, Network: in.Network, Role: in.Role, Labels: in.Labels,
-	})
-	if !d.Allow {
-		s.metrics.Registration(ctx, "denied")
-		return Credentials{}, &DeniedError{Reason: d.Reason}
-	}
-	var granted map[string]string
-	if d.Policy != nil {
-		granted = d.Policy.Labels
-	}
-	creds, err := s.createDevice(ctx, in.Network, in.Role, in.Name, mergeLabels(in.Labels, granted), in.PublicKey)
-	if err == nil {
-		s.metrics.Registration(ctx, "ok")
-	}
-	return creds, err
-}
-
-func (s *Service) createDevice(ctx context.Context, network string, role proto.Role, name string, labels map[string]string, pubKey string) (Credentials, error) {
-	token := newDeviceToken()
-	dev := store.Device{
-		ID:        newDeviceID(),
-		TokenHash: HashToken(token),
-		Network:   network,
-		Role:      role,
-		Name:      name,
-		Labels:    labels,
-		PublicKey: pubKey,
-		CreatedAt: s.now().UTC(),
-	}
-	if err := s.st.CreateDevice(ctx, dev); err != nil {
-		return Credentials{}, mapStoreErr(err)
-	}
-	s.log.Info("device created", "device", dev.ID, "network", network, "role", role)
-	return Credentials{DeviceID: dev.ID, DeviceToken: token, Network: network, Role: role}, nil
-}
-
-// ---- pairing ----
-
-// pairingAlphabet is Crockford base32 without I, L, O, U: easy to read aloud.
-const pairingAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-// NormalizeCode upper-cases a code and strips separators and whitespace.
-func NormalizeCode(code string) string {
-	var b strings.Builder
-	for _, r := range strings.ToUpper(code) {
-		if r == '-' || r == ' ' {
-			continue
+func unionTags(layers ...[]string) []string {
+	var out []string
+	for _, l := range layers {
+		for _, t := range l {
+			if !slices.Contains(out, t) {
+				out = append(out, t)
+			}
 		}
-		b.WriteRune(r)
 	}
-	return b.String()
+	slices.Sort(out)
+	return out
 }
 
-func hashCode(code string) string {
-	sum := sha256.Sum256([]byte("ghost-pairing:" + NormalizeCode(code)))
-	return hex.EncodeToString(sum[:])
-}
-
-func newPairingCode() string {
-	raw := randomBytes(10)
-	var b strings.Builder
-	for i, v := range raw {
-		if i == 5 {
-			b.WriteByte('-')
-		}
-		b.WriteByte(pairingAlphabet[int(v)%len(pairingAlphabet)])
+// checkTags verifies every tag is defined in the network's policy.
+func (s *Service) checkTags(ctx context.Context, network string, tags []string) error {
+	if len(tags) == 0 {
+		return nil
 	}
-	return b.String()
-}
-
-// PairingInput is an admin request for a pairing code.
-type PairingInput struct {
-	Network string            `json:"network"`
-	Role    proto.Role        `json:"role"`
-	Name    string            `json:"name"`
-	Labels  map[string]string `json:"labels"`
-	// TTL overrides the default lifetime (bounded to one day).
-	TTL time.Duration `json:"-"`
-}
-
-// IssuedCode is a newly created pairing code. The plaintext code is only
-// available here.
-type IssuedCode struct {
-	Code      string     `json:"code"`
-	Network   string     `json:"network"`
-	Role      proto.Role `json:"role"`
-	ExpiresAt time.Time  `json:"expires_at"`
-}
-
-// CreatePairingCode issues a short-lived, single-use pairing code.
-func (s *Service) CreatePairingCode(ctx context.Context, in PairingInput) (IssuedCode, error) {
-	if in.Role == "" {
-		in.Role = proto.RoleNode
-	}
-	if !validRole(in.Role) {
-		return IssuedCode{}, fmt.Errorf("%w: role must be node or hub", ErrInvalid)
-	}
-	if err := validLabels(in.Labels); err != nil {
-		return IssuedCode{}, err
-	}
-	if _, err := s.st.GetNetwork(ctx, in.Network); err != nil {
-		return IssuedCode{}, mapStoreErr(err)
-	}
-	ttl := in.TTL
-	if ttl <= 0 {
-		ttl = s.pairingTTL
-	}
-	if ttl > 24*time.Hour {
-		return IssuedCode{}, fmt.Errorf("%w: ttl exceeds 24h", ErrInvalid)
-	}
-	now := s.now().UTC()
-	for range 5 {
-		code := newPairingCode()
-		pc := store.PairingCode{
-			CodeHash: hashCode(code), Network: in.Network, Role: in.Role, Name: in.Name,
-			Labels: in.Labels, CreatedAt: now, ExpiresAt: now.Add(ttl),
-		}
-		err := s.st.CreatePairingCode(ctx, pc)
-		if errors.Is(err, store.ErrConflict) {
-			continue
-		}
-		if err != nil {
-			return IssuedCode{}, err
-		}
-		return IssuedCode{Code: code, Network: in.Network, Role: in.Role, ExpiresAt: pc.ExpiresAt}, nil
-	}
-	return IssuedCode{}, errors.New("control: could not generate a unique pairing code")
-}
-
-// PairInput redeems a pairing code.
-type PairInput struct {
-	Code      string            `json:"code"`
-	Name      string            `json:"name"`
-	Labels    map[string]string `json:"labels"`
-	PublicKey string            `json:"public_key"`
-}
-
-// Pair redeems a pairing code and creates the device, subject to access
-// control (action pair). The code is consumed only once access control
-// allows, so a transient authorizer outage does not burn it.
-func (s *Service) Pair(ctx context.Context, in PairInput) (Credentials, error) {
-	if err := validLabels(in.Labels); err != nil {
-		return Credentials{}, err
-	}
-	hash := hashCode(in.Code)
-	now := s.now()
-	pc, err := s.st.GetPairingCode(ctx, hash)
-	if err != nil || pc.UsedAt != nil || !now.Before(pc.ExpiresAt) {
-		s.metrics.Pairing(ctx, "invalid")
-		return Credentials{}, fmt.Errorf("%w: pairing code is invalid, used, or expired", ErrNotFound)
-	}
-	labels := mergeLabels(in.Labels, pc.Labels)
-	d := s.access.Check(ctx, access.Request{
-		Action: access.ActionPair, Network: pc.Network, Role: pc.Role, Labels: labels,
-	})
-	if !d.Allow {
-		s.metrics.Pairing(ctx, "denied")
-		return Credentials{}, &DeniedError{Reason: d.Reason}
-	}
-	if _, err := s.st.RedeemPairingCode(ctx, hash, now); err != nil {
-		s.metrics.Pairing(ctx, "invalid")
-		return Credentials{}, fmt.Errorf("%w: pairing code is invalid, used, or expired", ErrNotFound)
-	}
-	if d.Policy != nil {
-		labels = mergeLabels(labels, d.Policy.Labels)
-	}
-	name := in.Name
-	if pc.Name != "" {
-		name = pc.Name
-	}
-	creds, err := s.createDevice(ctx, pc.Network, pc.Role, name, labels, in.PublicKey)
+	n, err := s.st.GetNetwork(ctx, network)
 	if err != nil {
-		return creds, err
+		return mapStoreErr(err)
 	}
-	if err := s.st.BindPairingCode(ctx, hash, creds.DeviceID); err != nil {
-		s.log.Warn("pairing: bind code to device", "device", creds.DeviceID, "error", err)
+	if undefined := n.Policy.UndefinedTags(tags); len(undefined) > 0 {
+		return invalidf("tags not defined in network %s: %s", network, strings.Join(undefined, ", "))
 	}
-	s.metrics.Pairing(ctx, "ok")
-	return creds, nil
-}
-
-// ---- devices ----
-
-// Authenticate resolves a device token to a live (unrevoked) device.
-func (s *Service) Authenticate(ctx context.Context, token string) (store.Device, error) {
-	if token == "" {
-		return store.Device{}, ErrUnauthorized
-	}
-	d, err := s.st.GetDeviceByTokenHash(ctx, HashToken(token))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return d, ErrUnauthorized
-		}
-		return d, err
-	}
-	if d.Revoked() {
-		return d, ErrUnauthorized
-	}
-	return d, nil
-}
-
-// Device returns one device.
-func (s *Service) Device(ctx context.Context, id string) (store.Device, error) {
-	d, err := s.st.GetDevice(ctx, id)
-	return d, mapStoreErr(err)
-}
-
-// EnsureAddress returns the device's address in its network, assigning one
-// from the pool on first use.
-func (s *Service) EnsureAddress(ctx context.Context, dev store.Device) (string, error) {
-	s.allocMu.Lock()
-	defer s.allocMu.Unlock()
-	current, err := s.st.GetDevice(ctx, dev.ID)
-	if err != nil {
-		return "", mapStoreErr(err)
-	}
-	n, err := s.st.GetNetwork(ctx, current.Network)
-	if err != nil {
-		return "", mapStoreErr(err)
-	}
-	pool, err := ipam.ParsePool(n.Pool)
-	if err != nil {
-		return "", err
-	}
-	if current.Address != "" && ipam.Contains(pool, current.Address) {
-		return current.Address, nil
-	}
-	used, err := s.st.UsedAddresses(ctx, current.Network)
-	if err != nil {
-		return "", err
-	}
-	addr, err := ipam.Allocate(pool, used)
-	if err != nil {
-		return "", err
-	}
-	if err := s.st.SetDeviceAddress(ctx, current.ID, addr); err != nil {
-		return "", mapStoreErr(err)
-	}
-	return addr, nil
-}
-
-// Revoke revokes a device and immediately disconnects its live session.
-func (s *Service) Revoke(ctx context.Context, id string) (store.Device, error) {
-	if err := s.st.RevokeDevice(ctx, id, s.now().UTC()); err != nil {
-		return store.Device{}, mapStoreErr(err)
-	}
-	s.access.Forget(id)
-	if live := s.live(); live != nil {
-		live.Disconnect(id, proto.ErrCodeRevoked, "device revoked")
-	}
-	s.metrics.Revoked(ctx)
-	s.log.Info("device revoked", "device", id)
-	return s.Device(ctx, id)
-}
-
-// Move moves a device to another network. Its address is released (a new one
-// is assigned on its next join) and its live session is closed so it rejoins
-// under the new network.
-func (s *Service) Move(ctx context.Context, id, network string) (store.Device, error) {
-	if _, err := s.st.GetNetwork(ctx, network); err != nil {
-		return store.Device{}, mapStoreErr(err)
-	}
-	s.allocMu.Lock()
-	err := s.st.MoveDevice(ctx, id, network)
-	s.allocMu.Unlock()
-	if err != nil {
-		return store.Device{}, mapStoreErr(err)
-	}
-	s.access.Forget(id)
-	if live := s.live(); live != nil {
-		live.Disconnect(id, proto.ErrCodeForbidden, "device moved to network "+network)
-	}
-	s.log.Info("device moved", "device", id, "network", network)
-	return s.Device(ctx, id)
+	return nil
 }

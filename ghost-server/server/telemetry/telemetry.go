@@ -20,11 +20,9 @@ type Metrics struct {
 	messages       metric.Int64Counter
 	authzDecisions metric.Int64Counter
 	authzLatency   metric.Float64Histogram
-	pairings       metric.Int64Counter
 	registrations  metric.Int64Counter
 	revocations    metric.Int64Counter
 	heartbeatDrops metric.Int64Counter
-	policyPushes   metric.Int64Counter
 }
 
 // New creates the instruments from mp (the global provider when nil).
@@ -53,24 +51,16 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		metric.WithDescription("Authorizer webhook round-trip time."), metric.WithUnit("s")); err != nil {
 		return nil, err
 	}
-	if out.pairings, err = m.Int64Counter("ghost_server.pairings",
-		metric.WithDescription("Pairing-code redemptions by result."), metric.WithUnit("{pairing}")); err != nil {
+	if out.registrations, err = m.Int64Counter("ghost_server.enrollments",
+		metric.WithDescription("Peer enrolments by result."), metric.WithUnit("{peer}")); err != nil {
 		return nil, err
 	}
-	if out.registrations, err = m.Int64Counter("ghost_server.registrations",
-		metric.WithDescription("Device registrations by result."), metric.WithUnit("{device}")); err != nil {
-		return nil, err
-	}
-	if out.revocations, err = m.Int64Counter("ghost_server.devices.revoked",
-		metric.WithDescription("Devices revoked through the admin API."), metric.WithUnit("{device}")); err != nil {
+	if out.revocations, err = m.Int64Counter("ghost_server.peers.revoked",
+		metric.WithDescription("Peers revoked through the control API."), metric.WithUnit("{peer}")); err != nil {
 		return nil, err
 	}
 	if out.heartbeatDrops, err = m.Int64Counter("ghost_server.heartbeat.timeouts",
 		metric.WithDescription("Sessions closed for missing heartbeats."), metric.WithUnit("{session}")); err != nil {
-		return nil, err
-	}
-	if out.policyPushes, err = m.Int64Counter("ghost_server.policy.pushes",
-		metric.WithDescription("Exit-policy messages pushed to sessions."), metric.WithUnit("{message}")); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -113,21 +103,14 @@ func (m *Metrics) AuthzLatency(ctx context.Context, seconds float64) {
 	}
 }
 
-// Pairing counts a pairing redemption; result is ok, invalid or denied.
-func (m *Metrics) Pairing(ctx context.Context, result string) {
-	if m != nil {
-		m.pairings.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
-	}
-}
-
-// Registration counts a self-registration; result is ok or denied.
+// Registration counts a peer enrolment; result is ok or denied.
 func (m *Metrics) Registration(ctx context.Context, result string) {
 	if m != nil {
 		m.registrations.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 	}
 }
 
-// Revoked counts one device revocation.
+// Revoked counts one peer revocation.
 func (m *Metrics) Revoked(ctx context.Context) {
 	if m != nil {
 		m.revocations.Add(ctx, 1)
@@ -138,12 +121,5 @@ func (m *Metrics) Revoked(ctx context.Context) {
 func (m *Metrics) HeartbeatTimeout(ctx context.Context) {
 	if m != nil {
 		m.heartbeatDrops.Add(ctx, 1)
-	}
-}
-
-// PolicyPushed counts policy messages sent.
-func (m *Metrics) PolicyPushed(ctx context.Context, n int) {
-	if m != nil && n > 0 {
-		m.policyPushes.Add(ctx, int64(n))
 	}
 }

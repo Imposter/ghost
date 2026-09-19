@@ -2,11 +2,13 @@ package access
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 
 	"github.com/Imposter/ghost/ghost-server/server/telemetry"
 )
@@ -28,7 +30,8 @@ type Controller struct {
 
 type cacheEntry struct {
 	d       Decision
-	device  string
+	peer    string
+	target  string
 	expires time.Time
 }
 
@@ -62,8 +65,18 @@ func NewController(auth Authorizer, opts ControllerOptions) *Controller {
 // Check decides req. Errors from the authorizer deny (fail closed) and are
 // not cached.
 func (c *Controller) Check(ctx context.Context, req Request) Decision {
+	return c.check(ctx, req, true)
+}
+
+// CheckFresh decides req without consulting the cache (the result still
+// refreshes it). Policy changes use it so the authorizer sees every change.
+func (c *Controller) CheckFresh(ctx context.Context, req Request) Decision {
+	return c.check(ctx, req, false)
+}
+
+func (c *Controller) check(ctx context.Context, req Request, useCache bool) Decision {
 	key := cacheKey(req)
-	if c.ttl > 0 {
+	if c.ttl > 0 && useCache {
 		c.mu.Lock()
 		e, ok := c.cache[key]
 		c.mu.Unlock()
@@ -77,26 +90,27 @@ func (c *Controller) Check(ctx context.Context, req Request) Decision {
 	d, err := c.auth.Authorize(ctx, req)
 	c.metrics.AuthzLatency(ctx, time.Since(start).Seconds())
 	if err != nil {
-		c.log.Warn("access: authorizer unavailable, denying", "action", req.Action, "device", req.Device, "error", err)
+		c.log.Warn("access: authorizer unavailable, denying", "action", req.Action, "peer", req.Peer, "error", err)
 		c.metrics.AuthzDecision(ctx, string(req.Action), "error", false)
-		return Decision{Allow: false, Reason: "authorizer unavailable"}
+		return Decision{Allow: false, Reason: "authorizer unavailable", Unavailable: true}
 	}
 	c.metrics.AuthzDecision(ctx, string(req.Action), result(d), false)
 	if c.ttl > 0 {
 		c.mu.Lock()
-		c.cache[key] = cacheEntry{d: d, device: req.Device, expires: c.now().Add(c.ttl)}
+		c.cache[key] = cacheEntry{d: d, peer: req.Peer, target: req.Target, expires: c.now().Add(c.ttl)}
 		c.sweepLocked()
 		c.mu.Unlock()
 	}
 	return d
 }
 
-// Forget drops cached decisions made for or about device (on revoke or move).
-func (c *Controller) Forget(device string) {
+// Forget drops cached decisions made for or about a peer (on revoke, expiry,
+// move or deletion).
+func (c *Controller) Forget(peer string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, e := range c.cache {
-		if e.device == device || strings.Contains(k, "|peer="+device+"|") {
+		if e.peer == peer || e.target == peer {
 			delete(c.cache, k)
 		}
 	}
@@ -121,21 +135,37 @@ func result(d Decision) string {
 	return "deny"
 }
 
-// cacheKey identifies a request independent of its ts and nonce.
+// cacheKey identifies a request independent of its ts and nonce. The fields
+// are JSON-encoded so no value can collide with a separator.
 func cacheKey(r Request) string {
-	var b strings.Builder
-	b.WriteString(string(r.Action))
-	b.WriteString("|net=" + r.Network)
-	b.WriteString("|dev=" + r.Device)
-	b.WriteString("|peer=" + r.Peer + "|")
-	b.WriteString("role=" + string(r.Role))
-	keys := make([]string, 0, len(r.Labels))
-	for k := range r.Labels {
-		keys = append(keys, k)
+	b, _ := json.Marshal(cacheKeyFields{
+		Action: r.Action, Network: r.Network, Peer: r.Peer, Target: r.Target,
+		Roles: sortedRoles(r.Roles), Tags: sortedStrings(r.Tags), Labels: r.Labels,
+	})
+	return string(b)
+}
+
+type cacheKeyFields struct {
+	Action  Action            `json:"a"`
+	Network string            `json:"n"`
+	Peer    string            `json:"p"`
+	Target  string            `json:"t"`
+	Roles   []string          `json:"r"`
+	Tags    []string          `json:"g"`
+	Labels  map[string]string `json:"l"`
+}
+
+func sortedStrings(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+func sortedRoles(in []proto.Role) []string {
+	out := make([]string, len(in))
+	for i, r := range in {
+		out[i] = string(r)
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		b.WriteString("|" + k + "=" + r.Labels[k])
-	}
-	return b.String()
+	sort.Strings(out)
+	return out
 }

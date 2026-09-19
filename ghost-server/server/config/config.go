@@ -13,14 +13,15 @@ import (
 	"time"
 )
 
-// AccessMode selects how the server decides who may register, pair, join and
-// connect.
+// AccessMode selects whether an external authorizer takes part in enrolment,
+// connection and peer-to-peer decisions.
 type AccessMode string
 
 const (
-	// AccessOpen allows every request from an authenticated device.
+	// AccessOpen relies on credentials and ACLs alone.
 	AccessOpen AccessMode = "open"
-	// AccessAPI asks an external authorizer webhook before each action.
+	// AccessAPI also asks an external authorizer webhook, which can deny and
+	// can contribute per-peer policy.
 	AccessAPI AccessMode = "api"
 )
 
@@ -55,8 +56,8 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // Config is the full server configuration.
 type Config struct {
-	// Listen is the HTTP listen address for the public API, signalling and
-	// admin API (e.g. ":8080").
+	// Listen is the HTTP listen address for the peer API, signalling and the
+	// control API (e.g. ":8080").
 	Listen string `json:"listen"`
 	// MetricsListen, when set, serves /metrics on a separate listener instead
 	// of the main one.
@@ -66,12 +67,13 @@ type Config struct {
 	// LogLevel is debug, info, warn or error.
 	LogLevel string `json:"log_level"`
 
-	Database  Database  `json:"database"`
-	Access    Access    `json:"access"`
-	Admin     Admin     `json:"admin"`
-	ICE       ICE       `json:"ice"`
-	Heartbeat Heartbeat `json:"heartbeat"`
-	Pairing   Pairing   `json:"pairing"`
+	Database   Database   `json:"database"`
+	Access     Access     `json:"access"`
+	Control    Control    `json:"control"`
+	ICE        ICE        `json:"ice"`
+	Heartbeat  Heartbeat  `json:"heartbeat"`
+	Enrollment Enrollment `json:"enrollment"`
+	Peers      Peers      `json:"peers"`
 
 	// DefaultPool is the address pool for networks created without one.
 	DefaultPool string `json:"default_pool"`
@@ -101,10 +103,12 @@ type Access struct {
 	CacheTTL Duration `json:"cache_ttl"`
 }
 
-// Admin configures the admin API.
-type Admin struct {
-	// Token is the bearer service token. The admin API is disabled when empty.
-	Token string `json:"token"`
+// Control configures the control API.
+type Control struct {
+	// ServiceToken is the bearer service token with every scope. Scoped API
+	// keys are created through the control API with it. The control API is
+	// disabled when empty.
+	ServiceToken string `json:"service_token"`
 }
 
 // ICE configures the STUN/TURN servers advertised to clients.
@@ -125,20 +129,33 @@ type Heartbeat struct {
 	Timeout Duration `json:"timeout"`
 }
 
-// Pairing configures pairing codes.
-type Pairing struct {
-	// TTL is the default lifetime of a pairing code.
-	TTL Duration `json:"ttl"`
+// Enrollment configures interactive enrolment codes.
+type Enrollment struct {
+	// CodeTTL is how long an interactive enrolment code stays usable.
+	CodeTTL Duration `json:"code_ttl"`
+	// PollInterval is the minimum poll interval advertised to peers.
+	PollInterval Duration `json:"poll_interval"`
+}
+
+// Peers configures peer lifecycle housekeeping.
+type Peers struct {
+	// EphemeralGrace is how long an ephemeral peer may stay offline before it
+	// is deleted.
+	EphemeralGrace Duration `json:"ephemeral_grace"`
+	// JanitorInterval is how often expiry and ephemeral cleanup run.
+	JanitorInterval Duration `json:"janitor_interval"`
 }
 
 // Network is a network to create at startup.
 type Network struct {
 	Name string `json:"name"`
 	Pool string `json:"pool"`
+	// Isolation is "none" (default) or "hub-only".
+	Isolation string `json:"isolation"`
 }
 
 // Default returns the default configuration: SQLite in the working
-// directory, open access, and no admin API.
+// directory, open access, and no control API.
 func Default() Config {
 	return Config{
 		Listen:   ":8080",
@@ -151,7 +168,8 @@ func Default() Config {
 		},
 		ICE:         ICE{TURNTTL: Duration(time.Hour)},
 		Heartbeat:   Heartbeat{Interval: Duration(20 * time.Second), Timeout: Duration(60 * time.Second)},
-		Pairing:     Pairing{TTL: Duration(10 * time.Minute)},
+		Enrollment:  Enrollment{CodeTTL: Duration(10 * time.Minute), PollInterval: Duration(2 * time.Second)},
+		Peers:       Peers{EphemeralGrace: Duration(5 * time.Minute), JanitorInterval: Duration(30 * time.Second)},
 		DefaultPool: "100.64.0.0/10",
 	}
 }
@@ -227,21 +245,31 @@ func applyEnv(c *Config, getenv func(string) string) error {
 	str("GHOST_AUTHORIZER_SECRET", &c.Access.AuthorizerSecret)
 	dur("GHOST_AUTHORIZER_TIMEOUT", &c.Access.Timeout)
 	dur("GHOST_AUTHORIZER_CACHE_TTL", &c.Access.CacheTTL)
-	str("GHOST_ADMIN_TOKEN", &c.Admin.Token)
+	str("GHOST_CONTROL_TOKEN", &c.Control.ServiceToken)
 	list("GHOST_STUN_URLS", &c.ICE.STUNURLs)
 	list("GHOST_TURN_URLS", &c.ICE.TURNURLs)
 	str("GHOST_TURN_SECRET", &c.ICE.TURNSecret)
 	dur("GHOST_TURN_TTL", &c.ICE.TURNTTL)
 	dur("GHOST_HEARTBEAT_INTERVAL", &c.Heartbeat.Interval)
 	dur("GHOST_HEARTBEAT_TIMEOUT", &c.Heartbeat.Timeout)
-	dur("GHOST_PAIRING_TTL", &c.Pairing.TTL)
+	dur("GHOST_ENROLLMENT_CODE_TTL", &c.Enrollment.CodeTTL)
+	dur("GHOST_ENROLLMENT_POLL_INTERVAL", &c.Enrollment.PollInterval)
+	dur("GHOST_EPHEMERAL_GRACE", &c.Peers.EphemeralGrace)
+	dur("GHOST_JANITOR_INTERVAL", &c.Peers.JanitorInterval)
 	str("GHOST_DEFAULT_POOL", &c.DefaultPool)
 	if v := getenv("GHOST_NETWORKS"); v != "" {
-		// "name" or "name=pool", comma separated.
+		// "name", "name=pool" or "name=pool=isolation", comma separated.
 		c.Networks = nil
 		for _, item := range splitList(v) {
-			name, pool, _ := strings.Cut(item, "=")
-			c.Networks = append(c.Networks, Network{Name: strings.TrimSpace(name), Pool: strings.TrimSpace(pool)})
+			parts := strings.SplitN(item, "=", 3)
+			n := Network{Name: strings.TrimSpace(parts[0])}
+			if len(parts) > 1 {
+				n.Pool = strings.TrimSpace(parts[1])
+			}
+			if len(parts) > 2 {
+				n.Isolation = strings.TrimSpace(parts[2])
+			}
+			c.Networks = append(c.Networks, n)
 		}
 	}
 	return errors.Join(errs...)
@@ -280,8 +308,8 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("access.mode must be open or api, got %q", c.Access.Mode))
 	}
-	if c.Admin.Token != "" && len(c.Admin.Token) < 16 {
-		errs = append(errs, errors.New("admin.token must be at least 16 bytes"))
+	if c.Control.ServiceToken != "" && len(c.Control.ServiceToken) < 16 {
+		errs = append(errs, errors.New("control.service_token must be at least 16 bytes"))
 	}
 	if len(c.ICE.TURNURLs) > 0 && c.ICE.TURNSecret == "" {
 		errs = append(errs, errors.New("ice.turn_secret is required when ice.turn_urls is set"))
@@ -289,8 +317,11 @@ func (c Config) Validate() error {
 	if c.Heartbeat.Interval <= 0 || c.Heartbeat.Timeout <= c.Heartbeat.Interval {
 		errs = append(errs, errors.New("heartbeat.timeout must exceed a positive heartbeat.interval"))
 	}
-	if c.Pairing.TTL <= 0 {
-		errs = append(errs, errors.New("pairing.ttl must be positive"))
+	if c.Enrollment.CodeTTL <= 0 || c.Enrollment.PollInterval <= 0 {
+		errs = append(errs, errors.New("enrollment.code_ttl and enrollment.poll_interval must be positive"))
+	}
+	if c.Peers.EphemeralGrace < 0 || c.Peers.JanitorInterval <= 0 {
+		errs = append(errs, errors.New("peers.ephemeral_grace must not be negative and peers.janitor_interval must be positive"))
 	}
 	for _, n := range c.Networks {
 		if n.Name == "" {
