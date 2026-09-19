@@ -175,14 +175,34 @@ keeps only the health summaries from heartbeats
 
 ### Instruments
 
-The label sets are bounded. Source tags beyond `exit.Config.MaxSourceTags`
-become `"other"`, and denied hosts appear only in the snapshot's top-N list,
-never as labels.
+The label sets are bounded. Only the source part of a connection's source
+tag becomes a label (`ghost.source.name`, below); names beyond
+`exit.Config.MaxSources` become `"other"`, and denied hosts appear only in the
+snapshot's top-N list, never as labels.
+
+### Source tags
+
+A client names what a connection is for with a **source tag**: the SOCKS5
+username, or the `X-Ghost-Source` header (`exit.DefaultSourceHeader`) of an
+HTTP CONNECT. Its form is `source=<s>&job=<j>`: `&`-separated `key=value`
+pairs, values URL query escaped, other keys ignored. `exit.SourceTag{Source,
+Job}.String()` builds one, and `exit.ParseSourceTag` reads one. A tag without
+`=` is a bare source name.
+
+| Part | Meaning | Where it goes |
+| ---- | ------- | ------------- |
+| `source` | a low-cardinality name for the system or feed | the `ghost.source.name` metric label, the snapshot's `sources[].source`, the connection record, the span |
+| `job` | a per-request id | the connection record (`ConnInfo.Job`, `connections[].job`) and the span only |
+
+A source that is not a valid label (more than 64 bytes, or characters other
+than ASCII letters, digits and `._:/-`) is labelled `"other"`. The raw tag
+is kept too (`ConnInfo.SourceTag`, `connections[].source_tag`, the
+`ghost.source.tag` span attribute).
 
 | Scope | Instruments |
 | ----- | ----------- |
 | `ghost` (a member) | `ghost.tunnel.rtt`, `ghost.tunnel.handshake_age`, `ghost.tunnel.rx_bytes`, `ghost.tunnel.tx_bytes`, `ghost.tunnel.peers` |
-| `exit` | `ghost.exit.connections{result,…}`, `ghost.exit.bytes`, `ghost.exit.duration`, `ghost.exit.ttfb`, `ghost.exit.active_connections`, `ghost.exit.cap.used`, `ghost.exit.cap.limit`, `ghost.exit.paused` |
+| `exit` | `ghost.exit.connections{result, server.address, server.port, tls.server.name, ghost.source.peer, ghost.source.name, …}`, `ghost.exit.bytes`, `ghost.exit.duration`, `ghost.exit.ttfb`, `ghost.exit.active_connections`, `ghost.exit.cap.used`, `ghost.exit.cap.limit`, `ghost.exit.paused` |
 | `ghost-server` | `ghost_server.sessions.active{role}`, `ghost_server.signal.messages{type,direction}`, `ghost_server.authz.decisions{action,result,cached}`, `ghost_server.authz.duration`, `ghost_server.enrollments{result}`, `ghost_server.peers.revoked`, `ghost_server.heartbeat.timeouts` |
 
 `ghost-server` serves Prometheus at `/metrics`, either on its main listener or

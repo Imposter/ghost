@@ -68,11 +68,13 @@ type DestinationStat struct {
 	Counts
 }
 
-// SourceStat aggregates one source: the requesting peer and the tag it sent.
-// Tags beyond the collector's bound are folded into "other".
+// SourceStat aggregates one source: the requesting peer and the source part
+// of the tag it sent (see exit.ParseSourceTag). Jobs are never aggregated.
+// Names that are not valid labels, and names beyond the collector's bound,
+// fold into exit.OverflowSource.
 type SourceStat struct {
-	Peer string `json:"peer"`
-	Tag  string `json:"tag,omitempty"`
+	Peer   string `json:"peer"`
+	Source string `json:"source,omitempty"`
 	Counts
 }
 
@@ -154,6 +156,8 @@ type Connection struct {
 	Start           time.Time `json:"start"`
 	SourcePeer      string    `json:"source_peer,omitempty"`
 	SourceTag       string    `json:"source_tag,omitempty"`
+	Source          string    `json:"source,omitempty"`
+	Job             string    `json:"job,omitempty"`
 	Protocol        string    `json:"protocol"`
 	Transport       string    `json:"transport"`
 	SNI             string    `json:"sni,omitempty"`
@@ -183,6 +187,8 @@ func ConnectionFrom(ci exit.ConnInfo) Connection {
 		Start:           ci.Start,
 		SourcePeer:      ci.SourcePeer,
 		SourceTag:       ci.SourceTag,
+		Source:          ci.Source,
+		Job:             ci.Job,
 		Protocol:        string(ci.Protocol),
 		Transport:       transportTCP,
 		SNI:             ci.SNI,

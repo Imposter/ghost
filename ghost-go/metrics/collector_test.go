@@ -15,9 +15,12 @@ func (fakeExit) ActiveConns() int                { return 2 }
 func (fakeExit) UsageToday() (used, limit int64) { return 300, 1000 }
 func (fakeExit) Paused() bool                    { return false }
 
+// allowed builds the record the exit makes for an allowed connection, with
+// the tag parsed as the exit parses it.
 func allowed(host string, tag string, in, out int64) exit.ConnInfo {
+	st := exit.ParseSourceTag(tag)
 	return exit.ConnInfo{
-		SourcePeer: "hub-1", SourceTag: tag, Protocol: exit.ProtoSOCKS5,
+		SourcePeer: "hub-1", SourceTag: tag, Source: st.Source, Job: st.Job, Protocol: exit.ProtoSOCKS5,
 		DestHost: host, DestPort: 443, DestIP: "203.0.113.7", PolicyAllowed: true,
 		Result: exit.ResultAllowed, BytesIn: in, BytesOut: out,
 		Duration: 2 * time.Second, TTFB: 50 * time.Millisecond, Start: time.Now(),
@@ -57,8 +60,8 @@ func TestCollectorDeniedHostCardinalityCap(t *testing.T) {
 func TestCollectorSnapshotJSONShape(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 	c.AttachExit(fakeExit{})
-	c.Record(allowed("api.example", "job=1", 100, 10))
-	c.Record(allowed("api.example", "job=2", 50, 5))
+	c.Record(allowed("api.example", "source=a&job=1", 100, 10))
+	c.Record(allowed("api.example", "source=b&job=2", 50, 5))
 	c.Record(denied("evil.example"))
 
 	b, err := json.Marshal(c.Snapshot())
@@ -93,7 +96,7 @@ func TestCollectorSnapshotJSONShape(t *testing.T) {
 	}
 	src := m["sources"].([]any)
 	if len(src) != 3 {
-		t.Errorf("sources=%v want 3 (two tags + untagged)", src)
+		t.Errorf("sources=%v want 3 (two sources + untagged)", src)
 	}
 	proto := m["protocols"].([]any)[0].(map[string]any)
 	if proto["protocol"] != "socks5" || proto["transport"] != "tcp" {
@@ -102,6 +105,46 @@ func TestCollectorSnapshotJSONShape(t *testing.T) {
 	res := m["results"].([]any)[0].(map[string]any)
 	if res["result"] != "allowed" || res["count"] != float64(2) {
 		t.Errorf("results[0]=%v", res)
+	}
+}
+
+// Sources aggregate by the tag's source part only: jobs never multiply them,
+// and names that are not valid labels fold into exit.OverflowSource. The ring
+// keeps the raw tag, the source and the job.
+func TestCollectorAggregatesBySourceName(t *testing.T) {
+	c := NewCollector(CollectorConfig{MaxSources: 2})
+	for i := range 20 {
+		c.Record(allowed("api.example", fmt.Sprintf("source=tesla-ca&job=%d", i), 1, 1))
+	}
+	c.Record(allowed("api.example", "source=has%20space&job=x", 1, 1))
+	c.Record(allowed("api.example", "source=second", 1, 1))
+	c.Record(allowed("api.example", "source=third", 1, 1))
+
+	got := map[string]int64{}
+	for _, s := range c.Snapshot().Sources {
+		got[s.Source] = s.Connections
+	}
+	want := map[string]int64{"tesla-ca": 20, exit.OverflowSource: 2, "second": 1}
+	if len(got) != len(want) {
+		t.Fatalf("sources=%v want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("sources[%q]=%d want %d (all %v)", k, got[k], v, got)
+		}
+	}
+	recent := c.Recent(0)
+	var spaced Connection
+	for _, r := range recent {
+		if r.Job == "x" {
+			spaced = r
+		}
+	}
+	if spaced.Source != "has space" || spaced.SourceTag != "source=has%20space&job=x" {
+		t.Errorf("ring record=%+v", spaced)
+	}
+	if last := recent[len(recent)-1]; last.Source != "tesla-ca" || last.Job != "0" {
+		t.Errorf("oldest ring record=%+v", last)
 	}
 }
 

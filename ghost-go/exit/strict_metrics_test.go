@@ -75,9 +75,9 @@ func TestExitEachConnectionOneSeries(t *testing.T) {
 		MeterProvider: mp, TracerProvider: tp,
 	})
 
-	fetchThrough(t, proxy, host, port, "job=a")
-	fetchThrough(t, proxy, host, port, "job=b")
-	_, _ = socks5Connect(t, proxy, "not-allowed.example", 443, "job=a")
+	fetchThrough(t, proxy, host, port, "source=a&job=1")
+	fetchThrough(t, proxy, host, port, "source=b&job=2")
+	_, _ = socks5Connect(t, proxy, "not-allowed.example", 443, "source=a&job=3")
 
 	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(recs) == 3 })
 	rm := collect(t, reader)
@@ -89,7 +89,7 @@ func TestExitEachConnectionOneSeries(t *testing.T) {
 	seen := map[string]int64{}
 	for _, dp := range sum.DataPoints {
 		r, _ := dp.Attributes.Value("result")
-		tag, _ := dp.Attributes.Value("ghost.source.tag")
+		tag, _ := dp.Attributes.Value("ghost.source.name")
 		addr, _ := dp.Attributes.Value("server.address")
 		seen[r.AsString()+"|"+tag.AsString()+"|"+addr.AsString()] = dp.Value
 		assertAttr(t, dp.Attributes, "ghost.source.peer", "hub-1")
@@ -101,7 +101,7 @@ func TestExitEachConnectionOneSeries(t *testing.T) {
 			}
 		}
 	}
-	for _, k := range []string{"allowed|job=a|" + host, "allowed|job=b|" + host, "denied|job=a|denied"} {
+	for _, k := range []string{"allowed|a|" + host, "allowed|b|" + host, "denied|a|denied"} {
 		if seen[k] != 1 {
 			t.Errorf("series %q = %d want 1 (all: %v)", k, seen[k], seen)
 		}
@@ -162,30 +162,51 @@ func TestExitSourcePeerDefaultsToIP(t *testing.T) {
 	}
 }
 
-// Source tags beyond MaxSourceTags fold into "other" in labels only.
-func TestExitSourceTagCardinalityCap(t *testing.T) {
+// Only a tag's source part becomes a label: jobs never add series, and
+// sources beyond MaxSources fold into OverflowSource. The record keeps the raw
+// tag, the source and the job.
+func TestExitSourceNameCardinalityCap(t *testing.T) {
 	reader := metric.NewManualReader()
 	mp := metric.NewMeterProvider(metric.WithReader(reader))
 	var mu sync.Mutex
-	var tags []string
+	var recs []ConnInfo
 	_, proxy := startExit(t, Config{
-		MaxSourceTags: 2, MeterProvider: mp,
-		Accountant: AccountantFunc(func(ci ConnInfo) { mu.Lock(); tags = append(tags, ci.SourceTag); mu.Unlock() }),
+		MaxSources: 2, MeterProvider: mp,
+		Accountant: AccountantFunc(func(ci ConnInfo) { mu.Lock(); recs = append(recs, ci); mu.Unlock() }),
 	})
-	for i := range 5 {
-		_, _ = socks5Connect(t, proxy, "x.example", 443, fmt.Sprintf("job=%d", i))
-		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(tags) == i+1 })
+	tags := []string{
+		"source=a&job=1", "source=a&job=2", "source=a&job=3", // one source, many jobs
+		"source=b&job=4",
+		"source=c&job=5", "d", // beyond the bound (a bare tag is a source name)
+		"job=6", // no source: no source label at all
+	}
+	for i, tag := range tags {
+		_, _ = socks5Connect(t, proxy, "x.example", 443, tag)
+		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(recs) == i+1 })
 	}
 	distinct := map[string]int64{}
 	for _, dp := range findMetric(collect(t, reader), "ghost.exit.connections").Data.(metricdata.Sum[int64]).DataPoints {
-		v, _ := dp.Attributes.Value("ghost.source.tag")
+		v, ok := dp.Attributes.Value("ghost.source.name")
+		if !ok {
+			distinct["<none>"] += dp.Value
+			continue
+		}
 		distinct[v.AsString()] += dp.Value
 	}
-	if len(distinct) != 3 || distinct["other"] != 3 {
-		t.Errorf("tag series=%v want job=0, job=1 and other=3", distinct)
+	want := map[string]int64{"a": 3, "b": 1, OverflowSource: 2, "<none>": 1}
+	if len(distinct) != len(want) {
+		t.Fatalf("source series=%v want %v", distinct, want)
 	}
-	if tags[4] != "job=4" {
-		t.Errorf("raw tag lost from the record: %q", tags[4])
+	for k, v := range want {
+		if distinct[k] != v {
+			t.Errorf("source series[%q]=%d want %d (all %v)", k, distinct[k], v, distinct)
+		}
+	}
+	if r := recs[4]; r.SourceTag != "source=c&job=5" || r.Source != "c" || r.Job != "5" {
+		t.Errorf("record lost the tag: %+v", r)
+	}
+	if r := recs[6]; r.Source != "" || r.Job != "6" {
+		t.Errorf("job-only record: %+v", r)
 	}
 }
 

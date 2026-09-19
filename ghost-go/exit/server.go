@@ -22,6 +22,10 @@ import (
 // unless the deployment agrees on another one.
 const DefaultPort = 1080
 
+// DefaultSourceHeader is the HTTP-CONNECT request header that carries the
+// source tag. SOCKS5 clients send the tag as their username instead.
+const DefaultSourceHeader = "X-Ghost-Source"
+
 // errCapExhausted is returned internally when the daily byte budget runs out
 // mid-transfer.
 var errCapExhausted = errors.New("exit: bandwidth cap exhausted")
@@ -65,13 +69,15 @@ type Config struct {
 	// exit.
 	PeerResolver PeerResolver
 
-	// MaxSourceTags bounds the distinct ghost.source.tag metric label values
-	// (default DefaultMaxSourceTags); later tags are labelled "other". The raw
-	// tag is always kept in the ConnInfo record and on the span.
-	MaxSourceTags int
+	// MaxSources bounds the distinct ghost.source.name metric label values
+	// (default DefaultMaxSources); later sources are labelled OverflowSource.
+	// Only the source part of a tag becomes a label (see ParseSourceTag); the
+	// raw tag, its source and its job are always kept in the ConnInfo record
+	// and on the span.
+	MaxSources int
 
 	// HTTPSourceHeader names the HTTP-CONNECT header carrying the source tag
-	// (default "X-Ghost-Source").
+	// (default DefaultSourceHeader).
 	HTTPSourceHeader string
 
 	// AllowLoopbackForTest, when true, disables the loopback/private
@@ -120,7 +126,7 @@ func New(cfg Config) *Server {
 		cfg.DialTimeout = 15 * time.Second
 	}
 	if cfg.HTTPSourceHeader == "" {
-		cfg.HTTPSourceHeader = "X-Ghost-Source"
+		cfg.HTTPSourceHeader = DefaultSourceHeader
 	}
 	dial := cfg.Dialer
 	if dial == nil {
@@ -350,6 +356,7 @@ type connTrack struct {
 
 // begin opens the span, marks the connection active and returns its tracker.
 func (s *Server) begin(client net.Conn, req proxyRequest) *connTrack {
+	tag := ParseSourceTag(req.sourceTag)
 	t := &connTrack{
 		s:   s,
 		ctx: context.Background(),
@@ -357,6 +364,8 @@ func (s *Server) begin(client net.Conn, req proxyRequest) *connTrack {
 			SourcePeer: sourcePeer(s.cfg.PeerResolver, client.RemoteAddr()),
 			Protocol:   req.proto,
 			SourceTag:  req.sourceTag,
+			Source:     tag.Source,
+			Job:        tag.Job,
 			DestHost:   req.host,
 			DestPort:   req.port,
 			Start:      time.Now(),

@@ -95,7 +95,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool { return len(hub.Peers()) == 1 })
 
 	// The hub proxies one request through the node's exit (HTTP CONNECT).
-	body := connectThrough(t, hub, net.JoinHostPort(nodeIP, strconv.Itoa(exit.DefaultPort)), fmt.Sprintf("%s:%d", tHost, tPort), "job=metrics")
+	body := connectThrough(t, hub, net.JoinHostPort(nodeIP, strconv.Itoa(exit.DefaultPort)), fmt.Sprintf("%s:%d", tHost, tPort), "source=cli&job=metrics")
 	if !strings.Contains(body, "hello via exit") {
 		t.Fatalf("exit body %q", body)
 	}
@@ -117,8 +117,8 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	if snap.PeerID != nodeID || snap.Totals.Connections != 1 || snap.Totals.BytesIn == 0 {
 		t.Errorf("snapshot=%+v", snap)
 	}
-	if len(snap.Sources) != 1 || snap.Sources[0].Peer != hubID || snap.Sources[0].Tag != "job=metrics" {
-		t.Errorf("sources=%+v want peer %s tag job=metrics", snap.Sources, hubID)
+	if len(snap.Sources) != 1 || snap.Sources[0].Peer != hubID || snap.Sources[0].Source != "cli" {
+		t.Errorf("sources=%+v want peer %s source cli", snap.Sources, hubID)
 	}
 	if len(snap.Tunnel) != 1 || snap.Tunnel[0].PeerID != hubID || snap.Tunnel[0].CandidateType != "host" ||
 		snap.Tunnel[0].RxBytes == 0 || snap.Tunnel[0].TxBytes == 0 {
@@ -127,7 +127,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 
 	conns, err := fetcher.NodeConnections(ctx, nodeID, 5)
 	if err != nil || len(conns) != 1 || conns[0].Host != tHost || conns[0].Protocol != string(exit.ProtoHTTPConnect) ||
-		conns[0].SourcePeer != hubID || conns[0].IP == "" {
+		conns[0].SourcePeer != hubID || conns[0].IP == "" || conns[0].Source != "cli" || conns[0].Job != "metrics" {
 		t.Errorf("connections=%+v err=%v", conns, err)
 	}
 

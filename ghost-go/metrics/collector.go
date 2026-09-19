@@ -31,8 +31,9 @@ type CollectorConfig struct {
 	RingSize int
 	// DeniedTopN caps the denied-host tracker (DefaultDeniedTopN).
 	DeniedTopN int
-	// MaxSources caps the distinct source tags aggregated; later tags fold
-	// into "other" (DefaultMaxSources).
+	// MaxSources caps the distinct source names aggregated (the source part
+	// of each connection's tag); later names fold into exit.OverflowSource
+	// (DefaultMaxSources).
 	MaxSources int
 }
 
@@ -42,18 +43,19 @@ type destKey struct {
 }
 
 type sourceKey struct {
-	peer, tag string
+	peer, source string
 }
 
 // Collector is an exit.Accountant that keeps a node's in-process metrics: the
-// recent-connections ring buffer, bounded aggregates by destination, source,
-// protocol and result, and a capped top-N of denied hosts. Every key space is
+// recent-connections ring buffer, bounded aggregates by destination, source
+// (peer and source name; never the job), protocol and result, and a capped
+// top-N of denied hosts. Every key space is
 // bounded, so memory stays constant however many distinct hosts are
 // requested. It is safe for concurrent use.
 type Collector struct {
-	ring   *exit.ConnRing
-	denied *bounded.TopN
-	tags   *bounded.Set
+	ring        *exit.ConnRing
+	denied      *bounded.TopN
+	sourceNames *bounded.Set
 
 	mu      sync.Mutex
 	exit    ExitState
@@ -79,13 +81,13 @@ func NewCollector(cfg CollectorConfig) *Collector {
 		cfg.MaxSources = DefaultMaxSources
 	}
 	return &Collector{
-		ring:    exit.NewConnRing(cfg.RingSize),
-		denied:  bounded.NewTopN(cfg.DeniedTopN),
-		tags:    bounded.NewSet(cfg.MaxSources),
-		dests:   make(map[destKey]*Counts),
-		sources: make(map[sourceKey]*Counts),
-		protos:  make(map[string]*Counts),
-		results: make(map[string]int64),
+		ring:        exit.NewConnRing(cfg.RingSize),
+		denied:      bounded.NewTopN(cfg.DeniedTopN),
+		sourceNames: bounded.NewSet(cfg.MaxSources),
+		dests:       make(map[destKey]*Counts),
+		sources:     make(map[sourceKey]*Counts),
+		protos:      make(map[string]*Counts),
+		results:     make(map[string]int64),
 	}
 }
 
@@ -108,7 +110,11 @@ func (c *Collector) Record(ci exit.ConnInfo) {
 	} else {
 		c.denied.Add(ci.DestHost)
 	}
-	sk := sourceKey{peer: ci.SourcePeer, tag: c.tags.Admit(ci.SourceTag)}
+	src := exit.SourceLabel(ci.Source)
+	if src != exit.OverflowSource {
+		src = c.sourceNames.Admit(src)
+	}
+	sk := sourceKey{peer: ci.SourcePeer, source: src}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -155,7 +161,7 @@ func (c *Collector) Snapshot() Snapshot {
 		s.Destinations = append(s.Destinations, DestinationStat{Host: k.host, Port: k.port, Counts: *v})
 	}
 	for k, v := range c.sources {
-		s.Sources = append(s.Sources, SourceStat{Peer: k.peer, Tag: k.tag, Counts: *v})
+		s.Sources = append(s.Sources, SourceStat{Peer: k.peer, Source: k.source, Counts: *v})
 	}
 	for k, v := range c.protos {
 		s.Protocols = append(s.Protocols, ProtocolStat{Protocol: k, Transport: transportTCP, Counts: *v})
@@ -181,7 +187,7 @@ func (c *Collector) Snapshot() Snapshot {
 		return cmp.Or(byTraffic(a.Counts, b.Counts), cmp.Compare(a.Host, b.Host), cmp.Compare(a.Port, b.Port))
 	})
 	slices.SortFunc(s.Sources, func(a, b SourceStat) int {
-		return cmp.Or(byTraffic(a.Counts, b.Counts), cmp.Compare(a.Peer, b.Peer), cmp.Compare(a.Tag, b.Tag))
+		return cmp.Or(byTraffic(a.Counts, b.Counts), cmp.Compare(a.Peer, b.Peer), cmp.Compare(a.Source, b.Source))
 	})
 	slices.SortFunc(s.Protocols, func(a, b ProtocolStat) int {
 		return cmp.Or(byTraffic(a.Counts, b.Counts), cmp.Compare(a.Protocol, b.Protocol))

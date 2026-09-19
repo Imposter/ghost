@@ -16,14 +16,14 @@ import (
 const meterName = "github.com/Imposter/ghost/ghost-go/exit"
 
 // meterVersion is the instrumentation scope version.
-const meterVersion = "0.2.0"
+const meterVersion = "0.3.0"
 
 // DeniedHost is the server.address value every destination refused by policy
 // collapses to, so an arbitrary requested host can never become a label.
 const DeniedHost = "denied"
 
-// DefaultMaxSourceTags bounds the distinct ghost.source.tag label values.
-const DefaultMaxSourceTags = 64
+// DefaultMaxSources bounds the distinct ghost.source.name label values.
+const DefaultMaxSources = 64
 
 // capState is the part of the cap controller the metrics observe.
 type capState interface {
@@ -37,14 +37,16 @@ type capState interface {
 //   - server.address is the requested host only when the policy permitted it,
 //     otherwise DeniedHost; server.port is set only for permitted hosts;
 //   - tls.server.name is set only when the SNI itself is permitted by policy;
-//   - ghost.source.tag admits the first MaxSourceTags values, then "other".
+//   - ghost.source.name is the source part of the tag only (never the job or
+//     the raw tag), passed through SourceLabel, and admits the first
+//     MaxSources values, then OverflowSource.
 //
-// The resolved IP never enters a metric attribute; it lives in spans and the
-// connections ring buffer only.
+// The resolved IP, the raw tag and the job never enter a metric attribute;
+// they live in spans and the connections ring buffer only.
 type exitMetrics struct {
-	tracer trace.Tracer
-	policy Policy
-	tags   *bounded.Set
+	tracer  trace.Tracer
+	policy  Policy
+	sources *bounded.Set
 
 	connections metric.Int64Counter     // ghost.exit.connections {result,...}
 	bytes       metric.Int64Counter     // ghost.exit.bytes {direction,...}
@@ -64,15 +66,15 @@ func newExitMetrics(cfg Config, caps capState) (*exitMetrics, error) {
 	if tp == nil {
 		tp = otel.GetTracerProvider()
 	}
-	maxTags := cfg.MaxSourceTags
-	if maxTags <= 0 {
-		maxTags = DefaultMaxSourceTags
+	maxSources := cfg.MaxSources
+	if maxSources <= 0 {
+		maxSources = DefaultMaxSources
 	}
 	meter := mp.Meter(meterName, metric.WithInstrumentationVersion(meterVersion))
 	m := &exitMetrics{
-		tracer: tp.Tracer(meterName, trace.WithInstrumentationVersion(meterVersion)),
-		policy: cfg.Policy,
-		tags:   bounded.NewSet(maxTags),
+		tracer:  tp.Tracer(meterName, trace.WithInstrumentationVersion(meterVersion)),
+		policy:  cfg.Policy,
+		sources: bounded.NewSet(maxSources),
 	}
 
 	var err error
@@ -175,15 +177,18 @@ func (m *exitMetrics) labelAttrs(ci ConnInfo) []attribute.KeyValue {
 	if ci.SourcePeer != "" {
 		attrs = append(attrs, attribute.String("ghost.source.peer", ci.SourcePeer))
 	}
-	if ci.SourceTag != "" {
-		attrs = append(attrs, attribute.String("ghost.source.tag", m.tags.Admit(ci.SourceTag)))
+	if src := SourceLabel(ci.Source); src != "" {
+		if src != OverflowSource {
+			src = m.sources.Admit(src)
+		}
+		attrs = append(attrs, attribute.String("ghost.source.name", src))
 	}
 	return attrs
 }
 
 // spanAttrs builds the full-detail attribute set for a connection's span.
 // The unbounded values (the requested host even when denied, the resolved IP,
-// the raw tag) belong on the span, never in metric attributes.
+// the raw tag and its job) belong on the span, never in metric attributes.
 func spanAttrs(ci ConnInfo) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.NetworkTransportTCP,
@@ -205,6 +210,12 @@ func spanAttrs(ci ConnInfo) []attribute.KeyValue {
 	}
 	if ci.SourceTag != "" {
 		attrs = append(attrs, attribute.String("ghost.source.tag", ci.SourceTag))
+	}
+	if ci.Source != "" {
+		attrs = append(attrs, attribute.String("ghost.source.name", ci.Source))
+	}
+	if ci.Job != "" {
+		attrs = append(attrs, attribute.String("ghost.source.job", ci.Job))
 	}
 	return attrs
 }

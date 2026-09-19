@@ -39,9 +39,15 @@ type ConnInfo struct {
 	// when the server's PeerResolver knows it, else its tunnel IP (never the
 	// ephemeral port, which would be an unbounded label).
 	SourcePeer string
-	// SourceTag is a caller-supplied tag: the SOCKS5 username, or the value of
-	// the configured HTTP-CONNECT header (e.g. "source=tesla-ca").
+	// SourceTag is the raw caller-supplied tag: the SOCKS5 username, or the
+	// value of the configured HTTP-CONNECT header (e.g.
+	// "source=tesla-ca&job=8812").
 	SourceTag string
+	// Source and Job are SourceTag parsed with ParseSourceTag. Metrics are
+	// labelled by Source only; Job stays in this record (and so in the
+	// connections ring) and on the span.
+	Source string
+	Job    string
 	// Protocol is the proxy protocol used.
 	Protocol Protocol
 	// SNI is the TLS server name sniffed from the ClientHello, if any.

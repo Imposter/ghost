@@ -35,7 +35,7 @@ func TestExitMetricsAndSpan(t *testing.T) {
 	allow.Set([]string{host})
 	_, proxy := startExit(t, Config{Policy: allow, MeterProvider: mp, TracerProvider: tp})
 
-	conn, err := socks5Connect(t, proxy, host, port, "source=metrics-test")
+	conn, err := socks5Connect(t, proxy, host, port, "source=metrics-test&job=j-17")
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -66,7 +66,12 @@ func TestExitMetricsAndSpan(t *testing.T) {
 	assertAttr(t, dp.Attributes, "network.transport", "tcp")
 	assertAttr(t, dp.Attributes, "network.protocol.name", "socks5")
 	assertAttr(t, dp.Attributes, "server.address", host)
-	assertAttr(t, dp.Attributes, "ghost.source.tag", "source=metrics-test")
+	assertAttr(t, dp.Attributes, "ghost.source.name", "metrics-test")
+	for _, k := range []attribute.Key{"ghost.source.tag", "ghost.source.job"} {
+		if _, ok := dp.Attributes.Value(k); ok {
+			t.Errorf("metric carries the high-cardinality %s attribute", k)
+		}
+	}
 
 	// Byte counters should sum to what the accountant saw.
 	bytes := findMetric(rm, "ghost.exit.bytes")
@@ -101,6 +106,11 @@ func TestExitMetricsAndSpan(t *testing.T) {
 	// The resolved IP must be on the span, not in the metric attributes.
 	if spanAttrs["server.socket.address"] == "" {
 		t.Error("expected resolved IP on the span")
+	}
+	// The raw tag and both its parts are on the span.
+	if spanAttrs["ghost.source.tag"] != "source=metrics-test&job=j-17" || spanAttrs["ghost.source.name"] != "metrics-test" ||
+		spanAttrs["ghost.source.job"] != "j-17" {
+		t.Errorf("span source attributes=%v", spanAttrs)
 	}
 }
 
