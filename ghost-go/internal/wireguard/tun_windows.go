@@ -2,5 +2,5 @@
 
 package wireguard
 
-// defaultTUNName is the default TUN device name for Windows.
+// defaultTUNName is the default TUN interface name for Windows.
 const defaultTUNName = "Ghost"

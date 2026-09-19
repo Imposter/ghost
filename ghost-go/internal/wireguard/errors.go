@@ -6,14 +6,14 @@ var (
 	// ErrInvalidKey indicates that a key is invalid.
 	ErrInvalidKey = errors.New("invalid key")
 
-	// ErrDeviceNotUp indicates that the device is not up.
-	ErrDeviceNotUp = errors.New("device not up")
+	// ErrTunnelNotUp indicates that the tunnel is not up.
+	ErrTunnelNotUp = errors.New("tunnel not up")
 
-	// ErrTUNCreationFailed indicates that TUN device creation failed.
-	ErrTUNCreationFailed = errors.New("TUN device creation failed")
+	// ErrTUNCreationFailed indicates that TUN interface creation failed.
+	ErrTUNCreationFailed = errors.New("TUN interface creation failed")
 
-	// ErrDeviceClosed indicates that the device is closed.
-	ErrDeviceClosed = errors.New("device closed")
+	// ErrTunnelClosed indicates that the tunnel is closed.
+	ErrTunnelClosed = errors.New("tunnel closed")
 
 	// ErrPeerNotFound indicates that a peer was not found.
 	ErrPeerNotFound = errors.New("peer not found")

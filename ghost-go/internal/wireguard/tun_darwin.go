@@ -2,5 +2,5 @@
 
 package wireguard
 
-// defaultTUNName is the default TUN device name for macOS.
+// defaultTUNName is the default TUN interface name for macOS.
 const defaultTUNName = "utun"

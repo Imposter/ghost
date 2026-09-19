@@ -23,7 +23,7 @@ import (
 // that connection are reported as coming from that endpoint.
 //
 // Connections can be swapped at any time (for example after an ICE restart)
-// without touching the WireGuard device. MultiBind never closes the
+// without touching the WireGuard tunnel. MultiBind never closes the
 // connections it is given; their owner does.
 type MultiBind struct {
 	logger *slog.Logger

@@ -15,16 +15,16 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// mockTUNDevice implements tun.Device for testing
-type mockTUNDevice struct {
+// mockTUN implements tun.Device for testing
+type mockTUN struct {
 	name   string
 	mtu    int
 	events chan tun.Event
 	closed bool
 }
 
-func newMockTUNDevice(name string, mtu int) *mockTUNDevice {
-	m := &mockTUNDevice{
+func newMockTUN(name string, mtu int) *mockTUN {
+	m := &mockTUN{
 		name:   name,
 		mtu:    mtu,
 		events: make(chan tun.Event, 1),
@@ -34,8 +34,8 @@ func newMockTUNDevice(name string, mtu int) *mockTUNDevice {
 	return m
 }
 
-func (m *mockTUNDevice) File() *os.File { return nil }
-func (m *mockTUNDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+func (m *mockTUN) File() *os.File { return nil }
+func (m *mockTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	// Block until closed
 	if m.closed {
 		return 0, io.EOF
@@ -43,19 +43,19 @@ func (m *mockTUNDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error
 	time.Sleep(10 * time.Millisecond)
 	return 0, nil
 }
-func (m *mockTUNDevice) Write(bufs [][]byte, offset int) (int, error) { return 1, nil }
-func (m *mockTUNDevice) Flush() error                                 { return nil }
-func (m *mockTUNDevice) MTU() (int, error)                            { return m.mtu, nil }
-func (m *mockTUNDevice) Name() (string, error)                        { return m.name, nil }
-func (m *mockTUNDevice) Events() <-chan tun.Event                     { return m.events }
-func (m *mockTUNDevice) Close() error {
+func (m *mockTUN) Write(bufs [][]byte, offset int) (int, error) { return 1, nil }
+func (m *mockTUN) Flush() error                                 { return nil }
+func (m *mockTUN) MTU() (int, error)                            { return m.mtu, nil }
+func (m *mockTUN) Name() (string, error)                        { return m.name, nil }
+func (m *mockTUN) Events() <-chan tun.Event                     { return m.events }
+func (m *mockTUN) Close() error {
 	if !m.closed {
 		m.closed = true
 		close(m.events)
 	}
 	return nil
 }
-func (m *mockTUNDevice) BatchSize() int { return 1 }
+func (m *mockTUN) BatchSize() int { return 1 }
 
 // mockBind implements conn.Bind for testing
 type mockBind struct {
@@ -95,8 +95,8 @@ func (e *mockEndpoint) DstToBytes() []byte  { return []byte(e.addr) }
 func (e *mockEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
 func (e *mockEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
-func newMockDevice(t *testing.T) (*Device, *mockTUNDevice, *mockBind) {
-	tunDev := newMockTUNDevice("test0", 1280)
+func newMockTunnel(t *testing.T) (*Tunnel, *mockTUN, *mockBind) {
+	tunDev := newMockTUN("test0", 1280)
 
 	bind := &mockBind{}
 
@@ -112,22 +112,22 @@ func newMockDevice(t *testing.T) (*Device, *mockTUNDevice, *mockBind) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	device, err := NewDevice(tunDev, bind, config, logger)
+	tunnel, err := NewTunnel(tunDev, bind, config, logger)
 	require.NoError(t, err)
 
-	return device, tunDev, bind
+	return tunnel, tunDev, bind
 }
 
-func TestNewDevice_Success(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestNewTunnel_Success(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
-	assert.NotNil(t, device)
-	assert.False(t, device.IsUp())
+	assert.NotNil(t, tunnel)
+	assert.False(t, tunnel.IsUp())
 }
 
-func TestNewDevice_Validation(t *testing.T) {
-	tunDev := newMockTUNDevice("test0", 1280)
+func TestNewTunnel_Validation(t *testing.T) {
+	tunDev := newMockTUN("test0", 1280)
 	defer tunDev.Close()
 
 	bind := &mockBind{}
@@ -143,11 +143,11 @@ func TestNewDevice_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "nil TUN device",
+			name:    "nil TUN interface",
 			tunDev:  nil,
 			bind:    bind,
 			config:  validConfig,
-			wantErr: "TUN device cannot be nil",
+			wantErr: "TUN interface cannot be nil",
 		},
 		{
 			name:    "nil bind",
@@ -167,40 +167,40 @@ func TestNewDevice_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewDevice(tt.tunDev, tt.bind, tt.config, logger)
+			_, err := NewTunnel(tt.tunDev, tt.bind, tt.config, logger)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }
 
-func TestDevice_Configure(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_Configure(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	privateKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
 
-	err = device.Configure(privateKey)
+	err = tunnel.Configure(privateKey)
 	assert.NoError(t, err)
 }
 
-func TestDevice_Configure_InvalidKey(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_Configure_InvalidKey(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
-	err := device.Configure(make([]byte, 16)) // Wrong size
+	err := tunnel.Configure(make([]byte, 16)) // Wrong size
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid private key")
 }
 
-func TestDevice_AddPeer(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_AddPeer(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	privateKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
-	err = device.Configure(privateKey)
+	err = tunnel.Configure(privateKey)
 	require.NoError(t, err)
 
 	peerPrivKey, err := GeneratePrivateKey()
@@ -213,20 +213,20 @@ func TestDevice_AddPeer(t *testing.T) {
 		AllowedIPs: []string{"10.0.0.2/32"},
 	}
 
-	err = device.AddPeer(peerConfig)
+	err = tunnel.AddPeer(peerConfig)
 	assert.NoError(t, err)
 
-	peers := device.GetPeers()
+	peers := tunnel.GetPeers()
 	assert.Len(t, peers, 1)
 }
 
-func TestDevice_AddPeer_Duplicate(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_AddPeer_Duplicate(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	privateKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
-	err = device.Configure(privateKey)
+	err = tunnel.Configure(privateKey)
 	require.NoError(t, err)
 
 	peerPrivKey, err := GeneratePrivateKey()
@@ -239,22 +239,22 @@ func TestDevice_AddPeer_Duplicate(t *testing.T) {
 		AllowedIPs: []string{"10.0.0.2/32"},
 	}
 
-	err = device.AddPeer(peerConfig)
+	err = tunnel.AddPeer(peerConfig)
 	require.NoError(t, err)
 
 	// Try to add again
-	err = device.AddPeer(peerConfig)
+	err = tunnel.AddPeer(peerConfig)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "peer already exists")
 }
 
-func TestDevice_RemovePeer(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_RemovePeer(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	privateKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
-	err = device.Configure(privateKey)
+	err = tunnel.Configure(privateKey)
 	require.NoError(t, err)
 
 	peerPrivKey, err := GeneratePrivateKey()
@@ -267,111 +267,111 @@ func TestDevice_RemovePeer(t *testing.T) {
 		AllowedIPs: []string{"10.0.0.2/32"},
 	}
 
-	err = device.AddPeer(peerConfig)
+	err = tunnel.AddPeer(peerConfig)
 	require.NoError(t, err)
 
-	err = device.RemovePeer(peerPubKey)
+	err = tunnel.RemovePeer(peerPubKey)
 	assert.NoError(t, err)
 
-	peers := device.GetPeers()
+	peers := tunnel.GetPeers()
 	assert.Len(t, peers, 0)
 }
 
-func TestDevice_RemovePeer_NotFound(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_RemovePeer_NotFound(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	peerPrivKey, err := GeneratePrivateKey()
 	require.NoError(t, err)
 	peerPubKey, err := GetPublicKey(peerPrivKey)
 	require.NoError(t, err)
 
-	err = device.RemovePeer(peerPubKey)
+	err = tunnel.RemovePeer(peerPubKey)
 	assert.ErrorIs(t, err, ErrPeerNotFound)
 }
 
-func TestDevice_UpDown(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_UpDown(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
-	assert.False(t, device.IsUp())
+	assert.False(t, tunnel.IsUp())
 
-	err := device.Up()
+	err := tunnel.Up()
 	assert.NoError(t, err)
-	assert.True(t, device.IsUp())
+	assert.True(t, tunnel.IsUp())
 
-	err = device.Down()
+	err = tunnel.Down()
 	assert.NoError(t, err)
-	assert.False(t, device.IsUp())
+	assert.False(t, tunnel.IsUp())
 
 	// Up again
-	err = device.Up()
+	err = tunnel.Up()
 	assert.NoError(t, err)
-	assert.True(t, device.IsUp())
+	assert.True(t, tunnel.IsUp())
 }
 
-func TestDevice_UpDown_Idempotent(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_UpDown_Idempotent(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
 	// Up twice
-	err := device.Up()
+	err := tunnel.Up()
 	assert.NoError(t, err)
-	err = device.Up()
+	err = tunnel.Up()
 	assert.NoError(t, err)
 
 	// Down twice
-	err = device.Down()
+	err = tunnel.Down()
 	assert.NoError(t, err)
-	err = device.Down()
+	err = tunnel.Down()
 	assert.NoError(t, err)
 }
 
-func TestDevice_GetTUNName(t *testing.T) {
-	device, tunDev, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_GetTUNName(t *testing.T) {
+	tunnel, tunDev, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
-	name, err := device.GetTUNName()
+	name, err := tunnel.GetTUNName()
 	assert.NoError(t, err)
 	assert.Equal(t, tunDev.name, name)
 }
 
-func TestDevice_GetMTU(t *testing.T) {
-	device, tunDev, _ := newMockDevice(t)
-	defer device.Close()
+func TestTunnel_GetMTU(t *testing.T) {
+	tunnel, tunDev, _ := newMockTunnel(t)
+	defer tunnel.Close()
 
-	mtu, err := device.GetMTU()
+	mtu, err := tunnel.GetMTU()
 	assert.NoError(t, err)
 	assert.Equal(t, tunDev.mtu, mtu)
 }
 
-func TestDevice_Close(t *testing.T) {
-	device, _, bind := newMockDevice(t)
+func TestTunnel_Close(t *testing.T) {
+	tunnel, _, bind := newMockTunnel(t)
 
-	err := device.Close()
+	err := tunnel.Close()
 	assert.NoError(t, err)
 	assert.True(t, bind.closed)
 
 	// Close again should be no-op
-	err = device.Close()
+	err = tunnel.Close()
 	assert.NoError(t, err)
 }
 
-func TestDevice_OperationsAfterClose(t *testing.T) {
-	device, _, _ := newMockDevice(t)
-	err := device.Close()
+func TestTunnel_OperationsAfterClose(t *testing.T) {
+	tunnel, _, _ := newMockTunnel(t)
+	err := tunnel.Close()
 	require.NoError(t, err)
 
-	// All operations should return ErrDeviceClosed
-	err = device.Up()
-	assert.ErrorIs(t, err, ErrDeviceClosed)
+	// All operations should return ErrTunnelClosed
+	err = tunnel.Up()
+	assert.ErrorIs(t, err, ErrTunnelClosed)
 
-	err = device.Down()
-	assert.ErrorIs(t, err, ErrDeviceClosed)
+	err = tunnel.Down()
+	assert.ErrorIs(t, err, ErrTunnelClosed)
 
-	_, err = device.GetTUNName()
-	assert.ErrorIs(t, err, ErrDeviceClosed)
+	_, err = tunnel.GetTUNName()
+	assert.ErrorIs(t, err, ErrTunnelClosed)
 
-	_, err = device.GetMTU()
-	assert.ErrorIs(t, err, ErrDeviceClosed)
+	_, err = tunnel.GetMTU()
+	assert.ErrorIs(t, err, ErrTunnelClosed)
 }

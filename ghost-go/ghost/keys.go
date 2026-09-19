@@ -9,7 +9,7 @@ import (
 	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
 )
 
-// Keys is a device's persistent WireGuard key pair. The private key never
+// Keys is a tunnel's persistent WireGuard key pair. The private key never
 // leaves the process except when persisted to the key store on disk.
 type Keys struct {
 	privateKey []byte

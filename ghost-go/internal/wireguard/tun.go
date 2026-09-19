@@ -6,7 +6,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// CreateTUN creates a TUN device with the given name and MTU.
+// CreateTUN creates a TUN interface with the given name and MTU.
 // This works for desktop platforms (Linux, Windows, macOS).
 // For mobile platforms, use CreateTUNFromFD instead.
 func CreateTUN(name string, mtu int) (tun.Device, error) {
@@ -19,16 +19,16 @@ func CreateTUN(name string, mtu int) (tun.Device, error) {
 	}
 
 	// wireguard-go handles platform differences internally
-	device, err := tun.CreateTUN(name, mtu)
+	tunnel, err := tun.CreateTUN(name, mtu)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create TUN device: %w", err)
+		return nil, fmt.Errorf("failed to create TUN interface: %w", err)
 	}
 
-	return device, nil
+	return tunnel, nil
 }
 
-// CreateTUNFromFD creates a TUN device from an existing file descriptor.
-// This is used for mobile platforms where the OS creates the TUN device:
+// CreateTUNFromFD creates a TUN interface from an existing file descriptor.
+// This is used for mobile platforms where the OS creates the TUN interface:
 //   - Android: VpnService.Builder.establish() creates TUN, passes fd to Go
 //   - iOS: Not applicable - iOS uses packet flow handlers (see Phase 5)
 //

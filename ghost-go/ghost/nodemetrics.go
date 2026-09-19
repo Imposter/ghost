@@ -176,7 +176,7 @@ func (m *mesh) authorizeMetrics(r *http.Request) bool {
 }
 
 // serveMetricsLocked starts the metrics endpoint on the tunnel IP inside the
-// netstack. Caller holds m.mu and has set up the device.
+// netstack. Caller holds m.mu and has set up the tunnel.
 func (m *mesh) serveMetricsLocked() error {
 	cfg := m.cfg.Metrics
 	if cfg.Collector == nil {

@@ -15,7 +15,7 @@
          │   WireGuard Package       │
          │                           │
          │  ┌─────────────────────┐ │
-         │  │  Device Wrapper     │ │  Lifecycle + Peer Management
+         │  │  Tunnel Wrapper     │ │  Lifecycle + Peer Management
          │  └──────────┬──────────┘ │
          │             │             │
          │  ┌──────────▼──────────┐ │
@@ -37,13 +37,13 @@
 
 ## Key Components
 
-### 1. **Device Wrapper** (`device.go`)
+### 1. **Tunnel Wrapper** (`tunnel.go`)
 
-Manages WireGuard devices with full lifecycle control.
+Manages a WireGuard tunnel with full lifecycle control.
 
 ```go
-type Device struct {
-    device *device.Device    // wireguard-go device
+type Tunnel struct {
+    wg     *device.Device    // wireguard-go's tunnel implementation
     tun    tun.Device        // TUN interface
     bind   conn.Bind         // Network bind (ICEBind)
     config *WireGuardConfig  // Configuration
@@ -58,31 +58,31 @@ type Device struct {
 **Core Methods:**
 ```go
 // Lifecycle
-func NewDevice(tunDevice tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Device, error)
-func (d *Device) Up() error
-func (d *Device) Down() error
-func (d *Device) Close() error
+func NewTunnel(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Tunnel, error)
+func (d *Tunnel) Up() error
+func (d *Tunnel) Down() error
+func (d *Tunnel) Close() error
 
 // Configuration
-func (d *Device) Configure(privateKey []byte) error
+func (d *Tunnel) Configure(privateKey []byte) error
 
 // Peer Management
-func (d *Device) AddPeer(peerConfig *PeerConfig) error
-func (d *Device) RemovePeer(publicKey []byte) error
-func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error
-func (d *Device) GetPeers() []*PeerConfig
+func (d *Tunnel) AddPeer(peerConfig *PeerConfig) error
+func (d *Tunnel) RemovePeer(publicKey []byte) error
+func (d *Tunnel) UpdatePeerEndpoint(publicKey []byte, endpoint string) error
+func (d *Tunnel) GetPeers() []*PeerConfig
 
 // Status
-func (d *Device) GetStatus() (string, error)
-func (d *Device) GetMTU() (int, error)
-func (d *Device) GetTUNName() (string, error)
+func (d *Tunnel) GetStatus() (string, error)
+func (d *Tunnel) GetMTU() (int, error)
+func (d *Tunnel) GetTUNName() (string, error)
 ```
 
 **Thread Safety:** All public methods use mutexes for concurrent access.
 
 ---
 
-### 2. **TUN Device Abstraction** (`tun.go`, platform files)
+### 2. **TUN Interface Abstraction** (`tun.go`, platform files)
 
 Creates platform-specific virtual network interfaces.
 
@@ -166,7 +166,7 @@ func ValidatePublicKey(key []byte) error
 
 ## Common Operations
 
-### Create and Configure Device
+### Create and Configure Tunnel
 
 ```go
 import (
@@ -178,7 +178,7 @@ import (
 privateKey, _ := wireguard.GeneratePrivateKey()
 publicKey, _ := wireguard.GetPublicKey(privateKey)
 
-// 2. Create TUN device
+// 2. Create TUN interface
 tunDev, _ := wireguard.CreateTUN("ghost0", 1280)
 
 // 3. Create ICE connection and bind
@@ -193,11 +193,11 @@ config := &wireguard.WireGuardConfig{
     PersistentKeepalive: 25 * time.Second,
 }
 
-// 5. Create device
-device, _ := wireguard.NewDevice(tunDev, bind, config, logger)
+// 5. Create tunnel
+tunnel, _ := wireguard.NewTunnel(tunDev, bind, config, logger)
 
 // 6. Configure with private key
-device.Configure(privateKey)
+tunnel.Configure(privateKey)
 
 // 7. Add peer
 peerConfig := &wireguard.PeerConfig{
@@ -205,12 +205,12 @@ peerConfig := &wireguard.PeerConfig{
     AllowedIPs: []string{"10.0.0.0/24"},
     PersistentKeepalive: 25 * time.Second,
 }
-device.AddPeer(peerConfig)
+tunnel.AddPeer(peerConfig)
 
-// 8. Bring up device
-device.Up()
+// 8. Bring up tunnel
+tunnel.Up()
 
-// Device is now ready for encrypted communication!
+// Tunnel is now ready for encrypted communication!
 ```
 
 ### Update Peer Endpoint (NAT Rebinding)
@@ -218,7 +218,7 @@ device.Up()
 ```go
 // When peer's endpoint changes (e.g., mobile switching networks)
 newEndpoint := "203.0.113.45:51820"
-err := device.UpdatePeerEndpoint(peerPublicKey, newEndpoint)
+err := tunnel.UpdatePeerEndpoint(peerPublicKey, newEndpoint)
 if err != nil {
     logger.Error("failed to update endpoint", "err", err)
 }

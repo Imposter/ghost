@@ -120,7 +120,7 @@ func (m *mesh) linkSnapshot() []linkStat {
 		links = append(links, l)
 	}
 	bind := m.bind
-	dev := m.device
+	dev := m.wg
 	m.mu.Unlock()
 
 	handshakes := map[string]time.Time{}

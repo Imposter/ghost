@@ -64,7 +64,7 @@ type PeerConfig struct {
 	Endpoint string
 
 	// PersistentKeepalive is the keepalive interval for this peer.
-	// If zero, uses the device's default.
+	// If zero, uses the tunnel's default.
 	PersistentKeepalive time.Duration
 }
 

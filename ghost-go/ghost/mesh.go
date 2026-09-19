@@ -75,7 +75,7 @@ type Event struct {
 const healthInterval = 30 * time.Second
 
 // mesh is the shared machinery behind Node and Hub: a signalling client, one
-// netstack-backed WireGuard device, a MultiBind, and one ICE agent per peer.
+// netstack-backed WireGuard tunnel, a MultiBind, and one ICE agent per peer.
 // Which peers it connects to follows the netmap the control plane sends.
 type mesh struct {
 	cfg       Config
@@ -85,7 +85,7 @@ type mesh struct {
 
 	sig    *signal.Client
 	bind   *ice.MultiBind
-	device *wireguard.Device
+	wg *wireguard.Tunnel
 	net    *wireguard.Net
 
 	mu      sync.Mutex
@@ -96,6 +96,7 @@ type mesh struct {
 	netmap  *proto.Netmap
 	links   map[string]*peerLink
 	epSeq   uint32
+	refused atomic.Uint64
 	started bool
 	closed  bool
 
@@ -289,8 +290,8 @@ func (m *mesh) loop() {
 
 func (m *mesh) handleJoined(j proto.Joined) {
 	m.mu.Lock()
-	if m.device == nil {
-		if err := m.setupDeviceLocked(j); err != nil {
+	if m.wg == nil {
+		if err := m.setupTunnelLocked(j); err != nil {
 			m.mu.Unlock()
 			m.emit(Event{Kind: EventError, Err: err})
 			return
@@ -309,9 +310,9 @@ func (m *mesh) handleJoined(j proto.Joined) {
 	m.emit(Event{Kind: EventJoined, Address: addr})
 }
 
-// setupDeviceLocked creates the netstack, bind and WireGuard device. Caller
+// setupTunnelLocked creates the netstack, bind and WireGuard tunnel. Caller
 // holds m.mu.
-func (m *mesh) setupDeviceLocked(j proto.Joined) error {
+func (m *mesh) setupTunnelLocked(j proto.Joined) error {
 	address := m.cfg.Address
 	if address == "" {
 		address = j.Address
@@ -348,17 +349,17 @@ func (m *mesh) setupDeviceLocked(j proto.Joined) error {
 	wgCfg.ListenPort = 0
 	wgCfg.MTU = m.cfg.mtu()
 
-	dev, err := wireguard.NewDevice(tunDev, m.bind, wgCfg, m.log)
+	dev, err := wireguard.NewTunnel(tunDev, m.bind, wgCfg, m.log)
 	if err != nil {
-		return fmt.Errorf("create wireguard device: %w", err)
+		return fmt.Errorf("create wireguard tunnel: %w", err)
 	}
 	if err := dev.Configure(m.keys.privateKeyBytes()); err != nil {
-		return fmt.Errorf("configure wireguard device: %w", err)
+		return fmt.Errorf("configure wireguard tunnel: %w", err)
 	}
 	if err := dev.Up(); err != nil {
-		return fmt.Errorf("wireguard device up: %w", err)
+		return fmt.Errorf("wireguard tunnel up: %w", err)
 	}
-	m.device = dev
+	m.wg = dev
 	return nil
 }
 
@@ -407,14 +408,14 @@ func samePolicy(a, b proto.ExitPolicy) bool {
 // down links to peers that left the netmap, went offline, or changed key.
 func (m *mesh) reconcile() {
 	m.mu.Lock()
-	if m.netmap == nil || m.device == nil || m.closed {
+	if m.netmap == nil || m.wg == nil || m.closed {
 		m.mu.Unlock()
 		return
 	}
 	self := m.netmap.Self
 	want := make(map[string]proto.PeerInfo, len(m.netmap.Peers))
 	for _, p := range m.netmap.Peers {
-		if p.Online && p.PublicKey != "" {
+		if p.Online && p.PublicKey != "" && m.linkableLocked(p) {
 			want[p.PeerID] = p
 		}
 	}
@@ -452,6 +453,11 @@ func (m *mesh) reconcile() {
 func (m *mesh) netmapPeer(id string) (proto.PeerInfo, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.netmapPeerLocked(id)
+}
+
+// netmapPeerLocked is netmapPeer with m.mu held.
+func (m *mesh) netmapPeerLocked(id string) (proto.PeerInfo, bool) {
 	if m.netmap == nil {
 		return proto.PeerInfo{}, false
 	}
@@ -468,7 +474,7 @@ func (m *mesh) netmapPeer(id string) (proto.PeerInfo, bool) {
 // gathering immediately so candidates can trickle.
 func (m *mesh) connectToPeer(peer proto.PeerInfo, controlling bool) {
 	m.mu.Lock()
-	if m.closed || m.device == nil {
+	if m.closed || m.wg == nil {
 		m.mu.Unlock()
 		return
 	}
@@ -533,6 +539,13 @@ func (m *mesh) handleSignal(t proto.Type, s proto.Signal) {
 				m.log.Debug("ghost: offer from a peer outside the netmap, ignored", "peer", s.From)
 				return
 			}
+			m.mu.Lock()
+			linkable := m.linkableLocked(p)
+			m.mu.Unlock()
+			if !linkable {
+				m.refuseLink(p.PeerID)
+				return
+			}
 			m.connectToPeer(p, false)
 			m.mu.Lock()
 			l = m.links[s.From]
@@ -562,7 +575,7 @@ func (m *mesh) handleSignal(t proto.Type, s proto.Signal) {
 }
 
 // startConnect runs ICE Connect once per link and, on success, wires the
-// connection into the WireGuard device.
+// connection into the WireGuard tunnel.
 func (m *mesh) startConnect(l *peerLink) {
 	l.connectOnce.Do(func() {
 		go func() {
@@ -591,11 +604,18 @@ func (m *mesh) startConnect(l *peerLink) {
 }
 
 // wireUpPeer registers the ICE connection in the bind and adds the peer to the
-// WireGuard device.
+// WireGuard tunnel.
 func (m *mesh) wireUpPeer(l *peerLink) {
 	m.mu.Lock()
-	if m.closed || m.device == nil || l.conn == nil || m.links[l.peerID] != l {
+	if m.closed || m.wg == nil || l.conn == nil || m.links[l.peerID] != l {
 		m.mu.Unlock()
+		return
+	}
+	// Last line of defence: never configure a WireGuard key that hub-only
+	// isolation forbids, even if the link got this far.
+	if p, ok := m.netmapPeerLocked(l.peerID); !ok || !m.linkableLocked(p) {
+		m.mu.Unlock()
+		m.refuseLink(l.peerID)
 		return
 	}
 	m.bind.SetConn(l.epKey, l.conn)
@@ -612,7 +632,7 @@ func (m *mesh) wireUpPeer(l *peerLink) {
 		Endpoint:            l.epKey,
 		PersistentKeepalive: 15 * time.Second,
 	}
-	if err := m.device.AddPeer(pc); err != nil {
+	if err := m.wg.AddPeer(pc); err != nil {
 		m.mu.Unlock()
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("add wg peer: %w", err)})
 		return
@@ -623,17 +643,46 @@ func (m *mesh) wireUpPeer(l *peerLink) {
 	m.reportHealth()
 }
 
-// allowedIPsFor returns the WireGuard AllowedIPs for a link: the peer's own
-// tunnel address. Every reachable peer has its own link, so no peer routes
-// for another; a packet for any other address has no route and is dropped.
+// allowedIPsFor returns the WireGuard AllowedIPs for a link: exactly the
+// peer's own tunnel address as a /32 (or /128), whatever prefix length the
+// netmap gives. Every reachable peer has its own link, so no peer routes for
+// another; a packet for any other address has no route and is dropped.
 func (m *mesh) allowedIPsFor(l *peerLink) []string {
 	if m.cfg.allowedIPsOverride != nil {
 		return m.cfg.allowedIPsOverride(l.peerID, l.address)
 	}
-	if l.address != "" {
-		return []string{normalizeCIDR(l.address, true)}
+	if a, ok := tunnelAddr(l.address); ok {
+		return []string{netip.PrefixFrom(a, a.BitLen()).String()}
 	}
 	return nil
+}
+
+// linkableLocked reports whether this member may hold a WireGuard link to p.
+// Under hub-only isolation a member without the hub role links only to hubs,
+// even if the netmap (from a faulty control plane) lists other peers. Caller
+// holds m.mu.
+func (m *mesh) linkableLocked(p proto.PeerInfo) bool {
+	return !m.hubOnlyLocked() || proto.HasRole(p.Roles, proto.RoleHub)
+}
+
+// refuseLink records a link refused by hub-only isolation.
+func (m *mesh) refuseLink(peerID string) {
+	m.refused.Add(1)
+	m.log.Warn("ghost: link refused by hub-only isolation", "peer", peerID)
+	m.emit(Event{Kind: EventError, PeerID: peerID, Err: fmt.Errorf("link to non-hub peer %s refused: network is hub-only", peerID)})
+}
+
+// RefusedLinks returns how many links hub-only isolation refused (offers
+// from, or netmap entries for, peers without the hub role).
+func (m *mesh) RefusedLinks() uint64 { return m.refused.Load() }
+
+// ForwardDrops returns how many inbound tunnel packets addressed to another
+// peer were dropped: a member never forwards between peers.
+func (m *mesh) ForwardDrops() uint64 {
+	if n := m.Netstack(); n != nil {
+		return n.ForwardDrops()
+	}
+	return 0
 }
 
 // reportHealth sends a heartbeat carrying the current health summary now,
@@ -727,8 +776,8 @@ func (m *mesh) teardownLink(l *peerLink) {
 	if l.added && l.publicKey != "" {
 		if pub, err := wireguard.DecodeKey(l.publicKey); err == nil {
 			m.mu.Lock()
-			if m.device != nil {
-				_ = m.device.RemovePeer(pub)
+			if m.wg != nil {
+				_ = m.wg.RemovePeer(pub)
 			}
 			m.mu.Unlock()
 		}
@@ -762,7 +811,7 @@ func (m *mesh) Close() error {
 	cancel := m.cancel
 	links := m.links
 	m.links = make(map[string]*peerLink)
-	dev := m.device
+	dev := m.wg
 	bind := m.bind
 	sig := m.sig
 	msrv := m.msrv
@@ -827,19 +876,4 @@ func protoToCandidate(c *proto.Candidate) *ice.Candidate {
 		RelatedAddress: c.RelatedAddress,
 		RelatedPort:    c.RelatedPort,
 	}
-}
-
-// normalizeCIDR ensures addr is in CIDR form. When host32 is true a bare IP
-// becomes a /32 (IPv4) or /128 (IPv6).
-func normalizeCIDR(addr string, host32 bool) string {
-	if _, err := netip.ParsePrefix(addr); err == nil {
-		return addr
-	}
-	if a, err := netip.ParseAddr(addr); err == nil {
-		if a.Is4() {
-			return addr + "/32"
-		}
-		return addr + "/128"
-	}
-	return addr
 }

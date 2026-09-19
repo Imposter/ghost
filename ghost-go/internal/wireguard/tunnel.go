@@ -28,32 +28,32 @@ const (
 	IPCFieldRemove = "remove"
 )
 
-// Device wraps a WireGuard device with lifecycle management.
+// Tunnel wraps a WireGuard tunnel with lifecycle management.
 //
 // # Thread Safety
 //
-// Device is thread-safe. All public methods can be called from multiple
+// Tunnel is thread-safe. All public methods can be called from multiple
 // goroutines concurrently. This differs from ice.Agent which is NOT thread-safe.
 // The reason for this design difference:
 //
-//   - Device manages mutable state (peers map, isUp, closed) that may be accessed
+//   - Tunnel manages mutable state (peers map, isUp, closed) that may be accessed
 //     concurrently by application code checking status while configuring
-//   - Device is typically used directly by applications, not just as a building block
+//   - Tunnel is typically used directly by applications, not just as a building block
 //   - The overhead of mutex locking is negligible compared to network I/O
 //
 // # Resource Management
 //
-// Device manages the following resources:
-//   - WireGuard device (goroutines for encryption/decryption, packet handling)
-//   - TUN device reference (passed by caller, closed when device closes)
-//   - Bind reference (passed by caller, closed when device closes)
+// Tunnel manages the following resources:
+//   - WireGuard tunnel (goroutines for encryption/decryption, packet handling)
+//   - TUN interface reference (passed by caller, closed when tunnel closes)
+//   - Bind reference (passed by caller, closed when tunnel closes)
 //   - Peer tracking map (local state)
 //
-// IMPORTANT: You MUST call Close() when done with the device to release resources.
+// IMPORTANT: You MUST call Close() when done with the tunnel to release resources.
 // The Close() method:
-//   - Stops all WireGuard device goroutines
-//   - Closes the TUN device (via device.Close())
-//   - Closes the bind (via device.Close())
+//   - Stops all WireGuard tunnel goroutines
+//   - Closes the TUN interface (via wireguard-go's Close)
+//   - Closes the bind (via wireguard-go's Close)
 //
 // Note: Close() does NOT close the underlying network connection if using ICEBind.
 // ICEBind follows the ownership pattern where the caller who created the connection
@@ -61,38 +61,38 @@ const (
 //
 // # Cleanup Order (when using with ICE)
 //
-//	device.Close()   // Stops WireGuard, closes bind's receive loop
+//	tunnel.Close()   // Stops WireGuard, closes bind's receive loop
 //	iceConn.Close()  // Caller closes the connection they created
 //	agent.Close()    // Caller closes the ICE agent they created
-type Device struct {
-	device *device.Device
+type Tunnel struct {
+	wg     *device.Device
 	tun    tun.Device
 	bind   conn.Bind
 	config *WireGuardConfig
 	logger *slog.Logger
 
-	// mu protects all fields below. Device is thread-safe.
+	// mu protects all fields below. Tunnel is thread-safe.
 	mu     sync.RWMutex
 	peers  map[string]*PeerConfig // keyed by base64 public key
 	isUp   bool
 	closed bool
 }
 
-// NewDevice creates a new WireGuard device.
+// NewTunnel creates a new WireGuard tunnel.
 //
-// The caller provides the TUN device and bind, which become owned by the Device.
-// When Close() is called, both will be closed via the underlying WireGuard device.
+// The caller provides the TUN interface and bind, which become owned by the Tunnel.
+// When Close() is called, both will be closed via the underlying WireGuard tunnel.
 //
 // Parameters:
-//   - tunDev: A TUN device (from CreateTUN, CreateNetTUN, or CreateTUNFromFD)
+//   - tunDev: A TUN interface (from CreateTUN, CreateNetTUN, or CreateTUNFromFD)
 //   - bind: A conn.Bind implementation (typically ICEBind for NAT traversal)
 //   - config: WireGuard configuration (validated before use)
 //   - logger: Optional logger (defaults to slog.Default() if nil)
 //
-// The returned Device must have Configure() called before use.
-func NewDevice(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Device, error) {
+// The returned Tunnel must have Configure() called before use.
+func NewTunnel(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logger *slog.Logger) (*Tunnel, error) {
 	if tunDev == nil {
-		return nil, fmt.Errorf("TUN device cannot be nil")
+		return nil, fmt.Errorf("TUN interface cannot be nil")
 	}
 
 	if bind == nil {
@@ -111,9 +111,9 @@ func NewDevice(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logge
 		logger = slog.Default()
 	}
 
-	// Create device logger
+	// Create tunnel logger
 	// WireGuard expects a specific logger format
-	deviceLogger := &device.Logger{
+	wgLogger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			logger.Debug(fmt.Sprintf(format, args...))
 		},
@@ -122,13 +122,13 @@ func NewDevice(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logge
 		},
 	}
 
-	// Create WireGuard device
-	wgDevice := device.NewDevice(tunDev, bind, deviceLogger)
+	// Create WireGuard tunnel
+	wgDev := device.NewDevice(tunDev, bind, wgLogger)
 
-	logger.Info("WireGuard device created", "mtu", config.MTU)
+	logger.Info("WireGuard tunnel created", "mtu", config.MTU)
 
-	return &Device{
-		device: wgDevice,
+	return &Tunnel{
+		wg:     wgDev,
 		tun:    tunDev,
 		bind:   bind,
 		config: config,
@@ -137,13 +137,13 @@ func NewDevice(tunDev tun.Device, bind conn.Bind, config *WireGuardConfig, logge
 	}, nil
 }
 
-// Configure configures the WireGuard device with a private key and initial settings.
-func (d *Device) Configure(privateKey []byte) error {
+// Configure configures the WireGuard tunnel with a private key and initial settings.
+func (d *Tunnel) Configure(privateKey []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if err := ValidatePrivateKey(privateKey); err != nil {
@@ -162,21 +162,21 @@ func (d *Device) Configure(privateKey []byte) error {
 	}
 
 	// Apply configuration via IPC
-	if err := d.device.IpcSet(config); err != nil {
-		return fmt.Errorf("failed to configure device: %w", err)
+	if err := d.wg.IpcSet(config); err != nil {
+		return fmt.Errorf("failed to configure tunnel: %w", err)
 	}
 
-	d.logger.Info("Device configured with private key")
+	d.logger.Info("Tunnel configured with private key")
 	return nil
 }
 
-// AddPeer adds a peer to the WireGuard device.
-func (d *Device) AddPeer(peerConfig *PeerConfig) error {
+// AddPeer adds a peer to the WireGuard tunnel.
+func (d *Tunnel) AddPeer(peerConfig *PeerConfig) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if err := peerConfig.Validate(); err != nil {
@@ -216,7 +216,7 @@ func (d *Device) AddPeer(peerConfig *PeerConfig) error {
 	}
 
 	// Apply peer configuration via IPC
-	if err := d.device.IpcSet(config); err != nil {
+	if err := d.wg.IpcSet(config); err != nil {
 		return fmt.Errorf("failed to add peer: %w", err)
 	}
 
@@ -231,13 +231,13 @@ func (d *Device) AddPeer(peerConfig *PeerConfig) error {
 	return nil
 }
 
-// RemovePeer removes a peer from the WireGuard device.
-func (d *Device) RemovePeer(publicKey []byte) error {
+// RemovePeer removes a peer from the WireGuard tunnel.
+func (d *Tunnel) RemovePeer(publicKey []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if err := ValidatePublicKey(publicKey); err != nil {
@@ -258,7 +258,7 @@ func (d *Device) RemovePeer(publicKey []byte) error {
 	config := fmt.Sprintf("public_key=%s\nremove=true\n", publicKeyHex)
 
 	// Apply configuration via IPC
-	if err := d.device.IpcSet(config); err != nil {
+	if err := d.wg.IpcSet(config); err != nil {
 		return fmt.Errorf("failed to remove peer: %w", err)
 	}
 
@@ -269,61 +269,61 @@ func (d *Device) RemovePeer(publicKey []byte) error {
 	return nil
 }
 
-// Up brings the WireGuard device up.
-func (d *Device) Up() error {
+// Up brings the WireGuard tunnel up.
+func (d *Tunnel) Up() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if d.isUp {
 		return nil
 	}
 
-	// Bring up the device
-	if err := d.device.Up(); err != nil {
-		return fmt.Errorf("failed to bring device up: %w", err)
+	// Bring up the tunnel
+	if err := d.wg.Up(); err != nil {
+		return fmt.Errorf("failed to bring tunnel up: %w", err)
 	}
 	d.isUp = true
 
-	d.logger.Info("Device is up")
+	d.logger.Info("Tunnel is up")
 	return nil
 }
 
-// Down brings the WireGuard device down.
-func (d *Device) Down() error {
+// Down brings the WireGuard tunnel down.
+func (d *Tunnel) Down() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if !d.isUp {
 		return nil
 	}
 
-	// Bring down the device
-	if err := d.device.Down(); err != nil {
-		return fmt.Errorf("failed to bring device down: %w", err)
+	// Bring down the tunnel
+	if err := d.wg.Down(); err != nil {
+		return fmt.Errorf("failed to bring tunnel down: %w", err)
 	}
 	d.isUp = false
 
-	d.logger.Info("Device is down")
+	d.logger.Info("Tunnel is down")
 	return nil
 }
 
-// IsUp returns whether the device is up.
-func (d *Device) IsUp() bool {
+// IsUp returns whether the tunnel is up.
+func (d *Tunnel) IsUp() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.isUp
 }
 
 // GetPeers returns a list of configured peers.
-func (d *Device) GetPeers() []*PeerConfig {
+func (d *Tunnel) GetPeers() []*PeerConfig {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -334,31 +334,31 @@ func (d *Device) GetPeers() []*PeerConfig {
 	return peers
 }
 
-// GetStatus returns the current device status from WireGuard.
-func (d *Device) GetStatus() (string, error) {
+// GetStatus returns the current tunnel status from WireGuard.
+func (d *Tunnel) GetStatus() (string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	if d.closed {
-		return "", ErrDeviceClosed
+		return "", ErrTunnelClosed
 	}
 
 	// Get status via IPC
-	status, err := d.device.IpcGet()
+	status, err := d.wg.IpcGet()
 	if err != nil {
-		return "", fmt.Errorf("failed to get device status: %w", err)
+		return "", fmt.Errorf("failed to get tunnel status: %w", err)
 	}
 
 	return status, nil
 }
 
-// SetMTU sets the MTU for the TUN device.
-func (d *Device) SetMTU(mtu int) error {
+// SetMTU sets the MTU for the TUN interface.
+func (d *Tunnel) SetMTU(mtu int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if mtu <= 0 {
@@ -377,12 +377,12 @@ func (d *Device) SetMTU(mtu int) error {
 }
 
 // GetMTU returns the current MTU.
-func (d *Device) GetMTU() (int, error) {
+func (d *Tunnel) GetMTU() (int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	if d.closed {
-		return 0, ErrDeviceClosed
+		return 0, ErrTunnelClosed
 	}
 
 	mtu, err := d.tun.MTU()
@@ -393,13 +393,13 @@ func (d *Device) GetMTU() (int, error) {
 	return mtu, nil
 }
 
-// GetTUNName returns the name of the TUN device.
-func (d *Device) GetTUNName() (string, error) {
+// GetTUNName returns the name of the TUN interface.
+func (d *Tunnel) GetTUNName() (string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	if d.closed {
-		return "", ErrDeviceClosed
+		return "", ErrTunnelClosed
 	}
 
 	name, err := d.tun.Name()
@@ -412,12 +412,12 @@ func (d *Device) GetTUNName() (string, error) {
 
 // UpdatePeerEndpoint updates the endpoint for an existing peer.
 // This is useful when the peer's address changes (e.g., after NAT rebinding).
-func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
+func (d *Tunnel) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDeviceClosed
+		return ErrTunnelClosed
 	}
 
 	if err := ValidatePublicKey(publicKey); err != nil {
@@ -444,7 +444,7 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 	config := fmt.Sprintf("%s=%s\n%s=%s\n", IPCFieldPublicKey, publicKeyHex, IPCFieldEndpoint, endpoint)
 
 	// Apply configuration via IPC
-	if err := d.device.IpcSet(config); err != nil {
+	if err := d.wg.IpcSet(config); err != nil {
 		return fmt.Errorf("failed to update peer endpoint: %w", err)
 	}
 
@@ -459,7 +459,7 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 	return nil
 }
 
-// Close closes the WireGuard device and releases all resources.
+// Close closes the WireGuard tunnel and releases all resources.
 //
 // Note: This does NOT close the underlying bind's connection (e.g., ICE connection).
 // The caller who created the connection is responsible for closing it.
@@ -468,10 +468,10 @@ func (d *Device) UpdatePeerEndpoint(publicKey []byte, endpoint string) error {
 //
 // Example cleanup order:
 //
-//	device.Close()   // Stops WireGuard, closes bind's receive loop
+//	tunnel.Close()   // Stops WireGuard, closes bind's receive loop
 //	iceConn.Close()  // Caller closes the connection they created
 //	agent.Close()    // Caller closes the ICE agent they created
-func (d *Device) Close() error {
+func (d *Tunnel) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -479,17 +479,17 @@ func (d *Device) Close() error {
 		return nil
 	}
 
-	d.logger.Info("Closing WireGuard device")
+	d.logger.Info("Closing WireGuard tunnel")
 
 	d.closed = true
 
-	// Close the WireGuard device.
+	// Close the WireGuard tunnel.
 	// This internally calls bind.Close() and tun.Close().
 	// For ICEBind, Close() stops the receive loop but does NOT close
 	// the underlying connection (ownership pattern).
-	d.device.Close()
+	d.wg.Close()
 
-	d.logger.Info("WireGuard device closed")
+	d.logger.Info("WireGuard tunnel closed")
 	return nil
 }
 

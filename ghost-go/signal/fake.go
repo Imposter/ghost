@@ -36,6 +36,11 @@ type FakeServer struct {
 	AuthFunc func(h proto.Hello) (peerID string, err error)
 	// HubOnly applies hub-only isolation. Set it before any peer connects.
 	HubOnly bool
+	// IgnoreIsolation models a faulty or compromised control plane: netmaps
+	// still say hub-only when HubOnly is set, but list every peer and relay
+	// every signal, so tests can check that peers enforce isolation
+	// themselves. Set it before any peer connects.
+	IgnoreIsolation bool
 }
 
 func (s *FakeServer) isolation() proto.Isolation {
@@ -47,7 +52,7 @@ func (s *FakeServer) isolation() proto.Isolation {
 
 // visibleLocked reports whether a and b may see each other. Caller holds s.mu.
 func (s *FakeServer) visibleLocked(a, b *fakeSession) bool {
-	return !s.HubOnly || proto.HasRole(a.roles, proto.RoleHub) || proto.HasRole(b.roles, proto.RoleHub)
+	return !s.HubOnly || s.IgnoreIsolation || proto.HasRole(a.roles, proto.RoleHub) || proto.HasRole(b.roles, proto.RoleHub)
 }
 
 type fakeSession struct {
