@@ -1,5 +1,9 @@
-.git
-.idea
+# Only ghost-go and ghost-server are needed to build images.
+*
+!ghost-go/
+!ghost-server/
+**/*_test.go
+**/testdata/
 **/*.db
 **/*.db-shm
 **/*.db-wal
