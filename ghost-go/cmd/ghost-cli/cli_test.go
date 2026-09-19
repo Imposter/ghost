@@ -288,6 +288,7 @@ func TestNodeExitAndHub(t *testing.T) {
 	if string(b) != "hello through the exit" {
 		t.Fatalf("forward body %q", b)
 	}
+	_ = c.Close() // the exit records a connection when it ends
 
 	// Anything off the control plane's allowlist is refused.
 	c2, err := net.DialTimeout("tcp", fwd, 5*time.Second)

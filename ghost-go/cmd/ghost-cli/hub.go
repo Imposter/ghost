@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Imposter/ghost/ghost-go/exit"
@@ -127,7 +128,7 @@ func parseOneShot(args []string, e env) (*oneShot, error) {
 		}
 		target, err := url.Parse(fs.Arg(1))
 		if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-			return nil, fmt.Errorf("URL %q: want http(s)://host/...", fs.Arg(1))
+			return nil, fmt.Errorf("URL %q: want an http or https URL with a host", fs.Arg(1))
 		}
 		tag := exit.SourceTag{Source: *source, Job: *job}.String()
 		return &oneShot{peer: fs.Arg(0), run: func(ctx context.Context, hub *ghost.Hub, p proto.PeerInfo) error {
@@ -224,6 +225,8 @@ func hubCurl(ctx context.Context, hub *ghost.Hub, p proto.PeerInfo, port int, ta
 	if err != nil {
 		return err
 	}
+	var mu sync.Mutex
+	var tunnels []*gracefulConn
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			c, err := hub.DialContext(ctx, "tcp", proxy)
@@ -235,12 +238,37 @@ func hubCurl(ctx context.Context, hub *ghost.Hub, p proto.PeerInfo, port int, ta
 				_ = c.Close()
 				return nil, err
 			}
-			return tc, nil
+			g := &gracefulConn{Conn: tc, done: make(chan struct{})}
+			mu.Lock()
+			tunnels = append(tunnels, g)
+			mu.Unlock()
+			return g, nil
 		},
-		ForceAttemptHTTP2:   true,
+		// One request, so no connection reuse: the transport closes each
+		// tunnel once its response is read.
+		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: 15 * time.Second,
 	}
-	defer tr.CloseIdleConnections()
+	// Wait for the tunnels to close before the hub goes away, and give the
+	// last FIN time to cross the tunnel, so the exit sees each connection end
+	// and records it.
+	defer func() {
+		tr.CloseIdleConnections()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(tunnels) == 0 {
+			return
+		}
+		deadline := time.After(3 * time.Second)
+		for _, g := range tunnels {
+			select {
+			case <-g.done:
+			case <-deadline:
+				return
+			}
+		}
+		time.Sleep(tunnelLinger)
+	}()
 	client := &http.Client{Transport: tr, Timeout: 2 * time.Minute}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -259,6 +287,31 @@ func hubCurl(ctx context.Context, hub *ghost.Hub, p proto.PeerInfo, port int, ta
 		fmt.Fprintf(e.stderr, "%s %s\n", resp.Proto, resp.Status)
 	}
 	_, err = io.Copy(e.stdout, resp.Body)
+	return err
+}
+
+// tunnelLinger is how long a one-shot keeps the hub up after its last tunnel
+// closed, so the close reaches the exit before the tunnel goes down.
+const tunnelLinger = 500 * time.Millisecond
+
+// gracefulConn closes a tunnel gracefully: it half-closes it and waits
+// briefly for the exit to finish before closing it, then closes done. Its
+// user must have stopped reading when it calls Close.
+type gracefulConn struct {
+	net.Conn
+	once sync.Once
+	done chan struct{}
+}
+
+func (g *gracefulConn) Close() error {
+	var err error
+	g.once.Do(func() {
+		closeWrite(g.Conn)
+		_ = g.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.Copy(io.Discard, g.Conn)
+		err = g.Conn.Close()
+		close(g.done)
+	})
 	return err
 }
 
@@ -300,7 +353,7 @@ func (b *bufferedConn) CloseWrite() error {
 	if cw, ok := b.Conn.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite()
 	}
-	return b.Conn.Close()
+	return b.Close()
 }
 
 func hubMetrics(ctx context.Context, hub *ghost.Hub, p proto.PeerInfo, conns int, prom bool, e env) error {
