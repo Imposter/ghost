@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 )
 
 // Candidate represents an ICE candidate for testing.
@@ -166,64 +165,5 @@ func (m *MockSignalingChannel) GetCredentialsForB(ctx context.Context) (*Credent
 		return m.peerACredentials, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	}
-}
-
-// WaitForCandidates waits until at least minCount candidates are available.
-// Used to ensure candidate gathering has progressed before exchanging.
-func (m *MockSignalingChannel) WaitForCandidates(peer string, minCount int, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			m.mu.RLock()
-			var count int
-			if peer == "A" {
-				count = len(m.peerACands)
-			} else {
-				count = len(m.peerBCands)
-			}
-			m.mu.RUnlock()
-
-			if count >= minCount {
-				return nil
-			}
-		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for candidates from peer %s", peer)
-		}
-	}
-}
-
-// Reset clears all candidates and credentials.
-func (m *MockSignalingChannel) Reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.peerACands = make([]*Candidate, 0)
-	m.peerBCands = make([]*Candidate, 0)
-	m.peerACredentials = nil
-	m.peerBCredentials = nil
-
-	// Reset ready channels
-	m.peerAReady = make(chan struct{})
-	m.peerBReady = make(chan struct{})
-}
-
-// ToICECandidate converts a testutil Candidate to an ice.Candidate.
-// This is a helper to avoid import cycles.
-func (c *Candidate) Copy() *Candidate {
-	return &Candidate{
-		Type:       c.Type,
-		Protocol:   c.Protocol,
-		Address:    c.Address,
-		Port:       c.Port,
-		Priority:   c.Priority,
-		Foundation: c.Foundation,
-		Component:  c.Component,
 	}
 }

@@ -14,7 +14,7 @@ import (
 func TestNewAgent(t *testing.T) {
 	logger := testutil.NewQuietTestLogger(t)
 
-	config := TestICEConfigWithSTUN(20) // Port 51020
+	config := TestICEConfig(20) // loopback host candidates only
 
 	agent, err := NewAgent(config, logger)
 	require.NoError(t, err, "should create agent")

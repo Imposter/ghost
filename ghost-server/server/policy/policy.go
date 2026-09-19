@@ -234,7 +234,7 @@ func (d Document) validSelector(sel string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("selector %q must be *, tag:, role: or peer:", sel)
+	return fmt.Errorf("selector %q must be *, tag:<name>, role:<role> or peer:<id>", sel)
 }
 
 // UndefinedTags returns the entries of tags the document does not define.

@@ -51,8 +51,8 @@ var (
 )
 
 // NodeMetricsFetcher reads a connected node's metrics over the tunnel. *Hub
-// implements it; the ghost-server admin API and the egress gateway depend on
-// this interface rather than on Hub.
+// implements it; consumers such as an egress gateway should depend on this
+// interface rather than on Hub. ghost-server does not proxy node metrics.
 type NodeMetricsFetcher interface {
 	// NodeSnapshot fetches the node's JSON snapshot (GET /metrics?format=json).
 	NodeSnapshot(ctx context.Context, peerID string) (metrics.Snapshot, error)
@@ -93,8 +93,8 @@ func (m *mesh) peerForIP(ip netip.Addr) string {
 
 // Snapshot returns this member's metrics snapshot: the exit-side aggregates
 // from MetricsConfig.Collector (empty when unset) plus live per-peer tunnel
-// stats. It is pure Go and cheap, for in-process readers such as the desktop
-// app's FFI binding.
+// stats. It is pure Go and cheap, for in-process readers such as an FFI
+// binding.
 func (m *mesh) Snapshot() metrics.Snapshot {
 	var s metrics.Snapshot
 	if c := m.collector(); c != nil {

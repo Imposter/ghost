@@ -110,7 +110,7 @@ func TestCreateNetTUN_Validation_Failure(t *testing.T) {
 		},
 		{
 			name:           "invalid local address",
-			localAddresses: []netip.Addr{netip.Addr{}},
+			localAddresses: []netip.Addr{{}},
 			dnsServers:     nil,
 			mtu:            DefaultMTU,
 			wantErr:        ErrNoLocalAddresses,
@@ -147,7 +147,7 @@ func TestCreateNetTUN_Validation_Failure(t *testing.T) {
 		{
 			name:           "invalid DNS server",
 			localAddresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
-			dnsServers:     []netip.Addr{netip.Addr{}},
+			dnsServers:     []netip.Addr{{}},
 			mtu:            DefaultMTU,
 			wantErrContain: "invalid DNS server",
 		},

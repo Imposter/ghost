@@ -14,6 +14,9 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
+// maxUDPPacketSize is the largest UDP payload a read can return.
+const maxUDPPacketSize = 65535
+
 // MultiBind implements WireGuard's conn.Bind over any number of point-to-point
 // connections (typically one ICE connection per remote peer).
 //
@@ -152,7 +155,7 @@ func (b *MultiBind) endpoint(key string) *MultiEndpoint {
 }
 
 func (b *MultiBind) readLoop(bc *bindConn) {
-	buf := make([]byte, MaxUDPPacketSize)
+	buf := make([]byte, maxUDPPacketSize)
 	for {
 		n, err := bc.conn.Read(buf)
 		if err != nil {

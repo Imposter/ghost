@@ -29,12 +29,6 @@ const (
 	// DefaultFailedTimeout is the time after which a disconnected connection is considered failed.
 	// 15 seconds allows time for recovery attempts.
 	DefaultFailedTimeout = 15 * time.Second
-
-	// DefaultSTUNPort is the standard STUN server port (RFC 5389).
-	DefaultSTUNPort = 19302
-
-	// DefaultTURNPort is the standard TURN server port (RFC 5766).
-	DefaultTURNPort = 3478
 )
 
 // CandidateType represents the type of ICE candidate.
@@ -157,19 +151,6 @@ func TestICEConfig(portOffset int) *ICEConfig {
 		},
 		IPFilter: func(ip net.IP) bool { return ip.IsLoopback() },
 	}
-}
-
-// TestICEConfigWithSTUN returns a test configuration with STUN enabled and fixed ports.
-func TestICEConfigWithSTUN(portOffset int) *ICEConfig {
-	config := TestICEConfig(portOffset)
-	config.STUNServers = []string{"stun:stun.l.google.com:19302"}
-	config.GatherTimeout = 15 * time.Second
-	config.ConnectionTimeout = 30 * time.Second
-	config.CandidateTypes = []CandidateType{
-		CandidateTypeHost,
-		CandidateTypeSrflx,
-	}
-	return config
 }
 
 // Validate checks if the configuration is valid.

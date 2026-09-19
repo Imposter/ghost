@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -24,8 +23,6 @@ const (
 	IPCFieldAllowedIP = "allowed_ip"
 	// IPCFieldPersistentKeepalive is the persistent keepalive interval field name
 	IPCFieldPersistentKeepalive = "persistent_keepalive_interval"
-	// IPCFieldRemove is the remove peer field name
-	IPCFieldRemove = "remove"
 )
 
 // Tunnel wraps a WireGuard tunnel with lifecycle management.
@@ -55,9 +52,9 @@ const (
 //   - Closes the TUN interface (via wireguard-go's Close)
 //   - Closes the bind (via wireguard-go's Close)
 //
-// Note: Close() does NOT close the underlying network connection if using ICEBind.
-// ICEBind follows the ownership pattern where the caller who created the connection
-// is responsible for closing it. See ICEBind documentation for cleanup order.
+// Note: Close() does NOT close the connections behind the bind. ice.MultiBind
+// follows the ownership pattern where the caller who created a connection is
+// responsible for closing it.
 //
 // # Cleanup Order (when using with ICE)
 //
@@ -85,7 +82,7 @@ type Tunnel struct {
 //
 // Parameters:
 //   - tunDev: A TUN interface (from CreateTUN, CreateNetTUN, or CreateTUNFromFD)
-//   - bind: A conn.Bind implementation (typically ICEBind for NAT traversal)
+//   - bind: A conn.Bind implementation (ice.MultiBind in ghost)
 //   - config: WireGuard configuration (validated before use)
 //   - logger: Optional logger (defaults to slog.Default() if nil)
 //
@@ -485,19 +482,10 @@ func (d *Tunnel) Close() error {
 
 	// Close the WireGuard tunnel.
 	// This internally calls bind.Close() and tun.Close().
-	// For ICEBind, Close() stops the receive loop but does NOT close
+	// For ice.MultiBind, Close() stops the receive loops but does NOT close
 	// the underlying connection (ownership pattern).
 	d.wg.Close()
 
 	d.logger.Info("WireGuard tunnel closed")
 	return nil
-}
-
-// parseAllowedIP parses an allowed IP string and returns the prefix.
-func parseAllowedIP(allowedIP string) (netip.Prefix, error) {
-	prefix, err := netip.ParsePrefix(allowedIP)
-	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("invalid allowed IP format: %w", err)
-	}
-	return prefix, nil
 }

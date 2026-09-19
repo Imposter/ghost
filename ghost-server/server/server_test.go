@@ -561,7 +561,7 @@ func TestControlAPI(t *testing.T) {
 	// Peers.
 	creds := h.peer("lab", "e", exitRoles, "tag:exit")
 	h.ctl("DELETE", "/control/networks/lab/tags/tag:exit", nil, nil, http.StatusBadRequest) // an ACL still references it
-	h.ctl("DELETE", "/control/networks/lab", nil, nil, http.StatusConflict)               // still has peers
+	h.ctl("DELETE", "/control/networks/lab", nil, nil, http.StatusConflict)                 // still has peers
 	var pv httpapi.PeerView
 	h.ctl("PATCH", "/control/peers/"+creds.PeerID, map[string]any{"name": "renamed", "roles": []string{"hub"}, "tags": []string{}}, &pv, http.StatusOK)
 	if pv.Name != "renamed" || !slices.Equal(pv.Roles, hubRoles) || len(pv.Tags) != 0 {

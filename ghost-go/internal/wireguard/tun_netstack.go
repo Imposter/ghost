@@ -163,7 +163,7 @@ func CreateNetTUN(localAddresses []netip.Addr, dnsServers []netip.Addr, mtu int)
 	// Create the netstack TUN interface
 	tunDev, tnet, err := netstack.CreateNetTUN(localAddresses, dnsServers, mtu)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrNetstackCreationFailed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrNetstackCreationFailed, err)
 	}
 
 	// Only packets for our own addresses reach the stack: never forward.

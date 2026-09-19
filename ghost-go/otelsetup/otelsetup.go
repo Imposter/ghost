@@ -2,8 +2,8 @@
 // binaries (a node, a hub, the signalling server, or a CLI). Library packages
 // (ghost, exit, signal) depend only on the OTel API and take a MeterProvider /
 // TracerProvider; this package is where the SDK, the Prometheus exporter, and
-// the optional OTLP exporters actually live, so the API/SDK split the operator
-// asked for is preserved.
+// the optional OTLP exporters actually live, which keeps the libraries free of
+// the SDK.
 //
 // The Prometheus HTTP handler returned here is meant to be served on the
 // node's tunnel IP only (over the netstack), so /metrics is never reachable
@@ -19,9 +19,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
-	promexp "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	promexp "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"

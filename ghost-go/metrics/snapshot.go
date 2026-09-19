@@ -8,9 +8,9 @@
 //	GET /metrics?format=json          a JSON Snapshot
 //	GET /metrics/connections?limit=N  the most recent connections, newest first
 //
-// A hub reads them over the tunnel with Client. The owner's desktop app reads
-// the same Snapshot in-process (ghost.Node.Snapshot), so the JSON shape here is
-// the single contract for the admin API, the gateway and the FFI binding.
+// A hub reads them over the tunnel with Client, and an in-process reader gets
+// the same Snapshot from ghost.Node.Snapshot, so the JSON shape here is the
+// single contract for every consumer.
 //
 // The package depends only on the exit package and the standard library; the
 // OpenTelemetry SDK stays in binaries (otelsetup).

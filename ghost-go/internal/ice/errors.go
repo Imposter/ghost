@@ -3,12 +3,6 @@ package ice
 import "errors"
 
 var (
-	// ErrGatherTimeout indicates that candidate gathering timed out.
-	ErrGatherTimeout = errors.New("candidate gathering timed out")
-
-	// ErrConnectionFailed indicates that ICE connection establishment failed.
-	ErrConnectionFailed = errors.New("ICE connection failed")
-
 	// ErrInvalidCandidate indicates that a candidate is invalid.
 	ErrInvalidCandidate = errors.New("invalid candidate")
 

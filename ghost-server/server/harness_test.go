@@ -357,7 +357,7 @@ type watcher struct {
 func (h *harness) watch(query string) *watcher {
 	h.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, "GET", h.base+"/control/watch?"+query, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.base+"/control/watch?"+query, nil)
 	if err != nil {
 		h.t.Fatal(err)
 	}

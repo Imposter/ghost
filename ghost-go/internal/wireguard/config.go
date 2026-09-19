@@ -26,9 +26,6 @@ const (
 	// 25 seconds keeps NAT bindings alive while being bandwidth-efficient.
 	DefaultPersistentKeepalive = 25 * time.Second
 
-	// MinPort is the minimum valid port number (1-65535).
-	MinPort = 1
-
 	// MaxPort is the maximum valid port number (1-65535).
 	MaxPort = 65535
 )

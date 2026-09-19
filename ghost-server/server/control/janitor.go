@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Imposter/ghost/ghost-go/signal/proto"
@@ -52,10 +53,10 @@ func (s *Service) ephemeralStale(p store.Peer, now time.Time) bool {
 // DisconnectCodeFor maps an authentication error to the fatal signalling
 // error code the relay sends.
 func DisconnectCodeFor(err error) string {
-	switch err {
-	case ErrPeerRevoked:
+	switch {
+	case errors.Is(err, ErrPeerRevoked):
 		return proto.ErrCodeRevoked
-	case ErrPeerExpired:
+	case errors.Is(err, ErrPeerExpired):
 		return proto.ErrCodeExpired
 	}
 	return proto.ErrCodeUnauthorized
