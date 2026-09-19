@@ -3,6 +3,7 @@ package ice
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"time"
 )
@@ -88,6 +89,10 @@ type ICEConfig struct {
 	// FailedTimeout is the time to wait before transitioning from disconnected to failed.
 	// Default: 15 seconds
 	FailedTimeout time.Duration
+
+	// IPFilter, when set, restricts host candidates to local IPs for which it
+	// returns true (for example loopback only in tests).
+	IPFilter func(net.IP) bool
 
 	// InterfaceFilter is a list of network interface names to use.
 	// If empty, all interfaces are used.

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/pion/ice/v3"
 	"github.com/pion/stun/v2"
@@ -141,6 +142,10 @@ type pionAgent struct {
 	// callbackMu protects stateChangeCallback because callbacks are invoked
 	// from Pion's internal goroutines
 	callbackMu sync.RWMutex
+
+	// mu guards closed, conn and the remote credentials so that Close and
+	// AddRemoteCandidate may be called while Connect is blocked.
+	mu sync.Mutex
 	// Connection state change callback
 	stateChangeCallback ConnectionStateChangeCallback
 }
@@ -160,7 +165,7 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 	}
 
 	// Create candidate channel for OnCandidate callback
-	candidateChan := make(chan *Candidate, 10)
+	candidateChan := make(chan *Candidate, 64)
 	gatherDone := make(chan struct{})
 
 	// Build ICE agent configuration
@@ -170,6 +175,26 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 		KeepaliveInterval:   &config.KeepaliveInterval,
 		DisconnectedTimeout: &config.DisconnectedTimeout,
 		FailedTimeout:       &config.FailedTimeout,
+		IPFilter:            config.IPFilter,
+	}
+
+	if len(config.InterfaceFilter) > 0 {
+		allowed := make(map[string]bool, len(config.InterfaceFilter))
+		for _, name := range config.InterfaceFilter {
+			allowed[name] = true
+		}
+		agentConfig.InterfaceFilter = func(name string) bool { return allowed[name] }
+	}
+
+	for _, ct := range config.CandidateTypes {
+		switch ct {
+		case CandidateTypeHost:
+			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeHost)
+		case CandidateTypeSrflx:
+			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeServerReflexive)
+		case CandidateTypeRelay:
+			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeRelay)
+		}
 	}
 
 	// Set port range if specified (useful for firewall rules)
@@ -294,7 +319,7 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 
 // GatherCandidates starts gathering local ICE candidates.
 func (a *pionAgent) GatherCandidates(ctx context.Context) (<-chan *Candidate, error) {
-	if a.closed {
+	if a.isClosed() {
 		return nil, ErrAlreadyClosed
 	}
 
@@ -349,7 +374,7 @@ func (a *pionAgent) GatherCandidates(ctx context.Context) (<-chan *Candidate, er
 
 // AddRemoteCandidate adds a remote candidate to the agent.
 func (a *pionAgent) AddRemoteCandidate(candidate *Candidate) error {
-	if a.closed {
+	if a.isClosed() {
 		return ErrAlreadyClosed
 	}
 
@@ -373,6 +398,8 @@ func (a *pionAgent) AddRemoteCandidate(candidate *Candidate) error {
 
 // SetRemoteCredentials sets the remote ICE credentials.
 func (a *pionAgent) SetRemoteCredentials(ufrag, pwd string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.closed {
 		return ErrAlreadyClosed
 	}
@@ -398,16 +425,22 @@ func (a *pionAgent) LocalCredentials() (ufrag, pwd string) {
 // If controlling is true, this peer will use Dial (controlling agent).
 // If false, this peer will use Accept (controlled agent).
 func (a *pionAgent) Connect(ctx context.Context, controlling bool) (net.Conn, error) {
+	a.mu.Lock()
 	if a.closed {
+		a.mu.Unlock()
 		return nil, ErrAlreadyClosed
 	}
 
 	if a.conn != nil {
-		return a.conn, nil
+		c := a.conn
+		a.mu.Unlock()
+		return c, nil
 	}
 
 	// Validate remote credentials are set
-	if a.remoteUfrag == "" || a.remotePwd == "" {
+	remoteUfrag, remotePwd := a.remoteUfrag, a.remotePwd
+	a.mu.Unlock()
+	if remoteUfrag == "" || remotePwd == "" {
 		return nil, fmt.Errorf("remote credentials not set")
 	}
 
@@ -428,10 +461,10 @@ func (a *pionAgent) Connect(ctx context.Context, controlling bool) (net.Conn, er
 
 	if controlling {
 		// Controlling agent uses Dial
-		conn, err = a.agent.Dial(connectCtx, a.remoteUfrag, a.remotePwd)
+		conn, err = a.agent.Dial(connectCtx, remoteUfrag, remotePwd)
 	} else {
 		// Controlled agent uses Accept
-		conn, err = a.agent.Accept(connectCtx, a.remoteUfrag, a.remotePwd)
+		conn, err = a.agent.Accept(connectCtx, remoteUfrag, remotePwd)
 	}
 
 	if err != nil {
@@ -439,7 +472,14 @@ func (a *pionAgent) Connect(ctx context.Context, controlling bool) (net.Conn, er
 		return nil, fmt.Errorf("failed to establish connection: %w", err)
 	}
 
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		_ = conn.Close()
+		return nil, ErrAlreadyClosed
+	}
 	a.conn = conn
+	a.mu.Unlock()
 
 	pair, err := a.GetSelectedCandidatePair()
 	if err == nil {
@@ -456,11 +496,14 @@ func (a *pionAgent) Connect(ctx context.Context, controlling bool) (net.Conn, er
 
 // GetSelectedCandidatePair returns the selected candidate pair after connection.
 func (a *pionAgent) GetSelectedCandidatePair() (*CandidatePair, error) {
-	if a.closed {
+	a.mu.Lock()
+	closed, connected := a.closed, a.conn != nil
+	a.mu.Unlock()
+	if closed {
 		return nil, ErrAlreadyClosed
 	}
 
-	if a.conn == nil {
+	if !connected {
 		return nil, ErrNotConnected
 	}
 
@@ -481,19 +524,23 @@ func (a *pionAgent) GetSelectedCandidatePair() (*CandidatePair, error) {
 
 // Close closes the agent and releases all resources.
 func (a *pionAgent) Close() error {
+	a.mu.Lock()
 	if a.closed {
+		a.mu.Unlock()
 		return ErrAlreadyClosed
 	}
 
 	a.closed = true
+	c := a.conn
+	a.conn = nil
+	a.mu.Unlock()
 
 	a.logger.Info("Closing ICE agent")
 
-	if a.conn != nil {
-		if err := a.conn.Close(); err != nil {
+	if c != nil {
+		if err := c.Close(); err != nil {
 			a.logger.Warn("Error closing connection", "error", err)
 		}
-		a.conn = nil
 	}
 
 	if err := a.agent.Close(); err != nil {
@@ -501,6 +548,28 @@ func (a *pionAgent) Close() error {
 	}
 
 	return nil
+}
+
+// isClosed reports whether Close has been called.
+func (a *pionAgent) isClosed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
+}
+
+// RoundTripTime returns the latest RTT measured on the nominated candidate
+// pair, or zero when none is known yet.
+func (a *pionAgent) RoundTripTime() time.Duration {
+	if a.isClosed() {
+		return 0
+	}
+	var best float64
+	for _, st := range a.agent.GetCandidatePairsStats() {
+		if st.Nominated && st.CurrentRoundTripTime > 0 {
+			best = st.CurrentRoundTripTime
+		}
+	}
+	return time.Duration(best * float64(time.Second))
 }
 
 // OnConnectionStateChange sets a callback to be invoked when the ICE connection state changes.
