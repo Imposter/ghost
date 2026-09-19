@@ -74,6 +74,18 @@ type Event struct {
 // healthInterval is how often a member reports tunnel health.
 const healthInterval = 30 * time.Second
 
+// peerKeepalive is the WireGuard persistent keepalive the ICE controlling side
+// of a link sends.
+const peerKeepalive = 15 * time.Second
+
+// handshakeWait bounds how long a newly wired link waits for its first
+// WireGuard handshake before EventPeerConnected; handshakePoll is how often it
+// checks.
+const (
+	handshakeWait = 20 * time.Second
+	handshakePoll = 20 * time.Millisecond
+)
+
 // mesh is the shared machinery behind Node and Hub: a signalling client, one
 // netstack-backed WireGuard tunnel, a MultiBind, and one ICE agent per peer.
 // Which peers it connects to follows the netmap the control plane sends.
@@ -348,6 +360,8 @@ func (m *mesh) setupTunnelLocked(j proto.Joined) error {
 	wgCfg.PrivateKey = m.keys.privateKeyBytes()
 	wgCfg.ListenPort = 0
 	wgCfg.MTU = m.cfg.mtu()
+	// Keepalive is set per peer (see wireUpPeer); a peer without one gets none.
+	wgCfg.PersistentKeepalive = 0
 
 	dev, err := wireguard.NewTunnel(tunDev, m.bind, wgCfg, m.log)
 	if err != nil {
@@ -498,7 +512,16 @@ func (m *mesh) connectToPeer(peer proto.PeerInfo, controlling bool) {
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("ice agent: %w", err)})
 		return
 	}
+	// Set the agent under the lock: heartbeats snapshot links concurrently,
+	// and a link closed or torn down meanwhile must not leak the agent.
+	m.mu.Lock()
+	if m.closed || m.links[peer.PeerID] != l {
+		m.mu.Unlock()
+		_ = agent.Close()
+		return
+	}
 	l.agent = agent
+	m.mu.Unlock()
 
 	// Gather and trickle candidates to the peer.
 	go m.gather(l)
@@ -602,49 +625,117 @@ func (m *mesh) startConnect(l *peerLink) {
 			l.conn = conn
 			l.candType = candType
 			m.mu.Unlock()
-			m.wireUpPeer(l)
+			if !m.wireUpPeer(l) {
+				return
+			}
+			if !m.awaitHandshake(l) {
+				return
+			}
+			m.emit(Event{Kind: EventPeerConnected, PeerID: l.peerID, Address: l.address, CandidateType: candType})
+			m.reportHealth()
 		}()
 	})
 }
 
 // wireUpPeer registers the ICE connection in the bind and adds the peer to the
-// WireGuard tunnel.
-func (m *mesh) wireUpPeer(l *peerLink) {
+// WireGuard tunnel. It reports whether the peer was added.
+func (m *mesh) wireUpPeer(l *peerLink) bool {
 	m.mu.Lock()
 	if m.closed || m.wg == nil || l.conn == nil || m.links[l.peerID] != l {
 		m.mu.Unlock()
-		return
+		return false
 	}
 	// Last line of defence: never configure a WireGuard key that hub-only
 	// isolation forbids, even if the link got this far.
 	if p, ok := m.netmapPeerLocked(l.peerID); !ok || !m.linkableLocked(p) {
 		m.mu.Unlock()
 		m.refuseLink(l.peerID)
-		return
+		return false
 	}
-	m.bind.SetConn(l.epKey, l.conn)
-
 	pubKey, err := wireguard.DecodeKey(l.publicKey)
 	if err != nil {
 		m.mu.Unlock()
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("decode peer key: %w", err)})
-		return
+		return false
 	}
+	// Exactly one side of a link starts the WireGuard handshake: the ICE
+	// controlling side. Its persistent keepalive fires the moment the peer is
+	// added, which initiates the handshake at once. If both sides did that,
+	// they would wire up within milliseconds of each other (ICE completes on
+	// both ends together) and send crossing initiations; each side consumes the
+	// other's initiation, which discards its own pending one, so both responses
+	// are rejected and the tunnel stays down until the 5s retry, which under
+	// load can collide again. The controlled side only responds: ICE's own
+	// keepalives hold the path open from both ends, and the controlling side,
+	// as the session's initiator, also owns its rekeys.
 	pc := &wireguard.PeerConfig{
-		PublicKey:           pubKey,
-		AllowedIPs:          m.allowedIPsFor(l),
-		Endpoint:            l.epKey,
-		PersistentKeepalive: 15 * time.Second,
+		PublicKey:  pubKey,
+		AllowedIPs: m.allowedIPsFor(l),
+		Endpoint:   l.epKey,
+	}
+	if l.controlling {
+		pc.PersistentKeepalive = peerKeepalive
+		// The initiation goes out during AddPeer, so the connection must be
+		// in the bind first.
+		m.bind.SetConn(l.epKey, l.conn)
 	}
 	if err := m.wg.AddPeer(pc); err != nil {
+		if l.controlling {
+			m.bind.RemoveConn(l.epKey)
+		}
 		m.mu.Unlock()
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("add wg peer: %w", err)})
-		return
+		return false
+	}
+	if !l.controlling {
+		// The controlled side registers the connection only once the peer
+		// exists, so the controlling side's first initiation (possibly already
+		// buffered on the ICE connection) is never read before WireGuard knows
+		// the key and dropped until the retry.
+		m.bind.SetConn(l.epKey, l.conn)
 	}
 	l.added = true
 	m.mu.Unlock()
-	m.emit(Event{Kind: EventPeerConnected, PeerID: l.peerID, Address: l.address, CandidateType: l.candType})
-	m.reportHealth()
+	return true
+}
+
+// awaitHandshake waits, up to handshakeWait, for the first WireGuard handshake
+// with l's peer, so EventPeerConnected means the tunnel carries traffic. It
+// matters most on the ICE controlled side, which never initiates: an app that
+// sent data there before the controlling side's initiation arrived would
+// start a second, crossing handshake. If the wait runs out the link stays
+// wired (WireGuard keeps retrying), an EventError reports it and it still
+// reports true. It reports false when the mesh closed or the link was torn
+// down or replaced meanwhile, so the peer must not be announced.
+func (m *mesh) awaitHandshake(l *peerLink) bool {
+	deadline := time.NewTimer(handshakeWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(handshakePoll)
+	defer tick.Stop()
+	for {
+		m.mu.Lock()
+		dev, current := m.wg, !m.closed && m.links[l.peerID] == l
+		m.mu.Unlock()
+		if dev == nil || !current {
+			return false
+		}
+		status, err := dev.GetStatus()
+		if err != nil {
+			return false // tunnel closed
+		}
+		if _, ok := parseHandshakeTimes(status)[l.publicKey]; ok {
+			return true
+		}
+		select {
+		case <-m.ctx.Done():
+			return false
+		case <-deadline.C:
+			m.emit(Event{Kind: EventError, PeerID: l.peerID,
+				Err: fmt.Errorf("wireguard handshake with %s not complete after %s", l.peerID, handshakeWait)})
+			return true
+		case <-tick.C:
+		}
+	}
 }
 
 // allowedIPsFor returns the WireGuard AllowedIPs for a link: exactly the
