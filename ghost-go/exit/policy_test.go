@@ -15,7 +15,7 @@ func TestAllowlistExactAndWildcard(t *testing.T) {
 		want bool
 	}{
 		{"example.com", 443, true},
-		{"example.com", 80, false},      // port not allowed
+		{"example.com", 80, false},       // port not allowed
 		{"a.api.example.com", 443, true}, // wildcard, any port
 		{"a.api.example.com", 8080, true},
 		{"deep.a.api.example.com", 443, true},

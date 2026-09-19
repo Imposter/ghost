@@ -119,10 +119,10 @@ type PeerStat struct {
 // deterministically (by traffic, then key) and never nil.
 type Snapshot struct {
 	Time time.Time `json:"time"`
-	// DeviceID and Address identify the node and its tunnel address, when
+	// PeerID and Address identify the node and its tunnel address, when
 	// known.
-	DeviceID string `json:"device_id,omitempty"`
-	Address  string `json:"address,omitempty"`
+	PeerID  string `json:"peer_id,omitempty"`
+	Address string `json:"address,omitempty"`
 
 	Totals       Totals            `json:"totals"`
 	Destinations []DestinationStat `json:"destinations"`

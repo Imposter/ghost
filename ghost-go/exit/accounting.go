@@ -35,7 +35,7 @@ const (
 // Accountant when the connection finishes. A3b implements Accountant to
 // export these as metrics; the exit package itself only produces the record.
 type ConnInfo struct {
-	// SourcePeer is the tunnel peer that opened the connection: its device id
+	// SourcePeer is the tunnel peer that opened the connection: its peer id
 	// when the server's PeerResolver knows it, else its tunnel IP (never the
 	// ephemeral port, which would be an unbounded label).
 	SourcePeer string
@@ -90,15 +90,15 @@ type AccountantFunc func(ConnInfo)
 // Record calls f.
 func (f AccountantFunc) Record(ci ConnInfo) { f(ci) }
 
-// PeerResolver maps a client's tunnel address to the device id of the peer
+// PeerResolver maps a client's tunnel address to the peer id of the peer
 // that owns it. ghost.Node and ghost.Hub implement it over their live links.
 type PeerResolver interface {
-	// PeerForAddr returns the device id owning addr, or "" when unknown.
+	// PeerForAddr returns the peer id owning addr, or "" when unknown.
 	PeerForAddr(addr net.Addr) string
 }
 
 // sourcePeer resolves the source peer for a client address: the resolver's
-// device id when known, else the bare IP.
+// peer id when known, else the bare IP.
 func sourcePeer(r PeerResolver, addr net.Addr) string {
 	if addr == nil {
 		return ""

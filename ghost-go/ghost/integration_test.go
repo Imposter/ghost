@@ -12,7 +12,6 @@ import (
 
 	"github.com/Imposter/ghost/ghost-go/internal/nettest"
 	"github.com/Imposter/ghost/ghost-go/signal"
-	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 // loopbackTuner restricts a mesh's ICE to the loopback interface (host
@@ -64,7 +63,7 @@ func TestNodeHubTwoNodes(t *testing.T) {
 	// --- Hub ---
 	hubCfg := Config{
 		SignalDialer:   dialer,
-		DeviceToken:    "hub-token",
+		PeerToken:      "hub-token",
 		Network:        "testnet",
 		ConnectTimeout: 15 * time.Second,
 	}
@@ -98,7 +97,7 @@ func TestNodeHubTwoNodes(t *testing.T) {
 	startNode := func(token string) *Node {
 		cfg := Config{
 			SignalDialer:   dialer,
-			DeviceToken:    token,
+			PeerToken:      token,
 			Network:        "testnet",
 			ConnectTimeout: 15 * time.Second,
 		}
@@ -172,7 +171,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 
 func TestNodeStatusBeforeJoin(t *testing.T) {
 	fake := signal.NewFakeServer("100.64.0.0/10")
-	cfg := Config{SignalDialer: fake.Dialer(), DeviceToken: "t", Network: "n"}
+	cfg := Config{SignalDialer: fake.Dialer(), PeerToken: "t", Network: "n"}
 	loopbackTuner(&cfg)
 	n, err := NewNode(cfg)
 	if err != nil {
@@ -180,8 +179,8 @@ func TestNodeStatusBeforeJoin(t *testing.T) {
 	}
 	defer n.Close()
 	st := n.Status()
-	if st.Role != proto.RoleNode {
-		t.Errorf("role=%q", st.Role)
+	if len(st.Roles) != 0 {
+		t.Errorf("a node claims no roles before its netmap arrives: %v", st.Roles)
 	}
 	if st.Peers != 0 {
 		t.Errorf("expected 0 peers before start")

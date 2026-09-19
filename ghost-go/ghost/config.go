@@ -38,7 +38,7 @@ type TURNServer struct {
 }
 
 // Config configures a Node or Hub. The zero value is not usable; set at least
-// SignalURL and DeviceToken (or SignalDialer for in-memory tests), and Network.
+// SignalURL and PeerToken (or SignalDialer for in-memory tests), and Network.
 type Config struct {
 	// SignalURL is the signalling server WebSocket URL.
 	SignalURL string
@@ -46,10 +46,10 @@ type Config struct {
 	// a signal.FakeServer dialer to run without a network.
 	SignalDialer signal.Dialer
 
-	// DeviceToken authenticates this device to the signalling server.
-	DeviceToken string
-	// DeviceID is this device's stable identifier, if already known.
-	DeviceID string
+	// PeerToken authenticates this peer to the control plane.
+	PeerToken string
+	// PeerID is this peer's stable identifier, if already known.
+	PeerID string
 
 	// Network is the name of the network to join.
 	Network string

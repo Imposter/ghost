@@ -1,8 +1,8 @@
 // Package signal is a versioned WebSocket JSON signalling client for ghost.
 // It speaks the protocol defined in ghost-go/signal/proto (v1): hello/auth
-// with a device token, join-network, offer/answer/candidate relay,
-// peer-online/offline, heartbeat, and address assignment. It reconnects with
-// exponential backoff and exposes both Go channels and callbacks.
+// with a peer token, join-network, netmap snapshots and deltas,
+// offer/answer/candidate relay, health reports, and heartbeats. It reconnects
+// with exponential backoff and exposes both Go channels and callbacks.
 package signal
 
 import (
@@ -23,14 +23,15 @@ import (
 type Config struct {
 	// URL is the signalling server WebSocket URL (ws:// or wss://).
 	URL string
-	// DeviceToken authenticates the device.
-	DeviceToken string
-	// DeviceID is the caller's stable device id, if known.
-	DeviceID string
-	// PublicKey is the device's WireGuard public key (base64).
+	// PeerToken authenticates the peer.
+	PeerToken string
+	// PeerID is the caller's peer id, if known.
+	PeerID string
+	// PublicKey is the peer's WireGuard public key (base64).
 	PublicKey string
-	// Role is how this device participates.
-	Role proto.Role
+	// Roles, when set, are roles the peer expects to hold; the server rejects
+	// the hello if the peer lacks any of them.
+	Roles []proto.Role
 	// Dialer, if set, is used to open the WebSocket instead of the default.
 	// It enables the in-memory fake server used in tests.
 	Dialer Dialer
@@ -60,9 +61,6 @@ func (c *Config) applyDefaults() {
 	if c.HandshakeTimeout <= 0 {
 		c.HandshakeTimeout = 15 * time.Second
 	}
-	if c.Role == "" {
-		c.Role = proto.RoleNode
-	}
 }
 
 // Conn is the minimal WebSocket connection the client needs. It is satisfied
@@ -84,12 +82,10 @@ type Dialer interface {
 type Handlers struct {
 	OnWelcome     func(proto.Welcome)
 	OnJoined      func(proto.Joined)
+	OnNetmap      func(proto.Netmap)
+	OnNetmapDelta func(proto.NetmapDelta)
 	OnSignal      func(proto.Type, proto.Signal)
-	OnPeerOnline  func(proto.PeerEvent)
-	OnPeerOffline func(proto.PeerEvent)
-	OnAddress     func(proto.AddressAssignment)
 	OnError       func(proto.Error)
-	OnPolicy      func(proto.ExitPolicy)
 	// OnStateChange reports connection state transitions.
 	OnStateChange func(State)
 }
@@ -129,11 +125,10 @@ type Event struct {
 	Type    proto.Type
 	Welcome *proto.Welcome
 	Joined  *proto.Joined
+	Netmap  *proto.Netmap
+	Delta   *proto.NetmapDelta
 	Signal  *proto.Signal
-	Peer    *proto.PeerEvent
-	Address *proto.AddressAssignment
 	Err     *proto.Error
-	Policy  *proto.ExitPolicy
 	// State is set for connection-state change events (Type == "").
 	State State
 }
@@ -233,11 +228,11 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 
 	// Send hello.
 	hello, _ := proto.Encode(proto.TypeHello, proto.Hello{
-		Version:     proto.Version,
-		DeviceToken: c.cfg.DeviceToken,
-		DeviceID:    c.cfg.DeviceID,
-		Role:        c.cfg.Role,
-		PublicKey:   c.cfg.PublicKey,
+		Version:   proto.Version,
+		PeerToken: c.cfg.PeerToken,
+		PeerID:    c.cfg.PeerID,
+		Roles:     c.cfg.Roles,
+		PublicKey: c.cfg.PublicKey,
 	})
 	if err := conn.Write(hsCtx, hello); err != nil {
 		cancel()
@@ -353,33 +348,19 @@ func (c *Client) dispatch(env proto.Envelope) {
 		if c.handlers.OnSignal != nil {
 			c.handlers.OnSignal(env.Type, s)
 		}
-	case proto.TypePeerOnline:
-		var p proto.PeerEvent
-		_ = env.Decode(&p)
-		c.emit(Event{Type: env.Type, Peer: &p})
-		if c.handlers.OnPeerOnline != nil {
-			c.handlers.OnPeerOnline(p)
+	case proto.TypeNetmap:
+		var n proto.Netmap
+		_ = env.Decode(&n)
+		c.emit(Event{Type: env.Type, Netmap: &n})
+		if c.handlers.OnNetmap != nil {
+			c.handlers.OnNetmap(n)
 		}
-	case proto.TypePeerOffline:
-		var p proto.PeerEvent
-		_ = env.Decode(&p)
-		c.emit(Event{Type: env.Type, Peer: &p})
-		if c.handlers.OnPeerOffline != nil {
-			c.handlers.OnPeerOffline(p)
-		}
-	case proto.TypeAddressAssignment:
-		var a proto.AddressAssignment
-		_ = env.Decode(&a)
-		c.emit(Event{Type: env.Type, Address: &a})
-		if c.handlers.OnAddress != nil {
-			c.handlers.OnAddress(a)
-		}
-	case proto.TypePolicy:
-		var p proto.ExitPolicy
-		_ = env.Decode(&p)
-		c.emit(Event{Type: env.Type, Policy: &p})
-		if c.handlers.OnPolicy != nil {
-			c.handlers.OnPolicy(p)
+	case proto.TypeNetmapDelta:
+		var d proto.NetmapDelta
+		_ = env.Decode(&d)
+		c.emit(Event{Type: env.Type, Delta: &d})
+		if c.handlers.OnNetmapDelta != nil {
+			c.handlers.OnNetmapDelta(d)
 		}
 	case proto.TypeHeartbeat:
 		// Server keepalive; nothing to do.
@@ -400,9 +381,14 @@ func (c *Client) dispatchError(e proto.Error) {
 }
 
 // Join asks to join a network. It is safe to call once connected; the reply
-// arrives as a Joined event.
+// arrives as a Joined event followed by a Netmap event.
 func (c *Client) Join(ctx context.Context, network string) error {
-	return c.send(ctx, proto.TypeJoinNetwork, proto.JoinNetwork{Network: network, Role: c.cfg.Role})
+	return c.send(ctx, proto.TypeJoinNetwork, proto.JoinNetwork{Network: network})
+}
+
+// SendHealth reports tunnel health to the server.
+func (c *Client) SendHealth(ctx context.Context, h proto.Health) error {
+	return c.send(ctx, proto.TypeHealth, h)
 }
 
 // SendOffer relays an ICE offer to a peer.

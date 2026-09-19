@@ -145,7 +145,7 @@ func (c *Collector) Recent(limit int) []Connection {
 // RingSize returns the ring buffer capacity.
 func (c *Collector) RingSize() int { return c.ring.Cap() }
 
-// Snapshot returns the exit-side snapshot. Tunnel, DeviceID and Address are
+// Snapshot returns the exit-side snapshot. Tunnel, PeerID and Address are
 // left empty; ghost.Node.Snapshot fills them in.
 func (c *Collector) Snapshot() Snapshot {
 	c.mu.Lock()

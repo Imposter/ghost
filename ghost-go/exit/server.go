@@ -49,7 +49,7 @@ type Config struct {
 	// IdleTimeout closes idle proxied connections (0 = no idle timeout).
 	IdleTimeout time.Duration
 
-	// PeerResolver maps a client's tunnel address to its device id for
+	// PeerResolver maps a client's tunnel address to its peer id for
 	// ConnInfo.SourcePeer. When nil, or when it does not know the address, the
 	// client's tunnel IP is used. Pass the ghost.Node or ghost.Hub serving the
 	// exit.
@@ -327,10 +327,10 @@ func (s *Server) handleRequest(client net.Conn, br *bufio.Reader, req proxyReque
 // connTrack follows one exit connection from acceptance to its single
 // accounting record, metric set and span.
 type connTrack struct {
-	s         *Server
-	ctx       context.Context
-	span      trace.Span
-	info      ConnInfo
+	s    *Server
+	ctx  context.Context
+	span trace.Span
+	info ConnInfo
 }
 
 // begin opens the span, marks the connection active and returns its tracker.

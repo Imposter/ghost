@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// fixedResolver maps every address to one device id.
+// fixedResolver maps every address to one peer id.
 type fixedResolver string
 
 func (f fixedResolver) PeerForAddr(net.Addr) string { return string(f) }

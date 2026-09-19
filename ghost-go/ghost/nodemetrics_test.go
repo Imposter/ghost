@@ -40,7 +40,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	tPort, _ := strconv.Atoi(tPortStr)
 
 	// --- Hub ---
-	hubCfg := Config{SignalDialer: fake.Dialer(), DeviceToken: "hub-token", Network: "m", ConnectTimeout: 15 * time.Second}
+	hubCfg := Config{SignalDialer: fake.Dialer(), PeerToken: "hub-token", Network: "m", ConnectTimeout: 15 * time.Second}
 	loopbackTuner(&hubCfg)
 	hub, err := NewHub(hubCfg)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	defer otel.Shutdown(ctx)
 	col := metrics.NewCollector(metrics.CollectorConfig{RingSize: 8})
 	nodeCfg := Config{
-		SignalDialer: fake.Dialer(), DeviceToken: "node-token", Network: "m", ConnectTimeout: 15 * time.Second,
+		SignalDialer: fake.Dialer(), PeerToken: "node-token", Network: "m", ConnectTimeout: 15 * time.Second,
 		Metrics: &MetricsConfig{Collector: col, Prometheus: otel.PrometheusHandler},
 	}
 	loopbackTuner(&nodeCfg)
@@ -90,8 +90,8 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	}
 	go func() { _ = ex.Serve(exLn) }()
 
-	nodeID := node.Status().DeviceID
-	hubID := hub.Status().DeviceID
+	nodeID := node.Status().PeerID
+	hubID := hub.Status().PeerID
 	waitFor(t, 10*time.Second, func() bool { return len(hub.Peers()) == 1 })
 
 	// The hub proxies one request through the node's exit (HTTP CONNECT).
@@ -114,7 +114,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeSnapshot: %v", err)
 	}
-	if snap.DeviceID != nodeID || snap.Totals.Connections != 1 || snap.Totals.BytesIn == 0 {
+	if snap.PeerID != nodeID || snap.Totals.Connections != 1 || snap.Totals.BytesIn == 0 {
 		t.Errorf("snapshot=%+v", snap)
 	}
 	if len(snap.Sources) != 1 || snap.Sources[0].Peer != hubID || snap.Sources[0].Tag != "job=metrics" {
@@ -141,7 +141,7 @@ func TestNodeMetricsOverTunnel(t *testing.T) {
 		t.Errorf("local snapshot=%+v", local)
 	}
 
-	if _, err := fetcher.NodeSnapshot(ctx, "no-such-device"); !errors.Is(err, ErrUnknownPeer) {
+	if _, err := fetcher.NodeSnapshot(ctx, "no-such-peer"); !errors.Is(err, ErrUnknownPeer) {
 		t.Errorf("unknown peer err=%v", err)
 	}
 

@@ -12,14 +12,15 @@ import (
 
 	"github.com/Imposter/ghost/ghost-go/exit"
 	"github.com/Imposter/ghost/ghost-go/metrics"
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 // MetricsConfig makes a Node serve its strict metrics on its tunnel IP.
 //
 // The endpoint listens inside the tunnel netstack (no OS port is bound), so it
-// is unreachable from the owner's LAN or the internet. Only the hub this node
-// joined through, plus the device ids in AllowPeers, may read it; any other
-// caller gets 403.
+// is unreachable from the owner's LAN or the internet. Only peers holding the
+// hub role in this member's netmap, plus the peer ids in AllowPeers, may read
+// it; any other caller gets 403.
 type MetricsConfig struct {
 	// Collector is the exit's Accountant. It backs the JSON snapshot, the
 	// recent-connections ring and Node.Snapshot. Required.
@@ -29,8 +30,8 @@ type MetricsConfig struct {
 	Prometheus http.Handler
 	// Port is the tunnel-side port (default metrics.DefaultPort).
 	Port int
-	// AllowPeers lists extra device ids allowed to read metrics besides the
-	// hub.
+	// AllowPeers lists extra peer ids allowed to read metrics besides the
+	// netmap's hubs.
 	AllowPeers []string
 }
 
@@ -43,7 +44,7 @@ func (c *MetricsConfig) port() int {
 
 // Errors returned by the NodeMetricsFetcher methods.
 var (
-	// ErrUnknownPeer means no connected node has the requested device id.
+	// ErrUnknownPeer means no connected peer has the requested peer id.
 	ErrUnknownPeer = errors.New("ghost: unknown or disconnected peer")
 	// ErrNoMetrics means the member has no MetricsConfig.Collector.
 	ErrNoMetrics = errors.New("ghost: metrics not configured")
@@ -54,12 +55,12 @@ var (
 // this interface rather than on Hub.
 type NodeMetricsFetcher interface {
 	// NodeSnapshot fetches the node's JSON snapshot (GET /metrics?format=json).
-	NodeSnapshot(ctx context.Context, deviceID string) (metrics.Snapshot, error)
+	NodeSnapshot(ctx context.Context, peerID string) (metrics.Snapshot, error)
 	// NodeConnections fetches up to limit recent connections, newest first
 	// (GET /metrics/connections?limit=N; limit <= 0 uses the node default).
-	NodeConnections(ctx context.Context, deviceID string, limit int) ([]metrics.Connection, error)
+	NodeConnections(ctx context.Context, peerID string, limit int) ([]metrics.Connection, error)
 	// NodePrometheus fetches the node's Prometheus text (GET /metrics).
-	NodePrometheus(ctx context.Context, deviceID string) ([]byte, error)
+	NodePrometheus(ctx context.Context, peerID string) ([]byte, error)
 }
 
 var (
@@ -70,7 +71,7 @@ var (
 )
 
 // PeerForAddr implements exit.PeerResolver: it maps a tunnel address to the
-// device id of the connected peer that owns it, or "" when none does.
+// peer id of the connected peer that owns it, or "" when none does.
 func (m *mesh) PeerForAddr(addr net.Addr) string {
 	ip, ok := addrIP(addr)
 	if !ok {
@@ -102,7 +103,7 @@ func (m *mesh) Snapshot() metrics.Snapshot {
 		s = metrics.EmptySnapshot()
 	}
 	st := m.Status()
-	s.DeviceID = st.DeviceID
+	s.PeerID = st.PeerID
 	s.Address = st.Address
 	for _, l := range m.linkSnapshot() {
 		if !l.added {
@@ -151,8 +152,8 @@ func (m *mesh) collector() *metrics.Collector {
 	return m.cfg.Metrics.Collector
 }
 
-// authorizeMetrics admits the hub this member joined through and the
-// configured AllowPeers, identified by their tunnel source address.
+// authorizeMetrics admits netmap peers holding the hub role and the configured
+// AllowPeers, identified by their tunnel source address.
 func (m *mesh) authorizeMetrics(r *http.Request) bool {
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
@@ -162,10 +163,7 @@ func (m *mesh) authorizeMetrics(r *http.Request) bool {
 	if id == "" {
 		return false
 	}
-	m.mu.Lock()
-	hub := m.hubID
-	m.mu.Unlock()
-	if id == hub {
+	if p, ok := m.netmapPeer(id); ok && proto.HasRole(p.Roles, proto.RoleHub) {
 		return true
 	}
 	return slices.Contains(m.cfg.Metrics.AllowPeers, id)
@@ -205,8 +203,8 @@ func (m *mesh) serveMetricsLocked() error {
 }
 
 // NodeSnapshot implements NodeMetricsFetcher.
-func (h *Hub) NodeSnapshot(ctx context.Context, deviceID string) (metrics.Snapshot, error) {
-	ip, err := h.nodeIP(deviceID)
+func (h *Hub) NodeSnapshot(ctx context.Context, peerID string) (metrics.Snapshot, error) {
+	ip, err := h.nodeIP(peerID)
 	if err != nil {
 		return metrics.Snapshot{}, err
 	}
@@ -214,8 +212,8 @@ func (h *Hub) NodeSnapshot(ctx context.Context, deviceID string) (metrics.Snapsh
 }
 
 // NodeConnections implements NodeMetricsFetcher.
-func (h *Hub) NodeConnections(ctx context.Context, deviceID string, limit int) ([]metrics.Connection, error) {
-	ip, err := h.nodeIP(deviceID)
+func (h *Hub) NodeConnections(ctx context.Context, peerID string, limit int) ([]metrics.Connection, error) {
+	ip, err := h.nodeIP(peerID)
 	if err != nil {
 		return nil, err
 	}
@@ -223,17 +221,17 @@ func (h *Hub) NodeConnections(ctx context.Context, deviceID string, limit int) (
 }
 
 // NodePrometheus implements NodeMetricsFetcher.
-func (h *Hub) NodePrometheus(ctx context.Context, deviceID string) ([]byte, error) {
-	ip, err := h.nodeIP(deviceID)
+func (h *Hub) NodePrometheus(ctx context.Context, peerID string) ([]byte, error) {
+	ip, err := h.nodeIP(peerID)
 	if err != nil {
 		return nil, err
 	}
 	return h.metricsClient().Prometheus(ctx, ip)
 }
 
-func (h *Hub) nodeIP(deviceID string) (string, error) {
+func (h *Hub) nodeIP(peerID string) (string, error) {
 	h.mu.Lock()
-	l, ok := h.links[deviceID]
+	l, ok := h.links[peerID]
 	var address string
 	added := false
 	if ok {
@@ -241,11 +239,11 @@ func (h *Hub) nodeIP(deviceID string) (string, error) {
 	}
 	h.mu.Unlock()
 	if !ok || !added {
-		return "", fmt.Errorf("%w: %s", ErrUnknownPeer, deviceID)
+		return "", fmt.Errorf("%w: %s", ErrUnknownPeer, peerID)
 	}
 	ip, ok := tunnelAddr(address)
 	if !ok {
-		return "", fmt.Errorf("%w: %s has no tunnel address", ErrUnknownPeer, deviceID)
+		return "", fmt.Errorf("%w: %s has no tunnel address", ErrUnknownPeer, peerID)
 	}
 	return ip.String(), nil
 }

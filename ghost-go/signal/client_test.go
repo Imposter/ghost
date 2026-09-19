@@ -23,19 +23,18 @@ func waitState(t *testing.T, c *Client, want State) {
 func TestClientHelloJoin(t *testing.T) {
 	srv := NewFakeServer("100.64.0.0/10")
 	c := New(Config{
-		URL:         "ws://fake",
-		Dialer:      srv.Dialer(),
-		DeviceToken: "tok",
-		Role:        proto.RoleNode,
-		PublicKey:   "pk",
+		URL:       "ws://fake",
+		Dialer:    srv.Dialer(),
+		PeerToken: "tok",
+		PublicKey: "pk",
 	}, Handlers{})
 	ctx := context.Background()
 	c.Start(ctx)
 	defer c.Close()
 
 	waitState(t, c, StateConnected)
-	if c.Welcome().DeviceID == "" {
-		t.Fatal("no device id assigned")
+	if c.Welcome().PeerID == "" {
+		t.Fatal("no peer id assigned")
 	}
 
 	if err := c.Join(ctx, "net1"); err != nil {
@@ -52,11 +51,10 @@ func TestClientRejectsBadToken(t *testing.T) {
 	srv := NewFakeServer("100.64.0.0/10")
 	srv.AllowToken("good")
 	c := New(Config{
-		URL:         "ws://fake",
-		Dialer:      srv.Dialer(),
-		DeviceToken: "bad",
-		Role:        proto.RoleNode,
-		MinBackoff:  20 * time.Millisecond,
+		URL:        "ws://fake",
+		Dialer:     srv.Dialer(),
+		PeerToken:  "bad",
+		MinBackoff: 20 * time.Millisecond,
 	}, Handlers{})
 	c.Start(context.Background())
 	defer c.Close()
@@ -72,18 +70,17 @@ func TestClientRejectsBadToken(t *testing.T) {
 func TestClientReconnect(t *testing.T) {
 	srv := NewFakeServer("100.64.0.0/10")
 	c := New(Config{
-		URL:         "ws://fake",
-		Dialer:      srv.Dialer(),
-		DeviceToken: "tok",
-		Role:        proto.RoleNode,
-		MinBackoff:  20 * time.Millisecond,
-		MaxBackoff:  100 * time.Millisecond,
+		URL:        "ws://fake",
+		Dialer:     srv.Dialer(),
+		PeerToken:  "tok",
+		MinBackoff: 20 * time.Millisecond,
+		MaxBackoff: 100 * time.Millisecond,
 	}, Handlers{})
 	c.Start(context.Background())
 	defer c.Close()
 
 	waitState(t, c, StateConnected)
-	firstDev := c.Welcome().DeviceID
+	firstPeer := c.Welcome().PeerID
 
 	// Drop the underlying connection to force a reconnect.
 	c.mu.RLock()
@@ -96,10 +93,10 @@ func TestClientReconnect(t *testing.T) {
 
 	// It should leave connected, then come back.
 	waitState(t, c, StateConnected)
-	if c.Welcome().DeviceID == "" {
-		t.Fatal("no device id after reconnect")
+	if c.Welcome().PeerID == "" {
+		t.Fatal("no peer id after reconnect")
 	}
-	_ = firstDev
+	_ = firstPeer
 }
 
 func waitEvent(t *testing.T, c *Client, want proto.Type) Event {
