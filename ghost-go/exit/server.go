@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -49,6 +48,17 @@ type Config struct {
 	DialTimeout time.Duration
 	// IdleTimeout closes idle proxied connections (0 = no idle timeout).
 	IdleTimeout time.Duration
+
+	// PeerResolver maps a client's tunnel address to its device id for
+	// ConnInfo.SourcePeer. When nil, or when it does not know the address, the
+	// client's tunnel IP is used. Pass the ghost.Node or ghost.Hub serving the
+	// exit.
+	PeerResolver PeerResolver
+
+	// MaxSourceTags bounds the distinct ghost.source.tag metric label values
+	// (default DefaultMaxSourceTags); later tags are labelled "other". The raw
+	// tag is always kept in the ConnInfo record and on the span.
+	MaxSourceTags int
 
 	// HTTPSourceHeader names the HTTP-CONNECT header carrying the source tag
 	// (default "X-Ghost-Source").
@@ -106,7 +116,8 @@ func New(cfg Config) *Server {
 	if dial == nil {
 		dial = &net.Dialer{}
 	}
-	m, err := newExitMetrics(cfg.MeterProvider, cfg.TracerProvider)
+	caps := newCapController(cfg.DailyCapBytes, cfg.BytesPerSecond)
+	m, err := newExitMetrics(cfg, caps)
 	if err != nil {
 		// Instruments only fail on a misbehaving provider; fall back to a nil
 		// metrics set (record becomes a no-op) rather than refusing to serve.
@@ -116,7 +127,7 @@ func New(cfg Config) *Server {
 	return &Server{
 		cfg:     cfg,
 		log:     cfg.Logger,
-		cap:     newCapController(cfg.DailyCapBytes, cfg.BytesPerSecond),
+		cap:     caps,
 		dial:    dial,
 		metrics: m,
 		conns:   make(map[net.Conn]struct{}),
@@ -202,6 +213,7 @@ func (s *Server) Close() error {
 		_ = c.Close()
 	}
 	s.wg.Wait()
+	s.metrics.close()
 	return nil
 }
 
@@ -255,46 +267,9 @@ type proxyRequest struct {
 func (s *Server) handleRequest(client net.Conn, br *bufio.Reader, req proxyRequest,
 	replyOK func() error, replyErr func(Result) error) {
 
-	info := ConnInfo{
-		Protocol:  req.proto,
-		SourceTag: req.sourceTag,
-		DestHost:  req.host,
-		DestPort:  req.port,
-		Start:     time.Now(),
-	}
-	if ra := client.RemoteAddr(); ra != nil {
-		info.SourcePeer = ra.String()
-	}
-
-	// One span per exit connection (dial plus copy).
-	ctx := context.Background()
-	var span trace.Span
-	if s.metrics != nil {
-		ctx, span = s.metrics.tracer.Start(ctx, "exit.connection", trace.WithSpanKind(trace.SpanKindClient))
-	}
-	s.addActive(ctx, 1)
-
-	finish := func(res Result, errMsg string) {
-		info.Result = res
-		info.Err = errMsg
-		info.Duration = time.Since(info.Start)
-		s.cfg.Accountant.Record(info)
-		if s.metrics != nil {
-			s.metrics.record(ctx, info)
-		}
-		s.addActive(ctx, -1)
-		if span != nil {
-			span.SetAttributes(baseAttrs(info, res == ResultAllowed)...)
-			if info.DestIP != "" {
-				span.SetAttributes(attribute.String("server.socket.address", info.DestIP))
-			}
-			span.SetAttributes(attribute.String("result", string(res)))
-			if res != ResultAllowed && res != ResultDenied {
-				span.SetStatus(codes.Error, errMsg)
-			}
-			span.End()
-		}
-	}
+	t := s.begin(client, req)
+	info := &t.info
+	finish := t.finish
 
 	if !s.cap.Allowed() {
 		_ = replyErr(ResultCapped)
@@ -313,6 +288,7 @@ func (s *Server) handleRequest(client net.Conn, br *bufio.Reader, req proxyReque
 		finish(ResultDenied, "destination not allowed by policy")
 		return
 	}
+	info.PolicyAllowed = true
 
 	// Resolve and apply the hard safety guard, unless the policy explicitly
 	// named an IP literal that is otherwise forbidden.
@@ -344,8 +320,58 @@ func (s *Server) handleRequest(client net.Conn, br *bufio.Reader, req proxyReque
 		return
 	}
 
-	s.pipe(client, br, upstream, &info, dialStart)
+	s.pipe(client, br, upstream, info, dialStart)
 	finish(ResultAllowed, "")
+}
+
+// connTrack follows one exit connection from acceptance to its single
+// accounting record, metric set and span.
+type connTrack struct {
+	s         *Server
+	ctx       context.Context
+	span      trace.Span
+	info      ConnInfo
+}
+
+// begin opens the span, marks the connection active and returns its tracker.
+func (s *Server) begin(client net.Conn, req proxyRequest) *connTrack {
+	t := &connTrack{
+		s:   s,
+		ctx: context.Background(),
+		info: ConnInfo{
+			SourcePeer: sourcePeer(s.cfg.PeerResolver, client.RemoteAddr()),
+			Protocol:   req.proto,
+			SourceTag:  req.sourceTag,
+			DestHost:   req.host,
+			DestPort:   req.port,
+			Start:      time.Now(),
+		},
+	}
+	// One span per exit connection (dial plus copy).
+	if s.metrics != nil {
+		t.ctx, t.span = s.metrics.tracer.Start(t.ctx, "exit.connection", trace.WithSpanKind(trace.SpanKindClient))
+	}
+	s.addActive(t.ctx, 1)
+	return t
+}
+
+// finish records the outcome exactly once: the Accountant record, the
+// metrics, and the span.
+func (t *connTrack) finish(res Result, errMsg string) {
+	s := t.s
+	t.info.Result = res
+	t.info.Err = errMsg
+	t.info.Duration = time.Since(t.info.Start)
+	s.cfg.Accountant.Record(t.info)
+	s.metrics.record(t.ctx, t.info)
+	s.addActive(t.ctx, -1)
+	if t.span != nil {
+		t.span.SetAttributes(spanAttrs(t.info)...)
+		if res != ResultAllowed && res != ResultDenied {
+			t.span.SetStatus(codes.Error, errMsg)
+		}
+		t.span.End()
+	}
 }
 
 // resolve resolves host and returns the dial target "ip:port", the chosen IP,
@@ -447,16 +473,12 @@ func (s *Server) handleSOCKS5(client net.Conn, br *bufio.Reader) {
 		_ = socks5Reply(client, socks5RepGeneralFailure)
 		return
 	}
+	req := proxyRequest{proto: ProtoSOCKS5, host: host, port: port, sourceTag: sourceTag}
 	if cmd != socks5CmdConnect {
 		_ = socks5Reply(client, socks5RepCommandNotSupported)
-		s.cfg.Accountant.Record(ConnInfo{
-			Protocol: ProtoSOCKS5, SourceTag: sourceTag, DestHost: host, DestPort: port,
-			Result: ResultDenied, Err: "only CONNECT supported", Start: time.Now(),
-		})
+		s.begin(client, req).finish(ResultDenied, "only CONNECT supported")
 		return
 	}
-
-	req := proxyRequest{proto: ProtoSOCKS5, host: host, port: port, sourceTag: sourceTag}
 	s.handleRequest(client, br, req,
 		func() error { return socks5Reply(client, socks5RepSuccess) },
 		func(res Result) error {

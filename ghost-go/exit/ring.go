@@ -55,3 +55,6 @@ func (r *ConnRing) Len() int {
 	defer r.mu.Unlock()
 	return r.n
 }
+
+// Cap returns the ring's capacity.
+func (r *ConnRing) Cap() int { return r.size }
