@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ type mockTUN struct {
 	name   string
 	mtu    int
 	events chan tun.Event
-	closed bool
+	closed atomic.Bool
 }
 
 func newMockTUN(name string, mtu int) *mockTUN {
@@ -37,7 +38,7 @@ func newMockTUN(name string, mtu int) *mockTUN {
 func (m *mockTUN) File() *os.File { return nil }
 func (m *mockTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	// Block until closed
-	if m.closed {
+	if m.closed.Load() {
 		return 0, io.EOF
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -49,8 +50,7 @@ func (m *mockTUN) MTU() (int, error)                            { return m.mtu, 
 func (m *mockTUN) Name() (string, error)                        { return m.name, nil }
 func (m *mockTUN) Events() <-chan tun.Event                     { return m.events }
 func (m *mockTUN) Close() error {
-	if !m.closed {
-		m.closed = true
+	if m.closed.CompareAndSwap(false, true) {
 		close(m.events)
 	}
 	return nil
@@ -59,13 +59,13 @@ func (m *mockTUN) BatchSize() int { return 1 }
 
 // mockBind implements conn.Bind for testing
 type mockBind struct {
-	closed bool
+	closed atomic.Bool
 }
 
 func (m *mockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return []conn.ReceiveFunc{func([][]byte, []int, []conn.Endpoint) (int, error) {
 		// Check if closed - return error to signal shutdown
-		if m.closed {
+		if m.closed.Load() {
 			return 0, net.ErrClosed
 		}
 		// Sleep briefly to prevent spinning, allows checking closed flag periodically
@@ -74,7 +74,7 @@ func (m *mockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}}, port, nil
 }
 func (m *mockBind) Close() error {
-	m.closed = true
+	m.closed.Store(true)
 	return nil
 }
 func (m *mockBind) SetMark(mark uint32) error          { return nil }
@@ -350,7 +350,7 @@ func TestTunnel_Close(t *testing.T) {
 
 	err := tunnel.Close()
 	assert.NoError(t, err)
-	assert.True(t, bind.closed)
+	assert.True(t, bind.closed.Load())
 
 	// Close again should be no-op
 	err = tunnel.Close()
