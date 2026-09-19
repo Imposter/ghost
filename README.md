@@ -8,11 +8,22 @@ Ghost-GO enables direct peer-to-peer connections through NAT/firewalls using ICE
 
 ## Glossary
 
-- **peer** — any WireGuard endpoint.
-- **node** — a member that joins a network and connects to one hub.
-- **hub** — a peer that accepts many nodes (a gateway).
-- **device** — a *registered identity* only (device id, device token, pairing); never a tunnel role.
-- **network** — a named set of members sharing an address pool (default `100.64.0.0/10`).
+- **peer** — an enrolled identity in one network: an id (`peer_…`), a WireGuard
+  key, an address from the pool, roles, tags and labels. It authenticates with
+  a peer token.
+- **network** — a named set of peers sharing an address pool (default
+  `100.64.0.0/10`), a policy document and an isolation mode.
+- **role** — a capability the control plane assigns to a peer: `hub` (a
+  gateway many peers connect to), `node` (an ordinary member), `exit` (runs an
+  allowlisted exit), `relay`.
+- **hub / node** — shorthand for a peer holding that role; `ghost.Hub` and
+  `ghost.Node` are the library types.
+- **netmap** — the peers a peer may reach, with its exit policy and packet
+  filter, pushed by the control plane as a snapshot plus deltas.
+- **isolation** — `none` (the ACLs decide) or `hub-only` (peers without the
+  hub role only ever see hubs).
+- **control plane** — `ghost-server`: networks, peers, enrolment, netmaps,
+  policy, health, audit and the control API ([docs/control-plane.md](docs/control-plane.md)).
 
 ---
 
@@ -23,7 +34,7 @@ Ghost-GO enables direct peer-to-peer connections through NAT/firewalls using ICE
 - ✅ **Cross-Platform**: Linux, Windows, macOS support
 - ⏳ **Mobile Support**: Android & iOS (Phase 5)
 - ✅ **Zero Configuration**: Automatic candidate gathering and connection establishment
-- ✅ **Dynamic Peers**: Add/remove peers without device restart
+- ✅ **Dynamic Peers**: Add/remove peers without restarting the tunnel
 
 ---
 
@@ -53,7 +64,7 @@ import (
 func main() {
     node, err := ghost.NewNode(ghost.Config{
         SignalURL:    "wss://signal.example.com/v1",
-        DeviceToken:  "…",                          // authenticates this device
+        PeerToken:    "…",                          // authenticates this peer
         Network:      "my-network",
         KeyStorePath: "/var/lib/ghost/keys.json",   // persistent keys
         STUNServers:  []ghost.STUNServer{{URL: "stun:stun.l.google.com:19302"}},
@@ -83,8 +94,9 @@ on a node's tunnel IP with the `exit` package.
 ### Node metrics
 
 A node serves strict metrics on its **tunnel IP only** (a netstack listener,
-port `metrics.DefaultPort` = 9464, no OS port). Only its hub, plus any device
-ids in `MetricsConfig.AllowPeers`, may read them; everyone else gets 403.
+port `metrics.DefaultPort` = 9464, no OS port). Only its hubs, plus any peer
+ids in `MetricsConfig.AllowPeers` (ignored under hub-only isolation), may read
+them; everyone else gets 403.
 
 ```go
 setup, _ := otelsetup.New(ctx, otelsetup.Options{ServiceName: "ghost-node"})
@@ -107,7 +119,9 @@ snap := node.Snapshot()                                   // in-process (FFI) re
 | `GET /metrics/connections?limit=N`    | `metrics.ConnectionsResponse`, newest first |
 
 On the hub, `*ghost.Hub` implements `ghost.NodeMetricsFetcher`
-(`NodeSnapshot`, `NodeConnections`, `NodePrometheus`) by device id.
+(`NodeSnapshot`, `NodeConnections`, `NodePrometheus`) by peer id. The
+control plane does not proxy these; it stores only the health summaries peers
+send in heartbeats.
 
 ---
 
@@ -124,7 +138,7 @@ Application Layer
     │   │   └─ ICEBind ────────► WireGuard integration ⭐
     │   │
     │   └─ WireGuard Package ──► Encrypted tunneling
-    │       ├─ Device ─────────► Lifecycle management
+    │       ├─ Tunnel ─────────► Lifecycle management
     │       ├─ TUN ────────────► Virtual network interface
     │       └─ Keys ───────────► Cryptographic key management
     │
@@ -142,8 +156,8 @@ Application Layer
 **Implemented:**
 - ✅ ICE agent with STUN/TURN support (~900 lines)
 - ✅ ICEBind adapter (critical WireGuard integration) (~245 lines)
-- ✅ WireGuard device wrapper with lifecycle (~700 lines)
-- ✅ Cross-platform TUN device abstraction (~51 lines)
+- ✅ WireGuard tunnel wrapper with lifecycle (~700 lines)
+- ✅ Cross-platform TUN interface abstraction (~51 lines)
 - ✅ Key generation and management
 - ✅ Configuration validation
 - ✅ Integration test infrastructure
@@ -198,7 +212,7 @@ Application Layer
   - Windows: Windows 10+ (WireGuard adapter)
   - macOS: 10.15+ (utun support)
 - **Network**: UDP connectivity for ICE
-- **Privileges**: Root/Administrator for TUN device creation
+- **Privileges**: Root/Administrator for TUN interface creation
 
 ---
 
@@ -279,7 +293,7 @@ GHOST_LOG_FORMAT=json
 ### Resource Usage
 - **Memory**: ~2-5MB per peer connection
 - **CPU**: < 1% idle, 10-20% under load
-- **Goroutines**: ~50 per WireGuard device
+- **Goroutines**: ~50 per WireGuard tunnel
 
 ---
 
@@ -292,7 +306,7 @@ GHOST_LOG_FORMAT=json
 # Try adding TURN server for relay fallback
 ```
 
-### TUN Device Creation Fails
+### TUN Interface Creation Fails
 ```bash
 # Linux: Check /dev/net/tun exists and user has permissions
 # Windows: Install WireGuard Windows driver
