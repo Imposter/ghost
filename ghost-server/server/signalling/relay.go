@@ -649,8 +649,10 @@ func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig 
 	peer, joined, nm := s.peer, s.joined, s.netmap
 	target := r.sessions[sig.To]
 	var targetNM *proto.Netmap
+	var targetRoles []proto.Role
 	if target != nil {
 		targetNM = target.netmap
+		targetRoles = slices.Clone(target.peer.Roles)
 	}
 	r.mu.RUnlock()
 
@@ -673,7 +675,7 @@ func (r *Relay) handleSignal(ctx context.Context, s *session, t proto.Type, sig 
 		return
 	}
 	req := peerRequest(access.ActionConnectPeer, peer)
-	req.Target = sig.To
+	req.Target, req.TargetRoles = sig.To, targetRoles
 	d := r.svc.Access().Check(ctx, req)
 	if !d.Allow {
 		if s.firstDenial(sig.To) {

@@ -147,20 +147,25 @@ func result(d Decision) string {
 func cacheKey(r Request) string {
 	b, _ := json.Marshal(cacheKeyFields{
 		Action: r.Action, Network: r.Network, Peer: r.Peer, Target: r.Target,
-		Roles: sortedRoles(r.Roles), Tags: sortedStrings(r.Tags), Labels: r.Labels,
+		TargetRoles: sortedRoles(r.TargetRoles),
+		Roles:       sortedRoles(r.Roles), Tags: sortedStrings(r.Tags), Labels: r.Labels,
 		PublicKey: r.PublicKey, EnrollmentMethod: r.EnrollmentMethod, AuthKeyID: r.AuthKeyID,
 	})
 	return string(b)
 }
 
 type cacheKeyFields struct {
-	Action  Action            `json:"a"`
-	Network string            `json:"n"`
-	Peer    string            `json:"p"`
-	Target  string            `json:"t"`
-	Roles   []string          `json:"r"`
-	Tags    []string          `json:"g"`
-	Labels  map[string]string `json:"l"`
+	Action  Action `json:"a"`
+	Network string `json:"n"`
+	Peer    string `json:"p"`
+	Target  string `json:"t"`
+	// TargetRoles matter because a decision may turn on what the other side
+	// is: a pair a hub-only pool allows today is one it must refuse the
+	// moment the target stops being a hub.
+	TargetRoles []string          `json:"tr"`
+	Roles       []string          `json:"r"`
+	Tags        []string          `json:"g"`
+	Labels      map[string]string `json:"l"`
 	// The remaining fields rarely change for a peer, but a new key or method
 	// must not reuse a decision made for the old one.
 	PublicKey        string           `json:"k"`

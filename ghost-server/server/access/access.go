@@ -51,8 +51,12 @@ type Request struct {
 	// Peer is the acting peer id. It is empty for enroll, where the peer does
 	// not exist yet.
 	Peer string `json:"peer,omitempty"`
-	// Target is the other peer for connect_peer.
-	Target string `json:"target,omitempty"`
+	// Target is the other peer for connect_peer, and TargetRoles are its
+	// roles. They are what an authorizer needs to judge a pair rather than a
+	// peer: whether either side is a hub, for instance, and so whether the
+	// pair is one a hub-only pool may carry.
+	Target      string       `json:"target,omitempty"`
+	TargetRoles []proto.Role `json:"target_roles,omitempty"`
 	// Roles, Tags and Labels describe the acting (or enrolling) peer.
 	Roles  []proto.Role      `json:"roles,omitempty"`
 	Tags   []string          `json:"tags,omitempty"`

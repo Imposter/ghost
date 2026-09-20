@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 var secret = []byte("unit-test-secret-0123456789")
@@ -123,6 +125,14 @@ func TestControllerCacheAndFailClosed(t *testing.T) {
 	c.Check(context.Background(), req)
 	if auth.n.Load() != 3 {
 		t.Fatalf("an expired entry should be refreshed; calls = %d", auth.n.Load())
+	}
+	// A decision may turn on what the other side is, so a target whose roles
+	// changed is a different question.
+	promoted := req
+	promoted.TargetRoles = []proto.Role{proto.RoleHub}
+	c.Check(context.Background(), promoted)
+	if auth.n.Load() != 4 {
+		t.Fatalf("the target's roles are part of the question; calls = %d", auth.n.Load())
 	}
 
 	failing := &countingAuth{err: errors.New("down")}

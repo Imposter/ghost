@@ -154,7 +154,7 @@ X-Ghost-Signature: sha256=<hex HMAC-SHA256(authorizer_secret, raw body)>
 ```json
 {
   "action": "connect", "network": "scrape-pool",
-  "peer": "peer_ab12…", "target": "peer_cd34…",
+  "peer": "peer_ab12…", "target": "peer_cd34…", "target_roles": ["hub"],
   "roles": ["exit", "node"], "tags": ["tag:exit"], "labels": { "owner": "u-42" },
   "public_key": "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=",
   "enrollment_method": "auth_key", "auth_key_id": "key_3fz…",
@@ -166,6 +166,7 @@ X-Ghost-Signature: sha256=<hex HMAC-SHA256(authorizer_secret, raw body)>
 | -------- | ----------- | ------- |
 | `peer`   | `connect`, `connect_peer` | The acting peer. It is absent for `enroll`, because the peer doesn't exist yet. |
 | `target` | `connect_peer` | The peer being signalled. |
+| `target_roles` | `connect_peer` | The signalled peer's roles, so the authorizer can judge the pair and not just the caller. A pool that is hub-only, say, denies any pair in which neither `roles` nor `target_roles` holds `hub`; ghost enforces that in the netmaps and the relay, and the authorizer's answer is the layer that still holds if a network's isolation or ACLs are mis-set. |
 | `roles`, `tags`, `labels` | all | The acting (or enrolling) peer's. For `enroll`, these are the key's or approval's values merged with the requested labels. |
 | `public_key` | all, when known | The acting (or enrolling) peer's WireGuard public key (base64, 32 bytes). On `connect` and `connect_peer` it is the key the peer presented in its `hello`. An `enroll` without a key (interactive or direct, when none was given) omits it. |
 | `enrollment_method` | all | How the acting (or enrolling) peer enrolled: `auth_key` (a pre-auth key), `interactive` (a claimed interactive code) or `direct` (`POST /control/networks/{net}/peers`). It is recorded on the peer, so `connect` and `connect_peer` carry it too. It is omitted only for peers enrolled before ghost recorded it whose method could not be recovered (see [api-changes.md](api-changes.md)). |
@@ -228,8 +229,8 @@ answer `409`. Responses are listed in
 - These failures are never cached. An outage during enrolment returns `503`,
   and an interactive claim stays retryable.
 - Decisions are cached for `access.cache_ttl` (30 s by default), keyed on
-  action, network, peer, target, roles, tags, labels, public key, enrolment
-  method and pre-auth key id. Revoking, expiring, moving, updating,
+  action, network, peer, target, roles, target roles, tags, labels, public
+  key, enrolment method and pre-auth key id. Revoking, expiring, moving, updating,
   reauthorizing or deleting a peer drops its cached decisions. A denial is
   cached too, so a peer denied on a re-check stays out until the entry
   expires or the peer is reauthorized.

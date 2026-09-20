@@ -3,6 +3,18 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## The authorizer is told what the other side is
+
+A `connect_peer` request named the target but said nothing about it, so an
+authorizer could not tell a node reaching a hub from a node reaching another
+node, and could not refuse the pair its pool forbids.
+
+**New**
+
+- `target_roles` in the authorizer request
+  (`access.Request.TargetRoles`): the roles of the peer being signalled, for
+  `connect_peer`. Authorizers that ignore it are unaffected.
+
 ## No mDNS, and no loopback candidates outside tests
 
 An ICE agent joined the mDNS multicast group and bound UDP 5353 on every

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Imposter/ghost/ghost-go/signal"
 	"github.com/Imposter/ghost/ghost-go/signal/proto"
 
 	"github.com/Imposter/ghost/ghost-server/server/access"
@@ -84,6 +85,61 @@ func (fa *fakeAuthorizer) calls(action access.Action) []access.Request {
 		}
 	}
 	return out
+}
+
+// TestAuthorizerJudgesBothSidesOfAPair: an authorizer is asked about a pair,
+// so it is told what both sides are. Here it refuses any pair without a hub
+// in it -- the pool's promise -- and the server enforces that even though the
+// network's own ACLs and netmaps would let the two nodes reach each other.
+// It is the layer that still holds when a mis-set isolation or an ACL lets a
+// pair through.
+func TestAuthorizerJudgesBothSidesOfAPair(t *testing.T) {
+	fa := newFakeAuthorizer(t, func(r access.Request) access.Decision {
+		if r.Action == access.ActionConnectPeer &&
+			!proto.HasRole(r.Roles, proto.RoleHub) && !proto.HasRole(r.TargetRoles, proto.RoleHub) {
+			return access.Decision{Allow: false, Reason: "the pool is hub-only"}
+		}
+		return access.Decision{Allow: true}
+	})
+	h := newHarness(t, apiMode(fa.srv.URL, authzSecret))
+	h.ctl("POST", "/control/networks", map[string]any{"name": "pair"}, nil, http.StatusCreated)
+	h.meshACL("pair") // every peer may see and signal every other
+	hubC := h.peer("pair", "hub", hubRoles)
+	node1C := h.peer("pair", "node1", nodeRoles)
+	node2C := h.peer("pair", "node2", nodeRoles)
+	hub := h.joined(hubC)
+	node1 := h.joined(node1C)
+	h.joined(node2C)
+	node1.waitNetmap("mesh", func(n proto.Netmap) bool { return len(n.Peers) == 2 })
+
+	// node -> node: in each other's netmap, and still refused.
+	node1.offer(node2C.PeerID)
+	if e := node1.error(proto.ErrCodeForbidden); !strings.Contains(e.Message, "hub-only") {
+		t.Fatalf("node to node must be refused by the authorizer: %+v", e)
+	}
+	if len(h.audit("pair", "signal.denied")) != 1 {
+		t.Error("a refused pair is audited")
+	}
+
+	// node -> hub: the same authorizer allows it, and it relays.
+	node1.offer(hubC.PeerID)
+	hub.next("offer from node1", 5*time.Second, func(e signal.Event) bool {
+		return e.Signal != nil && e.Signal.From == node1C.PeerID
+	})
+
+	// Both requests named both sides.
+	byTarget := map[string]access.Request{}
+	for _, r := range fa.calls(access.ActionConnectPeer) {
+		byTarget[r.Target] = r
+	}
+	toNode, ok := byTarget[node2C.PeerID]
+	if !ok || !slices.Equal(toNode.Roles, nodeRoles) || !slices.Equal(toNode.TargetRoles, nodeRoles) {
+		t.Errorf("connect_peer to a node: %+v", toNode)
+	}
+	toHub, ok := byTarget[hubC.PeerID]
+	if !ok || !slices.Equal(toHub.Roles, nodeRoles) || !proto.HasRole(toHub.TargetRoles, proto.RoleHub) {
+		t.Errorf("connect_peer to the hub: %+v", toHub)
+	}
 }
 
 func apiMode(url, secret string) func(*config.Config) {
