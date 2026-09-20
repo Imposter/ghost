@@ -126,6 +126,11 @@ or `PATCH /control/networks/{net}`.
    (`exit.Config.AllowSource = node.IsHubSource`) and its `/metrics` endpoint
    accept only hub source addresses. `MetricsConfig.AllowPeers` is ignored.
 
+In `api` access mode the authorizer adds a sixth, external layer: a
+`connect_peer` request carries both sides' roles (`roles`, `target_roles`),
+so the policy source can refuse a pair its pool forbids even if the network's
+isolation or ACLs would allow it.
+
 Changing the isolation mode bumps the revision, re-asks the authorizer, and
 pushes new netmaps. Under `hub-only`, peers drop their non-hub links.
 
