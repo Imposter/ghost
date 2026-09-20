@@ -3,6 +3,28 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## A status that follows the tunnel
+
+A member reported a peer as linked from the moment WireGuard was configured
+for it, whatever ICE then did with the path, so `ghost-cli status` and the
+node app's window said `linked`, `online` and a live candidate type over a
+connection that had failed.
+
+**New**
+
+- `joined` in `ghost-cli status -json` and in `ghost_status_json`
+  (libghost), and a `joined` / `not joined` word in the text status.
+
+**Changed**
+
+- A link counts as up only while its ICE path does: `Status.Peers`,
+  `Snapshot().Tunnel` (hence `linked`, `candidate_type`, `rtt_seconds` and
+  the byte counters), the `ghost.tunnel.*` metrics and the health a member
+  heartbeats all drop a peer as soon as ICE reports the path disconnected,
+  failed or closed. A disconnected path is only hidden, since ICE may
+  recover it; a failed one also takes the link down, and the next reconcile
+  rebuilds it.
+
 ## The join is the server's answer, not the client's question
 
 `ghost-go` set its "joined" flag when it sent `join_network`, so a refusal

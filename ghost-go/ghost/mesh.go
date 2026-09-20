@@ -145,6 +145,20 @@ type peerLink struct {
 	candType    string
 	added       bool
 	failed      bool
+	// iceState is the last ICE connection state the agent reported. A link
+	// is only reported as up while it is added and its ICE path is neither
+	// disconnected, failed nor closed.
+	iceState ice.ConnectionState
+}
+
+// up reports whether the link carries traffic: WireGuard has the peer and ICE
+// has not told us the path is gone. Caller holds mesh.mu.
+func (l *peerLink) up() bool {
+	switch l.iceState {
+	case ice.ConnectionStateDisconnected, ice.ConnectionStateFailed, ice.ConnectionStateClosed:
+		return false
+	}
+	return l.added && !l.failed
 }
 
 func newMesh(cfg Config, extraRoles ...proto.Role) (*mesh, error) {
@@ -186,7 +200,7 @@ func (m *mesh) Status() Status {
 	defer m.mu.Unlock()
 	connected := 0
 	for _, l := range m.links {
-		if l.added {
+		if l.up() {
 			connected++
 		}
 	}
@@ -628,6 +642,10 @@ func (m *mesh) connectToPeer(peer proto.PeerInfo, plan LinkPlan) {
 	l.agent = agent
 	m.mu.Unlock()
 
+	// Watch the ICE path: a link whose path is gone must stop being
+	// reported as up, and a failed one must be rebuilt.
+	agent.OnConnectionStateChange(func(state ice.ConnectionState) { m.iceStateChanged(l, state) })
+
 	// Gather and trickle candidates to the peer.
 	go m.gather(l)
 
@@ -635,6 +653,37 @@ func (m *mesh) connectToPeer(peer proto.PeerInfo, plan LinkPlan) {
 		ufrag, pwd := agent.LocalCredentials()
 		_ = m.sig.Send(m.ctx, proto.TypeOffer, proto.Signal{Network: m.network, To: peer.PeerID, Ufrag: ufrag, Pwd: pwd})
 	}
+}
+
+// iceStateChanged records the ICE path's state for l and reacts to losing
+// it. A disconnected path stops the link being reported as up, but is left
+// alone: ICE may recover it, and WireGuard survives the gap. A failed or
+// closed path takes the link down, so the next reconcile announces the peer
+// as disconnected and builds a new link for it.
+func (m *mesh) iceStateChanged(l *peerLink, state ice.ConnectionState) {
+	m.mu.Lock()
+	if m.closed || m.links[l.peerID] != l {
+		m.mu.Unlock()
+		return
+	}
+	wasUp := l.up()
+	l.iceState = state
+	switch state {
+	case ice.ConnectionStateFailed, ice.ConnectionStateClosed:
+		l.failed = true
+	}
+	lost := wasUp && !l.up()
+	m.mu.Unlock()
+	if !lost {
+		return
+	}
+	m.log.Warn("ghost: tunnel path to peer lost", "peer", l.peerID, "ice_state", string(state))
+	// Report the link's true state now, and rebuild it off the callback's
+	// goroutine (reconcile closes agents, including this one).
+	go func() {
+		m.reconcile()
+		m.reportHealth()
+	}()
 }
 
 func (m *mesh) gather(l *peerLink) {
@@ -921,12 +970,6 @@ func (m *mesh) reportHealth() {
 func (m *mesh) healthSummary() *proto.Health {
 	stats := m.linkSnapshot()
 	h := &proto.Health{Links: make([]proto.LinkHealth, 0, len(stats))}
-	m.mu.Lock()
-	failed := map[string]bool{}
-	for id, l := range m.links {
-		failed[id] = l.failed
-	}
-	m.mu.Unlock()
 	for _, s := range stats {
 		lh := proto.LinkHealth{
 			PeerID:        s.peerID,
@@ -937,9 +980,9 @@ func (m *mesh) healthSummary() *proto.Health {
 			TxBytes:       s.tx,
 		}
 		switch {
-		case s.added:
+		case s.up:
 			lh.State = proto.LinkConnected
-		case failed[s.peerID]:
+		case s.failed:
 			lh.State = proto.LinkFailed
 		}
 		if s.handshakeAgeSeconds >= 0 {

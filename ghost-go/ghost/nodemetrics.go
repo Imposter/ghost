@@ -106,7 +106,7 @@ func (m *mesh) Snapshot() metrics.Snapshot {
 	s.PeerID = st.PeerID
 	s.Address = st.Address
 	for _, l := range m.linkSnapshot() {
-		if !l.added {
+		if !l.up {
 			continue
 		}
 		ps := metrics.PeerStat{

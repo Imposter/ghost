@@ -19,16 +19,20 @@ import (
 // statusView is what a running member serves on -status and what
 // "ghost-cli status" prints.
 type statusView struct {
-	Mode      string       `json:"mode"`
-	PeerID    string       `json:"peer_id"`
-	Network   string       `json:"network"`
-	Address   string       `json:"address"`
-	Roles     []proto.Role `json:"roles"`
-	Signal    string       `json:"signal"`
-	Isolation string       `json:"isolation,omitempty"`
-	Peers     []peerView   `json:"peers"`
-	Forwards  []string     `json:"forwards,omitempty"`
-	Exit      *exitView    `json:"exit,omitempty"`
+	Mode    string       `json:"mode"`
+	PeerID  string       `json:"peer_id"`
+	Network string       `json:"network"`
+	Address string       `json:"address"`
+	Roles   []proto.Role `json:"roles"`
+	// Signal is the signalling connection's state; Joined is whether the
+	// control plane has this member in its network. A member whose join was
+	// refused is connected and not joined, and keeps asking.
+	Signal    string     `json:"signal"`
+	Joined    bool       `json:"joined"`
+	Isolation string     `json:"isolation,omitempty"`
+	Peers     []peerView `json:"peers"`
+	Forwards  []string   `json:"forwards,omitempty"`
+	Exit      *exitView  `json:"exit,omitempty"`
 }
 
 // peerView is one netmap peer and the tunnel to it.
@@ -65,7 +69,7 @@ func buildStatus(m member, o runOptions) statusView {
 	st := m.Status()
 	v := statusView{
 		Mode: o.mode, PeerID: st.PeerID, Network: st.Network, Address: st.Address,
-		Roles: st.Roles, Signal: string(st.SignalState), Peers: []peerView{},
+		Roles: st.Roles, Signal: string(st.SignalState), Joined: st.Joined, Peers: []peerView{},
 	}
 	for _, f := range o.forwards {
 		v.Forwards = append(v.Forwards, f.local+"="+f.target)
@@ -163,8 +167,13 @@ func printStatus(w io.Writer, v statusView) {
 	for i, r := range v.Roles {
 		roles[i] = string(r)
 	}
-	fmt.Fprintf(w, "%s %s in %s, address %s, roles %s, signalling %s\n",
-		v.Mode, v.PeerID, v.Network, orDash(v.Address), orDash(strings.Join(roles, ",")), orDash(v.Signal))
+	joined := "not joined"
+	if v.Joined {
+		joined = "joined"
+	}
+	fmt.Fprintf(w, "%s %s in %s, address %s, roles %s, signalling %s, %s\n",
+		v.Mode, v.PeerID, v.Network, orDash(v.Address), orDash(strings.Join(roles, ",")),
+		orDash(v.Signal), joined)
 	if v.Isolation != "" {
 		fmt.Fprintf(w, "isolation %s\n", v.Isolation)
 	}

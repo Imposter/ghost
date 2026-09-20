@@ -153,8 +153,9 @@ on the event stream.
 {
   "ok": true,
   "handle": 1,
-  "connected": true,
+  "connected": true,                 // usable: signalling up and joined
   "signal_state": "connected",       // disconnected | connecting | connected | closed
+  "joined": true,                    // the control plane has the node in its network
   "peer_id": "peer_…",
   "network": "lab",
   "address": "100.64.0.5/32",        // the tunnel address, CIDR form
@@ -171,7 +172,8 @@ on the event stream.
       "roles": ["hub"],
       "labels": {"geo": "ca-on"},
       "online": true,                // what the control plane says
-      "linked": true,                // a live tunnel to this peer
+      "linked": true,                // a live tunnel to this peer: WireGuard
+                                     // has it and its ICE path is up
       "candidate_type": "host",      // host | srflx | prflx | relay
       "rtt_seconds": 0.002,
       "rx_bytes": 5120,
@@ -194,6 +196,15 @@ on the event stream.
 ```
 
 `peers` is sorted by peer id. `exit` is `null` when the node serves none.
+
+A status never outlives what it describes. `signal_state` is the websocket
+alone: a node the control plane refused a join to stays `connected` and
+`"joined": false` while it keeps asking, and `connected` (the usable flag) is
+false meanwhile. `peers` is empty while the node is not joined, because the
+netmap it last received describes a session it no longer has. `linked`,
+`candidate_type` and the byte counters are dropped as soon as ICE reports the
+path to a peer disconnected or failed, so a window never shows a working
+tunnel over a dead one.
 
 ## ghost_next_event_json
 

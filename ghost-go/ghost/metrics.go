@@ -69,7 +69,7 @@ func (m *mesh) registerMetrics() error {
 		snap := m.linkSnapshot()
 		connected := int64(0)
 		for _, l := range snap {
-			if !l.added {
+			if !l.up {
 				continue
 			}
 			connected++
@@ -100,10 +100,13 @@ func (m *mesh) registerMetrics() error {
 
 // linkStat is a per-peer metric snapshot.
 type linkStat struct {
-	peerID              string
-	address             string
-	candType            string
-	added               bool
+	peerID   string
+	address  string
+	candType string
+	// up is whether the link carries traffic (see peerLink.up); failed is
+	// whether it is broken and awaiting a rebuild.
+	up                  bool
+	failed              bool
 	rttSeconds          float64
 	handshakeAgeSeconds float64
 	lastHandshake       time.Time
@@ -117,7 +120,7 @@ type linkStat struct {
 // mesh lock so a concurrent connect never races the scrape.
 type linkFields struct {
 	peerID, publicKey, address, epKey, candType string
-	added                                       bool
+	up, failed                                  bool
 	agent                                       ice.Agent
 }
 
@@ -128,7 +131,7 @@ func (m *mesh) linkSnapshot() []linkStat {
 	links := make([]linkFields, 0, len(m.links))
 	for _, l := range m.links {
 		links = append(links, linkFields{
-			peerID: l.peerID, address: l.address, candType: l.candType, added: l.added,
+			peerID: l.peerID, address: l.address, candType: l.candType, up: l.up(), failed: l.failed,
 			agent: l.agent, epKey: l.epKey, publicKey: l.publicKey,
 		})
 	}
@@ -149,7 +152,8 @@ func (m *mesh) linkSnapshot() []linkStat {
 			peerID:              l.peerID,
 			address:             l.address,
 			candType:            l.candType,
-			added:               l.added,
+			up:                  l.up,
+			failed:              l.failed,
 			handshakeAgeSeconds: -1,
 		}
 		if l.agent != nil {

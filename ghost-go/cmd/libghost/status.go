@@ -17,10 +17,17 @@ type statusView struct {
 	OK bool `json:"ok"`
 	// Handle is the node's handle, echoed back.
 	Handle int64 `json:"handle"`
-	// Connected is true while the signalling session is up.
+	// Connected is true while the node is usable: the signalling session is
+	// up and the control plane has the node in its network.
 	Connected bool `json:"connected"`
-	// SignalState is disconnected, connecting, connected or closed.
+	// SignalState is disconnected, connecting, connected or closed. It says
+	// nothing about the join: a node whose join the control plane refused
+	// (because its owner paused it, say) stays connected and unjoined while
+	// it keeps asking.
 	SignalState string `json:"signal_state"`
+	// Joined is whether the node is in its network. While it is false the
+	// node carries no traffic and lists no peers.
+	Joined bool `json:"joined"`
 	// PeerID is the control plane's id for this peer.
 	PeerID string `json:"peer_id"`
 	// Network is the joined network.
@@ -102,6 +109,7 @@ func (in *instance) status() statusView {
 		Handle:        in.handle,
 		Connected:     st.Connected,
 		SignalState:   string(st.SignalState),
+		Joined:        st.Joined,
 		PeerID:        st.PeerID,
 		Network:       st.Network,
 		Address:       st.Address,

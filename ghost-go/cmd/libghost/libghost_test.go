@@ -115,8 +115,8 @@ func TestNodeLifecycle(t *testing.T) {
 	if st.Address != joined.Address || st.TunnelAddress+"/32" != st.Address {
 		t.Errorf("status address %q / %q", st.Address, st.TunnelAddress)
 	}
-	if !st.Connected || st.SignalState != "connected" {
-		t.Errorf("status signalling %v %q", st.Connected, st.SignalState)
+	if !st.Connected || !st.Joined || st.SignalState != "connected" {
+		t.Errorf("status signalling %v joined %v %q", st.Connected, st.Joined, st.SignalState)
 	}
 	if st.Exit == nil || !st.Exit.Enabled {
 		t.Fatalf("status exit %+v", st.Exit)
