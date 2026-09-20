@@ -60,7 +60,7 @@ func TestAgentGathersNoLoopbackCandidateByDefault(t *testing.T) {
 
 	agent, err := NewAgent(cfg, nil)
 	require.NoError(t, err)
-	defer agent.Close() //nolint:errcheck // test cleanup
+	defer agent.Close()
 
 	ch, err := agent.GatherCandidates(t.Context())
 	require.NoError(t, err)
