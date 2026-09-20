@@ -3,6 +3,36 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## The join is the server's answer, not the client's question
+
+`ghost-go` set its "joined" flag when it sent `join_network`, so a refusal
+(a paused node, or an authorizer failing closed during an outage) left the
+member connected, out of the network, and silent until its process was
+restarted. The join now follows the server's `joined` message and is retried
+with backoff for as long as the session is up.
+
+**New**
+
+- `ghost.DefaultJoinRetryMin` (2s) and `ghost.DefaultJoinRetryMax` (30s), the
+  bounds of the backoff between join attempts.
+- `ghost.Status.Joined`: whether the control plane has this member in its
+  network. `Status.SignalState` is the websocket's state and says nothing
+  about the join.
+- `signal.FakeServer.JoinFunc`: refuse a join in a test (with a non-fatal
+  `forbidden` error, as ghost-server does), and allow the retry.
+
+**Changed**
+
+- `ghost.Status.Connected` was "the signalling session is established"; it is
+  now "the member is usable": the session is up **and** the network join has
+  been accepted. The `connected` field of `ghost_status_json` follows it.
+  A caller that wants the old meaning reads `SignalState` / `signal_state`.
+- `ghost.Netmap()` returns `false` while the member is not joined, and
+  `Status.NetmapPeers` is then 0: a netmap describes the network as of the
+  session that carried it, and a member that has lost its join has nothing to
+  say about the peers in it. Live links are not torn down for it, because
+  WireGuard over ICE outlives a signalling blip.
+
 ## libghost, the C shared library
 
 Purely additive: a new `package main` under `ghost-go/cmd/libghost`. No Go

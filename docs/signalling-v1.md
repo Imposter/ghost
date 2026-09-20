@@ -96,6 +96,14 @@ A newer session for the same peer replaces the older one, which is closed.
 - In `api` access mode, the authorizer's `connect` decision gates the join.
   A denial gets a non-fatal `forbidden` error.
 - `joined` is always followed by the first `netmap`.
+- A peer is in the network only once `joined` arrives, never because it sent
+  `join_network`. A refusal leaves the session open, so the client keeps
+  asking with backoff (`ghost-go` waits `ghost.DefaultJoinRetryMin`, doubling
+  to `ghost.DefaultJoinRetryMax`) until the join is answered or the session
+  ends. A peer whose owner paused it, or whose join an authorizer outage
+  denied, therefore returns by itself when the answer changes, with no
+  reconnect and no restart. A joined peer stops asking: a second
+  `join_network` on a joined session is a `bad_request`.
 
 ### Netmap
 

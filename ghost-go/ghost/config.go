@@ -25,6 +25,16 @@ const DefaultPool = "100.64.0.0/10"
 // DefaultMTU is the default tunnel MTU.
 const DefaultMTU = 1280
 
+// DefaultJoinRetryMin and DefaultJoinRetryMax bound the backoff between
+// attempts to join the network. A member retries for as long as its
+// signalling session is up, so a join the control plane refuses (a paused
+// node, or an authorizer failing closed during an outage) costs the member
+// the backoff, not its place in the pool.
+const (
+	DefaultJoinRetryMin = 2 * time.Second
+	DefaultJoinRetryMax = 30 * time.Second
+)
+
 // STUNServer configures a STUN server URL.
 type STUNServer struct {
 	// URL is a STUN URL, e.g. "stun:stun.l.google.com:19302".
@@ -103,6 +113,14 @@ type Config struct {
 	// ConnectTimeout bounds ICE connection establishment per peer.
 	ConnectTimeout time.Duration
 
+	// joinRetryMin and joinRetryMax bound the backoff between attempts to
+	// join the network while the signalling session is up (defaults
+	// DefaultJoinRetryMin and DefaultJoinRetryMax). They are unexported and
+	// exist only for tests, which shorten them so a denied join is retried
+	// within the test's own deadline.
+	joinRetryMin time.Duration
+	joinRetryMax time.Duration
+
 	// MeterProvider and TracerProvider supply OpenTelemetry instrumentation.
 	// Both are optional and default to the global providers. The ghost package
 	// depends only on the OTel API.
@@ -151,6 +169,18 @@ func (c *Config) roles(extra ...proto.Role) ([]proto.Role, error) {
 		}
 	}
 	return out, nil
+}
+
+// joinBackoff returns the bounds of the join retry backoff.
+func (c *Config) joinBackoff() (minDelay, maxDelay time.Duration) {
+	minDelay, maxDelay = c.joinRetryMin, c.joinRetryMax
+	if minDelay <= 0 {
+		minDelay = DefaultJoinRetryMin
+	}
+	if maxDelay < minDelay {
+		maxDelay = max(minDelay, DefaultJoinRetryMax)
+	}
+	return minDelay, maxDelay
 }
 
 func (c *Config) mtu() int {

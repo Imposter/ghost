@@ -12,7 +12,8 @@ import (
 )
 
 // FakeServer is an in-memory signalling server for tests. It implements the
-// v1 protocol with a permissive policy: it authenticates any non-empty peer
+// v1 protocol with a permissive policy (unless AuthFunc or JoinFunc says
+// otherwise): it authenticates any non-empty peer
 // token, takes a peer's roles from its hello (default node) unless the token
 // was registered with AddPeer (then the registered roles, tags and labels
 // apply, and a hello asking for a role the peer lacks is refused), assigns
@@ -38,6 +39,12 @@ type FakeServer struct {
 	// AuthFunc, if set, decides whether a hello is accepted. It returns a
 	// peer id to use (empty to derive one) and an error to reject.
 	AuthFunc func(h proto.Hello) (peerID string, err error)
+	// JoinFunc, if set, decides whether a join is accepted. An error refuses
+	// it with a non-fatal forbidden error and leaves the session open, as
+	// ghost-server does when its authorizer denies the connect: the peer is
+	// free to ask again. It is called on every join, so a test can refuse a
+	// join and then allow the retry.
+	JoinFunc func(peerID, network string) error
 	// HubOnly applies hub-only isolation. Set it before any peer connects.
 	HubOnly bool
 	// IgnoreIsolation models a faulty or compromised control plane: netmaps
@@ -315,6 +322,12 @@ func (sess *fakeSession) handleClient(env proto.Envelope) error {
 	case proto.TypeJoinNetwork:
 		var j proto.JoinNetwork
 		_ = env.Decode(&j)
+		if s.JoinFunc != nil {
+			if err := s.JoinFunc(sess.peerID, j.Network); err != nil {
+				sess.sendToClient(proto.TypeError, proto.Error{Code: proto.ErrCodeForbidden, Message: "join denied: " + err.Error()})
+				return nil
+			}
+		}
 		s.mu.Lock()
 		sess.network = j.Network
 		sess.address = s.assignAddress()

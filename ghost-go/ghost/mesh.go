@@ -21,10 +21,16 @@ import (
 
 // Status is a snapshot of a Node or Hub's state.
 type Status struct {
-	// Connected is true once the signalling session is established.
+	// Connected is true when the member is usable: its signalling session
+	// is up and the control plane has accepted it into the network.
 	Connected bool
-	// SignalState is the signalling client's connection state.
+	// SignalState is the signalling client's connection state. It says
+	// nothing about the network join: a session the control plane refused a
+	// join stays connected while the member retries.
 	SignalState signal.State
+	// Joined is true once the network join has been answered with a Joined
+	// message, and false again as soon as the session or the join is lost.
+	Joined bool
 	// PeerID is the server-assigned peer id.
 	PeerID string
 	// Address is the assigned tunnel address (CIDR).
@@ -106,6 +112,7 @@ type mesh struct {
 	pool    string
 	peerID  string
 	network string
+	joined  bool
 	netmap  *proto.Netmap
 	links   map[string]*peerLink
 	epSeq   uint32
@@ -188,8 +195,9 @@ func (m *mesh) Status() Status {
 		ss = m.sig.State()
 	}
 	st := Status{
-		Connected:   ss == signal.StateConnected,
+		Connected:   ss == signal.StateConnected && m.joined,
 		SignalState: ss,
+		Joined:      m.joined,
 		PeerID:      m.peerID,
 		Address:     m.address,
 		Network:     m.network,
@@ -198,16 +206,22 @@ func (m *mesh) Status() Status {
 	}
 	if m.netmap != nil {
 		st.Roles = slices.Clone(m.netmap.Self.Roles)
-		st.NetmapPeers = len(m.netmap.Peers)
+		if m.joined {
+			st.NetmapPeers = len(m.netmap.Peers)
+		}
 	}
 	return st
 }
 
-// Netmap returns a copy of the current netmap, if one has arrived.
+// Netmap returns a copy of the current netmap, if one has arrived and this
+// member is still joined. A netmap describes the network as of the session
+// that carried it, so once the join is lost (the session dropped, or the
+// control plane refusing it) it is no longer reported: what the peers in it
+// are doing is not something this member knows any more.
 func (m *mesh) Netmap() (proto.Netmap, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.netmap == nil {
+	if m.netmap == nil || !m.joined {
 		return proto.Netmap{}, false
 	}
 	n := *m.netmap
@@ -263,9 +277,30 @@ func (m *mesh) Start(ctx context.Context) error {
 }
 
 func (m *mesh) loop() {
-	joined := false
 	health := time.NewTicker(healthInterval)
 	defer health.Stop()
+
+	// The join is owned by the server: a member is in the network only once
+	// a Joined message answers its join request. A refusal (a paused node,
+	// or an authorizer failing closed during an outage) leaves the session
+	// up and unjoined, so the join is retried with backoff for as long as
+	// the session lasts, and the member returns to the pool by itself once
+	// the control plane says yes again.
+	minDelay, maxDelay := m.cfg.joinBackoff()
+	delay := minDelay
+	retry := time.NewTimer(minDelay)
+	defer retry.Stop()
+	retry.Stop()
+	attempt := func() {
+		if !m.tryJoin() {
+			return
+		}
+		retry.Reset(delay)
+		if delay = delay * 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -274,6 +309,8 @@ func (m *mesh) loop() {
 			// Retry failed links and report health.
 			m.reconcile()
 			m.reportHealth()
+		case <-retry.C:
+			attempt()
 		case ev, ok := <-m.sig.Events():
 			if !ok {
 				return
@@ -281,19 +318,22 @@ func (m *mesh) loop() {
 			switch {
 			case ev.State != "":
 				m.emit(Event{Kind: EventSignalState, SignalState: ev.State})
-				if ev.State == signal.StateConnected && !joined {
-					joined = true
-					if err := m.sig.Join(m.ctx, m.cfg.Network); err != nil {
-						m.emit(Event{Kind: EventError, Err: err})
-					}
-				} else if ev.State == signal.StateDisconnected {
-					joined = false
+				switch ev.State {
+				case signal.StateConnected:
+					delay = minDelay
+					attempt()
+				case signal.StateDisconnected, signal.StateClosed:
+					retry.Stop()
+					delay = minDelay
+					m.setJoined(false)
 				}
 			case ev.Welcome != nil:
 				m.mu.Lock()
 				m.peerID = ev.Welcome.PeerID
 				m.mu.Unlock()
 			case ev.Joined != nil:
+				retry.Stop()
+				delay = minDelay
 				m.handleJoined(*ev.Joined)
 			case ev.Netmap != nil:
 				m.handleNetmap(*ev.Netmap)
@@ -308,6 +348,36 @@ func (m *mesh) loop() {
 	}
 }
 
+// tryJoin asks to join the network when the session is up and the member is
+// not in it, and reports whether a request went out (so the caller arms the
+// next retry). A send error is reported and retried like a refusal.
+func (m *mesh) tryJoin() bool {
+	m.mu.Lock()
+	joined, sig := m.joined, m.sig
+	m.mu.Unlock()
+	if joined || sig == nil || sig.State() != signal.StateConnected {
+		return false
+	}
+	if err := sig.Join(m.ctx, m.cfg.Network); err != nil {
+		m.emit(Event{Kind: EventError, Err: fmt.Errorf("join %q: %w", m.cfg.Network, err)})
+	}
+	return true
+}
+
+// setJoined records whether the member is in its network. Losing the join
+// does not tear down live links: WireGuard over ICE outlives a signalling
+// blip, and the next netmap reconciles whatever changed meanwhile. It does
+// stop the member reporting a netmap it can no longer vouch for (see Netmap).
+func (m *mesh) setJoined(joined bool) {
+	m.mu.Lock()
+	changed := m.joined != joined
+	m.joined = joined
+	m.mu.Unlock()
+	if changed && !joined {
+		m.log.Info("ghost: no longer joined to the network", "network", m.cfg.Network)
+	}
+}
+
 func (m *mesh) handleJoined(j proto.Joined) {
 	m.mu.Lock()
 	if m.wg == nil {
@@ -317,6 +387,9 @@ func (m *mesh) handleJoined(j proto.Joined) {
 			return
 		}
 	}
+	// The member is in the network only from here: it has an address and a
+	// tunnel to use it with.
+	m.joined = true
 	m.network = j.Network
 	var metricsErr error
 	if m.cfg.Metrics != nil && m.msrv == nil {
