@@ -43,6 +43,23 @@ points sit behind a `cgo` build tag. `python3 ghost-go/cmd/libghost/build.py
 --docker --os linux` builds the shared library with no local toolchain. See
 [ffi.md](ffi.md).
 
+## Test deadlines scale with the build
+
+`ghost-server/server`'s tests run a real server over real WebSocket sessions,
+so they wait for things. Every deadline in the package goes through `wait()`
+(`server/waits_test.go`), which multiplies it by `raceWaitScale` -- 8 under
+`-race` (`//go:build race`), 1 otherwise -- and by `$GHOST_TEST_TIMEOUT_SCALE`
+when it is set, for a machine slower still:
+
+```bash
+GHOST_TEST_TIMEOUT_SCALE=2 go test -race ./server/
+```
+
+Write a deadline as what the server should need and let the scale cover what
+the machine can manage; never raise the constant instead. A fixed wait that a
+loaded race build loses fails whichever test happened to be running, which is
+a poor way to choose what to distrust.
+
 ## Tests are loopback-only
 
 Every test must run offline, on the loopback interface, with no firewall

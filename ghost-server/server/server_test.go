@@ -437,7 +437,7 @@ func TestPeerHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	var hv httpapi.HealthView
-	for deadline := time.Now().Add(5 * time.Second); hv.Health == nil && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(wait(5 * time.Second)); hv.Health == nil && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		h.ctl("GET", "/control/peers/"+hubC.PeerID+"/health", nil, &hv, http.StatusOK)
 	}
 	if hv.Health == nil || !hv.Online || hv.HealthAt == nil || len(hv.Health.Links) != 2 {

@@ -32,7 +32,7 @@ type member interface {
 
 func (h *harness) member(c control.Credentials, hub bool) (member, string) {
 	h.t.Helper()
-	cfg := ghost.Config{SignalURL: h.ws, PeerToken: c.PeerToken, Network: c.Network, ConnectTimeout: 15 * time.Second,
+	cfg := ghost.Config{SignalURL: h.ws, PeerToken: c.PeerToken, Network: c.Network, ConnectTimeout: wait(15 * time.Second),
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	cfg.UseLoopbackICE()
 	var m member
@@ -71,7 +71,8 @@ func serveHTTP(t *testing.T, m member, ip, name string) string {
 
 // get fetches http://addr/ over from's tunnel, retrying until timeout.
 func get(from member, addr string, timeout time.Duration) (string, error) {
-	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{DialContext: from.DialContext}}
+	timeout = wait(timeout)
+	client := &http.Client{Timeout: wait(3 * time.Second), Transport: &http.Transport{DialContext: from.DialContext}}
 	var lastErr error
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
 		resp, err := client.Get("http://" + addr + "/")
@@ -88,6 +89,7 @@ func get(from member, addr string, timeout time.Duration) (string, error) {
 
 func waitMesh(t *testing.T, ev <-chan ghost.Event, kind ghost.EventKind, timeout time.Duration) ghost.Event {
 	t.Helper()
+	timeout = wait(timeout)
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -143,7 +145,7 @@ func TestNodeHubThroughServer(t *testing.T) {
 
 	// Link health arrives in heartbeats.
 	var hv httpapi.HealthView
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(wait(10 * time.Second)); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		h.ctl("GET", "/control/peers/"+node1C.PeerID+"/health", nil, &hv, http.StatusOK)
 		if hv.Health != nil && len(hv.Health.Links) == 1 && hv.Health.Links[0].State == proto.LinkConnected {
 			break

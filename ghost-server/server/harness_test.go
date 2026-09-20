@@ -65,7 +65,7 @@ func testConfig() config.Config {
 	cfg.Control.ServiceToken = serviceToken
 	cfg.Networks = []config.Network{{Name: "testnet"}, {Name: "othernet", Pool: "100.96.0.0/24"}}
 	cfg.Heartbeat.Interval = config.Duration(time.Second)
-	cfg.Heartbeat.Timeout = config.Duration(5 * time.Second)
+	cfg.Heartbeat.Timeout = config.Duration(wait(5 * time.Second))
 	return cfg
 }
 
@@ -237,9 +237,11 @@ func (h *harness) joined(creds control.Credentials) *sigClient {
 }
 
 // next waits for the first event matching pred, applying netmaps and deltas
-// on the way.
+// on the way. timeout is what the server should need; the wait is what this
+// build and machine are given for it.
 func (s *sigClient) next(what string, timeout time.Duration, pred func(signal.Event) bool) signal.Event {
 	s.t.Helper()
+	timeout = wait(timeout)
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -401,7 +403,7 @@ func (h *harness) watch(query string) *watcher {
 // next waits for an event of type typ (optionally about peer).
 func (w *watcher) next(typ, peer string) events.Event {
 	w.t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(wait(5 * time.Second))
 	for {
 		select {
 		case e, ok := <-w.events:
