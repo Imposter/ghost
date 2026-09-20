@@ -18,5 +18,6 @@ func (c *Config) UseLoopbackICE() {
 		ic.TURNServers = nil
 		ic.CandidateTypes = []ice.CandidateType{ice.CandidateTypeHost}
 		ic.IPFilter = func(ip net.IP) bool { return ip.IsLoopback() }
+		ic.IncludeLoopback = true
 	}
 }

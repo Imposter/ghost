@@ -3,6 +3,26 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## No mDNS, and no loopback candidates outside tests
+
+An ICE agent joined the mDNS multicast group and bound UDP 5353 on every
+interface (pion's default), and gathered 127.0.0.1 candidates because the
+agent config hard-coded `IncludeLoopback: true` for the tests' benefit.
+Neither is wanted on a volunteer's machine: the only remote peer is a hub,
+which never offers a `.local` candidate, and a loopback candidate is useless
+to a remote peer.
+
+**New**
+
+- `ice.ICEConfig.IncludeLoopback` (default false). `ice.TestICEConfig`,
+  `nettest.LoopbackICEConfig` and `ghost.Config.UseLoopbackICE` set it, so
+  loopback tests are unchanged.
+
+**Changed**
+
+- ICE agents run with `MulticastDNSMode: disabled`. A member's only listening
+  sockets are now its ephemeral ICE UDP ports.
+
 ## A status that follows the tunnel
 
 A member reported a peer as linked from the moment WireGuard was configured

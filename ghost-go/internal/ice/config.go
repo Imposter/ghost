@@ -88,6 +88,12 @@ type ICEConfig struct {
 	// returns true (for example loopback only in tests).
 	IPFilter func(net.IP) bool
 
+	// IncludeLoopback gathers host candidates on loopback interfaces. It is
+	// off by default: a loopback candidate is useless to a remote peer and
+	// nothing outside this machine can reach it, so only tests that connect
+	// two agents over 127.0.0.1 set it.
+	IncludeLoopback bool
+
 	// InterfaceFilter is a list of network interface names to use.
 	// If empty, all interfaces are used.
 	InterfaceFilter []string
@@ -131,9 +137,10 @@ func DefaultICEConfig() *ICEConfig {
 const TestPortRangeStart = 51000
 
 // TestICEConfig returns a configuration suitable for local testing: host
-// candidates on the loopback interface only, no STUN/TURN, and OS-assigned
-// (ephemeral) ports. Restricting to loopback and avoiding fixed ports keeps
-// the test suite from binding routable sockets or triggering firewall prompts.
+// candidates on the loopback interface only (the one configuration that sets
+// IncludeLoopback), no STUN/TURN, and OS-assigned (ephemeral) ports.
+// Restricting to loopback and avoiding fixed ports keeps the test suite from
+// binding routable sockets or triggering firewall prompts.
 // The portOffset parameter is retained for source compatibility and ignored.
 func TestICEConfig(portOffset int) *ICEConfig {
 	_ = portOffset
@@ -149,7 +156,8 @@ func TestICEConfig(portOffset int) *ICEConfig {
 		CandidateTypes: []CandidateType{
 			CandidateTypeHost,
 		},
-		IPFilter: func(ip net.IP) bool { return ip.IsLoopback() },
+		IPFilter:        func(ip net.IP) bool { return ip.IsLoopback() },
+		IncludeLoopback: true,
 	}
 }
 

@@ -22,6 +22,7 @@ func LoopbackICEConfig(portOffset int) *ice.ICEConfig {
 	c.TURNServers = nil
 	c.CandidateTypes = []ice.CandidateType{ice.CandidateTypeHost}
 	c.IPFilter = func(ip net.IP) bool { return ip.IsLoopback() }
+	c.IncludeLoopback = true
 	if portOffset > 0 {
 		port := uint16(ice.TestPortRangeStart + portOffset)
 		c.PortMin = port

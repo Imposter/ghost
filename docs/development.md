@@ -51,7 +51,9 @@ prompt. In practice:
 - ICE in tests uses host candidates on loopback with no STUN, TURN or mDNS.
   Use `nettest.LoopbackICEConfig` or `ice.TestICEConfig`. Across modules, use
   `ghost.Config.UseLoopbackICE()`, which is how ghost-server's tests connect a
-  real `Node` and `Hub` through a real server.
+  real `Node` and `Hub` through a real server. They are also the only configs
+  that set `ICEConfig.IncludeLoopback`: production gathers no loopback
+  candidate, so a test that builds its own config must ask for one.
 - Bind listeners to `127.0.0.1:0`, never to `:port` or `0.0.0.0`, and let the
   OS choose ephemeral ports.
 - Don't contact external hosts. Exit tests use a local target and set

@@ -172,66 +172,16 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 	candidateChan := make(chan *Candidate, 64)
 	gatherDone := make(chan struct{})
 
-	// Build ICE agent configuration
-	agentConfig := &ice.AgentConfig{
-		NetworkTypes:        []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
-		IncludeLoopback:     true, // Required for localhost testing
-		KeepaliveInterval:   &config.KeepaliveInterval,
-		DisconnectedTimeout: &config.DisconnectedTimeout,
-		FailedTimeout:       &config.FailedTimeout,
-		IPFilter:            config.IPFilter,
+	acfg, err := agentConfig(config)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(config.InterfaceFilter) > 0 {
-		allowed := make(map[string]bool, len(config.InterfaceFilter))
-		for _, name := range config.InterfaceFilter {
-			allowed[name] = true
-		}
-		agentConfig.InterfaceFilter = func(name string) bool { return allowed[name] }
-	}
-
-	for _, ct := range config.CandidateTypes {
-		switch ct {
-		case CandidateTypeHost:
-			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeHost)
-		case CandidateTypeSrflx:
-			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeServerReflexive)
-		case CandidateTypeRelay:
-			agentConfig.CandidateTypes = append(agentConfig.CandidateTypes, ice.CandidateTypeRelay)
-		}
-	}
-
-	// Set port range if specified (useful for firewall rules)
 	if config.PortMin > 0 && config.PortMax > 0 {
-		agentConfig.PortMin = config.PortMin
-		agentConfig.PortMax = config.PortMax
 		logger.Info("Using fixed port range for ICE", "min", config.PortMin, "max", config.PortMax)
 	}
 
-	// Add STUN servers
-	for _, stunURL := range config.STUNServers {
-		url, err := stun.ParseURI(stunURL)
-		if err != nil {
-			return nil, fmt.Errorf("invalid STUN URL %s: %w", stunURL, err)
-		}
-		agentConfig.Urls = append(agentConfig.Urls, url)
-	}
-
-	// Add TURN servers
-	for _, turnServer := range config.TURNServers {
-		for _, turnURL := range turnServer.URLs {
-			url, err := stun.ParseURI(turnURL)
-			if err != nil {
-				return nil, fmt.Errorf("invalid TURN URL %s: %w", turnURL, err)
-			}
-			url.Username = turnServer.Username
-			url.Password = turnServer.Password
-			agentConfig.Urls = append(agentConfig.Urls, url)
-		}
-	}
-
 	// Create Pion ICE agent
-	agent, err := ice.NewAgent(agentConfig)
+	agent, err := ice.NewAgent(acfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ICE agent: %w", err)
 	}
@@ -319,6 +269,76 @@ func NewAgent(config *ICEConfig, logger *slog.Logger) (Agent, error) {
 	)
 
 	return pa, nil
+}
+
+// agentConfig builds the Pion agent configuration for config.
+//
+// Two settings are deliberate and are what the tests below check. mDNS is
+// disabled: the only remote peer in this design is a hub, which never offers
+// a .local candidate, so pion's default would join the multicast group and
+// bind UDP 5353 on every interface of the machine -- a well-known port and an
+// inbound surface -- for nothing. Loopback gathering follows
+// ICEConfig.IncludeLoopback, which only tests set: a 127.0.0.1 candidate is
+// useless to a remote peer, and offering one tells it where this member is
+// not reachable.
+func agentConfig(config *ICEConfig) (*ice.AgentConfig, error) {
+	out := &ice.AgentConfig{
+		NetworkTypes:        []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
+		MulticastDNSMode:    ice.MulticastDNSModeDisabled,
+		IncludeLoopback:     config.IncludeLoopback,
+		KeepaliveInterval:   &config.KeepaliveInterval,
+		DisconnectedTimeout: &config.DisconnectedTimeout,
+		FailedTimeout:       &config.FailedTimeout,
+		IPFilter:            config.IPFilter,
+	}
+
+	if len(config.InterfaceFilter) > 0 {
+		allowed := make(map[string]bool, len(config.InterfaceFilter))
+		for _, name := range config.InterfaceFilter {
+			allowed[name] = true
+		}
+		out.InterfaceFilter = func(name string) bool { return allowed[name] }
+	}
+
+	for _, ct := range config.CandidateTypes {
+		switch ct {
+		case CandidateTypeHost:
+			out.CandidateTypes = append(out.CandidateTypes, ice.CandidateTypeHost)
+		case CandidateTypeSrflx:
+			out.CandidateTypes = append(out.CandidateTypes, ice.CandidateTypeServerReflexive)
+		case CandidateTypeRelay:
+			out.CandidateTypes = append(out.CandidateTypes, ice.CandidateTypeRelay)
+		}
+	}
+
+	// Set port range if specified (useful for firewall rules)
+	if config.PortMin > 0 && config.PortMax > 0 {
+		out.PortMin = config.PortMin
+		out.PortMax = config.PortMax
+	}
+
+	// Add STUN servers
+	for _, stunURL := range config.STUNServers {
+		url, err := stun.ParseURI(stunURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid STUN URL %s: %w", stunURL, err)
+		}
+		out.Urls = append(out.Urls, url)
+	}
+
+	// Add TURN servers
+	for _, turnServer := range config.TURNServers {
+		for _, turnURL := range turnServer.URLs {
+			url, err := stun.ParseURI(turnURL)
+			if err != nil {
+				return nil, fmt.Errorf("invalid TURN URL %s: %w", turnURL, err)
+			}
+			url.Username = turnServer.Username
+			url.Password = turnServer.Password
+			out.Urls = append(out.Urls, url)
+		}
+	}
+	return out, nil
 }
 
 // GatherCandidates starts gathering local ICE candidates.

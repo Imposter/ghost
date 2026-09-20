@@ -25,6 +25,7 @@ func loopbackTuner(cfg *Config) {
 		c.TURNServers = nil
 		c.CandidateTypes = lb.CandidateTypes
 		c.IPFilter = lb.IPFilter
+		c.IncludeLoopback = lb.IncludeLoopback
 	}
 }
 
