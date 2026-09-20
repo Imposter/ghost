@@ -6,6 +6,7 @@
 *.test
 /bin/
 /dist/
+**/dist/
 **/build/
 
 # Coverage

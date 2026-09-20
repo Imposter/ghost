@@ -4,7 +4,7 @@ MODULES := ghost-go ghost-server
 # each runs a command in every module: $(call each,go vet ./...)
 each = for m in $(MODULES); do echo "== $$m"; (cd $$m && $(1)) || exit 1; done
 
-.PHONY: all build vet test test-race lint fmt docker
+.PHONY: all build vet test test-race lint fmt docker libghost
 
 all: vet test
 
@@ -23,3 +23,8 @@ fmt:
 
 docker:
 	docker build -f ghost-server/Dockerfile -t ghost-server:dev .
+
+# the C shared library for this machine; add --docker for linux without a
+# local C toolchain (see docs/ffi.md)
+libghost:
+	python3 ghost-go/cmd/libghost/build.py
