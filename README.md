@@ -111,6 +111,29 @@ The control plane is optional. Set `ghost.Config.Signaller` to a
 There is no netmap policy, isolation or health reporting in this mode. See
 [docs/p2p.md](docs/p2p.md) and [`examples/p2p`](ghost-go/examples/p2p).
 
+## Embedding ghost in another language
+
+[`libghost`](ghost-go/cmd/libghost) builds the library as a C shared object,
+so an application that is not written in Go — a Flutter app through Dart FFI,
+for example — can run a node in its own process. It is the same thin wrapper
+`ghost-cli` is: a node behind an integer handle, UTF-8 JSON in and out, and
+no Go pointer across the boundary.
+
+```c
+ghost_handle h = ghost_start(config_json, &err);   /* creds, exit, caps, metrics */
+char *ev = ghost_next_event_json(h, 1000);         /* one event per call */
+char *st = ghost_status_json(h);                   /* tunnel address, peers, candidate type */
+ghost_set_policy(h, "{\"paused\":true}", &err);    /* allowlist, caps, pause */
+ghost_stop(h);
+```
+
+```bash
+cd ghost-go/cmd/libghost && python3 build.py --docker --os linux
+```
+
+See [docs/ffi.md](docs/ffi.md) for the header, the JSON shapes, the ownership
+and threading rules, and the toolchains each target needs.
+
 ## Glossary
 
 - **peer**: an enrolled identity in one network. It has an id (`peer_…`), a
@@ -144,6 +167,8 @@ There is no netmap policy, isolation or health reporting in this mode. See
 - [Signalling v1](docs/signalling-v1.md): the WebSocket protocol between peers
   and the control plane.
 - [Peer to peer](docs/p2p.md): using the library without the control plane.
+- [C API](docs/ffi.md): `libghost`, the C shared library for Dart FFI and
+  other non-Go hosts.
 - [Development](docs/development.md): building, testing, linting, CI, and
   image publishing.
 - [API changes](docs/api-changes.md): breaking changes and removals.
@@ -155,6 +180,7 @@ ghost-go/                  library module
   ghost/                   Node, Hub, Config, Signaller, keys, events, the tunnel netstack
   ghost/direct/            standalone Signaller: invite/answer tokens, static peers
   cmd/ghost-cli/           command-line member: enroll, node, hub, p2p, status (and its Dockerfile)
+  cmd/libghost/            C shared library (-buildmode=c-shared): ghost.h, build.py
   examples/p2p/            two members linked by pasted tokens
   exit/                    SOCKS5 / HTTP-CONNECT exit: allowlist, caps, accounting
   metrics/                 a node's strict metrics: collector, handler, hub-side client

@@ -3,6 +3,36 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## libghost, the C shared library
+
+Purely additive: a new `package main` under `ghost-go/cmd/libghost`. No Go
+API changed, and nothing outside that directory imports it.
+
+**New**
+
+- `ghost-go/cmd/libghost`, built with `-buildmode=c-shared`, exporting
+  `ghost_version`, `ghost_enroll`, `ghost_start`, `ghost_stop`,
+  `ghost_status_json`, `ghost_next_event_json`, `ghost_set_policy`,
+  `ghost_metrics_json` and `ghost_free`. Nodes live behind `ghost_handle`,
+  an integer key into a mutex-guarded table; no Go pointer crosses the
+  boundary. See [ffi.md](ffi.md) for the JSON shapes, ownership and
+  threading rules.
+- `ghost-go/cmd/libghost/ghost.h`, the curated header, and
+  `ghost-go/cmd/libghost/build.py`, which builds the library and lays out
+  `<out>/include/ghost.h` and `<out>/<os>-<arch>/`.
+- `libghost` ABI version `0.1.0` (`ghost_version`). It tracks the C API and
+  the JSON shapes, not the library behind them.
+
+**Notes**
+
+- The C API adds one policy rule that has no Go equivalent: a host
+  application's local exit policy never widens the control plane's. A
+  destination must pass both allowlists, the effective cap is the smaller of
+  the two that are set, and the exit is paused when either side pauses it —
+  so a policy push cannot un-pause an exit its owner paused.
+- `ghost_start` refuses unknown JSON fields, so a misspelt `key_store_path`
+  is an error rather than an ephemeral WireGuard key.
+
 ## ghost-cli, netmap labels, roles and structured source tags
 
 Mostly additive. The breaking changes are the exit and metrics renames for

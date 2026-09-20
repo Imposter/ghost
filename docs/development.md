@@ -36,6 +36,13 @@ last). To install it:
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 ```
 
+`ghost-go/cmd/libghost` is a `c-shared` build and so needs cgo and a C
+compiler for the target; with cgo off it still compiles (and its tests still
+run) as an ordinary package whose `main` does nothing, because the C entry
+points sit behind a `cgo` build tag. `python3 ghost-go/cmd/libghost/build.py
+--docker --os linux` builds the shared library with no local toolchain. See
+[ffi.md](ffi.md).
+
 ## Tests are loopback-only
 
 Every test must run offline, on the loopback interface, with no firewall
