@@ -430,6 +430,32 @@ func (m *mesh) joinDenied(reason string) {
 	}
 	m.log.Info("ghost: join refused; retrying", "network", m.cfg.Network, "reason", reason)
 	m.emit(Event{Kind: EventJoinDenied, Reason: reason})
+	m.dropLinks()
+}
+
+// dropLinks tears down every link at once. A refusal is the control plane's
+// word that this member is out: its peers have already dropped it (a hub
+// removes a withdrawn node the moment its netmap changes), so the links are
+// dead now. Waiting for ICE to notice would leave them reported as up for
+// the 20 s or so its keepalives take to time out. A plain signalling blip
+// does not come here; its links outlive it.
+func (m *mesh) dropLinks() {
+	m.mu.Lock()
+	links := make([]*peerLink, 0, len(m.links))
+	for id, l := range m.links {
+		links = append(links, l)
+		delete(m.links, id)
+	}
+	m.mu.Unlock()
+	for _, l := range links {
+		m.teardownLink(l)
+		if l.added {
+			m.emit(Event{Kind: EventPeerDisconnected, PeerID: l.peerID})
+		}
+	}
+	if len(links) > 0 {
+		m.reportHealth()
+	}
 }
 
 // setJoined records whether the member is in its network. Losing the join

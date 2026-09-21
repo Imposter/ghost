@@ -234,8 +234,11 @@ on the event stream.
 A status never outlives what it describes. `signal_state` is the websocket
 alone: a node the control plane refused a join to stays `connected` and
 `"joined": false` while it keeps asking, with the control plane's reason in
-`join_denied`, and `connected` (the usable flag) is false meanwhile. It opens no
-tunnels while it is out: the control plane relays no signalling for it. `peers` is empty while the node is not joined, because the
+`join_denied`, and `connected` (the usable flag) is false meanwhile. A refusal
+takes its tunnels down at once (`peer_disconnected` follows `join_denied`), since
+its peers have already dropped it, and it opens none while it is out: the
+control plane relays no signalling for it. A mere signalling blip leaves the
+tunnels up. `peers` is empty while the node is not joined, because the
 netmap it last received describes a session it no longer has. `linked`,
 `candidate_type` and the byte counters are dropped as soon as ICE reports the
 path to a peer disconnected or failed, so a window never shows a working

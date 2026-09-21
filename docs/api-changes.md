@@ -21,7 +21,8 @@ netmap it no longer held.
 - `Status.JoinDenied` (libghost status `join_denied`) holds the reason while
   the join is refused.
 - A member out of its network opens no new links; it still tears down dead
-  ones.
+  ones. A refusal tears all of its links down at once (`EventPeerDisconnected`
+  for each), rather than when ICE times out about twenty seconds later.
 - libghost ABI 0.2.1 (additive: a new event kind and status field).
 
 ## libghost: a JSON Schema for the C API's documents

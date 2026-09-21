@@ -364,3 +364,59 @@ func TestPausedWhileJoinedIsOneRefusal(t *testing.T) {
 		t.Errorf("a resumed node still reports a refusal: %q", st.JoinDenied)
 	}
 }
+
+// TestARefusalTakesTheTunnelDownAtOnce: a node paused while its tunnel to the
+// hub is up. The hub drops the node the moment the control plane withdraws
+// it, so the node's link is dead at once; it must say so at once, not when
+// ICE's keepalives time out some twenty seconds later.
+func TestARefusalTakesTheTunnelDownAtOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping tunnel integration test in short mode")
+	}
+	fake := signal.NewFakeServer("100.64.0.0/10")
+	var deny atomic.Bool
+	fake.JoinFunc = func(_, _ string) error {
+		if deny.Load() {
+			return errors.New("node paused")
+		}
+		return nil
+	}
+	ctx := context.Background()
+
+	hubCfg := Config{SignalDialer: fake.Dialer(), PeerToken: "hub-token", Network: "pool", ConnectTimeout: 15 * time.Second}
+	loopbackTuner(&hubCfg)
+	hub, err := NewHub(hubCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	if err := hub.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, hub.Events(), EventJoined, 10*time.Second)
+
+	cfg := Config{SignalDialer: fake.Dialer(), PeerToken: "node-token", Network: "pool", ConnectTimeout: 15 * time.Second}
+	cfg.joinRetryMin, cfg.joinRetryMax = time.Second, time.Second
+	loopbackTuner(&cfg)
+	node, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	if err := node.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, node.Events(), EventPeerConnected, 25*time.Second)
+	if node.Status().Peers != 1 {
+		t.Fatalf("the node is not linked to the hub: %+v", node.Status())
+	}
+
+	deny.Store(true)
+	paused := time.Now()
+	fake.Deauthorize(node.Status().PeerID, "node paused")
+	waitEvent(t, node.Events(), EventPeerDisconnected, 2*time.Second)
+	t.Logf("tunnel reported down %s after the pause", time.Since(paused).Round(time.Millisecond))
+	if st := node.Status(); st.Peers != 0 {
+		t.Errorf("a refused node still reports %d live tunnels", st.Peers)
+	}
+}
