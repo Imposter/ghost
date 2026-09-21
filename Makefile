@@ -1,4 +1,4 @@
-# ghost: build, lint and test both modules. Requires Go 1.25+.
+# ghost: build, lint and test both modules. Requires Go 1.26+.
 MODULES := ghost-go ghost-server
 
 # each runs a command in every module: $(call each,go vet ./...)

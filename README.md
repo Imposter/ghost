@@ -203,7 +203,7 @@ docs/                      the documents listed above
 
 ## Requirements
 
-Go 1.25 or newer. A peer needs outbound UDP for ICE, and TURN if both ends are
+Go 1.26 or newer. A peer needs outbound UDP for ICE, and TURN if both ends are
 behind symmetric NATs. Neither module needs root or a TUN driver.
 
 ## Acknowledgements

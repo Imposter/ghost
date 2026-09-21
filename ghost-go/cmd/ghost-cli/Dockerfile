@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build from the repository root, like the ghost-server image:
 #   docker build -f ghost-go/cmd/ghost-cli/Dockerfile -t ghost-cli .
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src/ghost-go
 COPY ghost-go/go.mod ghost-go/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

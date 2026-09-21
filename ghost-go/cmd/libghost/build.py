@@ -3,7 +3,7 @@
 
     python3 build.py                     # the host platform, into ./dist
     python3 build.py --os linux --arch arm64
-    python3 build.py --docker            # linux/amd64 in golang:1.25, no local toolchain
+    python3 build.py --docker            # linux/amd64 in golang:1.26, no local toolchain
     python3 build.py --out ../../../build/libghost
 
 cgo needs a C toolchain for the target, so a cross build wants a cross
@@ -39,7 +39,7 @@ REPO = MODULE.parent
 PACKAGE = "./cmd/libghost"
 
 # The Go image used by --docker. It must match the go directive in go.mod.
-DOCKER_IMAGE = "golang:1.25"
+DOCKER_IMAGE = "golang:1.26"
 
 # Go's name for this machine's architecture.
 HOST_ARCH = {
