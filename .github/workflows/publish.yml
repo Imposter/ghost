@@ -1,49 +1,98 @@
 name: Publish images
 
-# Disabled until the repository variable PUBLISH_IMAGES is set to "true"
-# (Settings > Secrets and variables > Actions > Variables). See
-# docs/development.md.
+# ghcr.io/imposter/ghost-server, for releases only: a published GitHub release of a vX.Y.Z
+# tag (or a manual run naming one). Nothing is published on a push or a pull request.
+#
+# The image is rebuilt only when ghost-server/ or ghost-go/ (which it compiles in) changed
+# since the previous release. Otherwise the previous release's image is tagged with the new
+# version, so every release names an image. A manual run with "force" rebuilds regardless.
+#
+# Tags: X.Y.Z, X.Y and latest (a pre-release, vX.Y.Z-rc.1, gets only its own).
 
 on:
-  push:
-    branches: [master]
-    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to publish (vX.Y.Z)
+        required: true
+      force:
+        description: Rebuild the image, changed or not
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  IMAGE: ghcr.io/imposter/ghost-server
 
 jobs:
   ghost-server:
-    if: vars.PUBLISH_IMAGES == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-qemu-action@v3
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: plan
+        name: Build, or reuse the previous release's image
+        env:
+          FORCE: ${{ inputs.force && 'true' || 'false' }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::$TAG is not a release tag (vX.Y.Z)"; exit 1 ;;
+          esac
+          version="${TAG#v}"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
+          why=""
+          if [ "$FORCE" = true ]; then
+            why="forced"
+          elif [ -z "$previous" ]; then
+            why="no previous release"
+          elif ! git diff --quiet "$previous" "$TAG" -- ghost-server ghost-go .github/workflows/publish.yml; then
+            why="changed since $previous"
+          elif ! docker buildx imagetools inspect "$IMAGE:${previous#v}" >/dev/null 2>&1; then
+            why="no image of $previous to reuse"
+          fi
+          latest=true
+          case "$version" in *-*) latest=false ;; esac
+          {
+            echo "build=$([ -n "$why" ] && echo true || echo false)"
+            echo "previous=$previous"
+            echo "version=$version"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+          echo "ghost-server $TAG: ${why:-unchanged since $previous, reused}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: docker/setup-qemu-action@v3
+        if: steps.plan.outputs.build == 'true'
       - id: meta
+        if: steps.plan.outputs.build == 'true'
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/imposter/ghost-server
-          # :master on the branch, :sha-<short> always, and :X.Y.Z, :X.Y and
-          # :latest (added automatically for semver tags) on v* tags.
+          images: ${{ env.IMAGE }}
+          flavor: latest=${{ steps.plan.outputs.latest }}
           tags: |
-            type=ref,event=branch
-            type=sha,format=short
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+      - if: steps.plan.outputs.build == 'true'
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ghost-server/Dockerfile
@@ -51,6 +100,17 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ steps.meta.outputs.version }}
+          build-args: VERSION=${{ steps.plan.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Tag the previous release's image with this version
+        if: steps.plan.outputs.build == 'false'
+        env:
+          PREVIOUS: ${{ steps.plan.outputs.previous }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          LATEST: ${{ steps.plan.outputs.latest }}
+        run: |
+          tags=(-t "$IMAGE:$VERSION")
+          # X.Y and latest name a release, never a pre-release (as metadata-action does)
+          if [ "$LATEST" = true ]; then tags+=(-t "$IMAGE:${VERSION%.*}" -t "$IMAGE:latest"); fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE:${PREVIOUS#v}"

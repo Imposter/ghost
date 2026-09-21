@@ -108,35 +108,40 @@ runs a whole network.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request:
+`master` takes no direct push: changes merge through a pull request.
+`.github/workflows/ci.yml` checks each pull request, for the modules it touches
+only (a change to the workflow itself checks both):
 
-| Job | Runner | Steps |
-| --- | ------ | ----- |
-| `ghost-go`, `ghost-server` (matrix) | ubuntu-latest | `go vet ./...`, `go test -race ./...`, golangci-lint |
-| `ghost-go (windows)` | windows-latest | `go vet ./...`, `go test ./...` |
-| `ghost-server image` | ubuntu-latest | `docker build` of `ghost-server/Dockerfile`, not pushed |
+| Job | Runs when | Runner | Steps |
+| --- | --------- | ------ | ----- |
+| `ghost-go` | `ghost-go/` changed | ubuntu-latest | `go vet ./...`, `go test -race ./...`, golangci-lint |
+| `ghost-server` | `ghost-server/` or `ghost-go/` changed | ubuntu-latest | the same |
+| `ghost-go (windows)` | `ghost-go/` changed | windows-latest | `go vet ./...`, `go test ./...` |
 
-Go comes from `actions/setup-go` (Go 1.25, with module and build caching).
-Dependabot (`.github/dependabot.yml`) opens weekly updates for both Go
-modules, the GitHub Actions and the Docker base images.
+A manual run (*Actions → CI → Run workflow*) checks everything. Go comes from
+`actions/setup-go` (Go 1.25, with module and build caching). Dependabot
+(`.github/dependabot.yml`) opens weekly updates for both Go modules, the GitHub
+Actions and the Docker base images.
 
 ## Publishing images
 
-`.github/workflows/publish.yml` builds `ghcr.io/imposter/ghost-server` for
-`linux/amd64` and `linux/arm64` with buildx, and pushes it to GHCR using the
-workflow's `GITHUB_TOKEN` (`packages: write`). It runs on pushes to `master`
-and on `v*` tags:
+`.github/workflows/publish.yml` publishes `ghcr.io/imposter/ghost-server` for
+`linux/amd64` and `linux/arm64`, pushed to GHCR with the workflow's
+`GITHUB_TOKEN` (`packages: write`), **for releases only**: a published GitHub
+release of a `vX.Y.Z` tag, or a manual run naming one. Nothing is published on a
+push or a pull request.
 
-| Trigger | Tags |
+```sh
+gh release create v1.2.3 --generate-notes   # tags master's head and publishes the release
+```
+
+The image is rebuilt only when `ghost-server/` or `ghost-go/` changed since the
+previous release; otherwise the previous release's image is tagged with the new
+version, so every release names an image. A manual run with **force** rebuilds.
+
+| Release | Tags |
 | ------- | ---- |
-| push to `master` | `:master`, `:sha-<short>` |
-| tag `v1.2.3` | `:1.2.3`, `:1.2`, `:latest`, `:sha-<short>` |
+| `v1.2.3` | `:1.2.3`, `:1.2`, `:latest` |
+| `v1.3.0-rc.1` (pre-release) | `:1.3.0-rc.1` |
 
-**Publishing is off by default.** The job only runs when the repository
-variable `PUBLISH_IMAGES` is `true`. Until then the workflow is skipped and
-nothing is pushed. To turn it on, go to *Settings → Secrets and variables →
-Actions → Variables* and add `PUBLISH_IMAGES` = `true`. Delete the variable,
-or set it to anything else, to turn publishing off again.
-
-The binary's version (`main.version`) is set from the image version: the
-semver on tags, the branch name on `master`.
+The binary's version (`main.version`) is the release's version (`1.2.3`).
