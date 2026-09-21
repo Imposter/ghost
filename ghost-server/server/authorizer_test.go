@@ -109,8 +109,11 @@ func TestAuthorizerJudgesBothSidesOfAPair(t *testing.T) {
 	node2C := h.peer("pair", "node2", nodeRoles)
 	hub := h.joined(hubC)
 	node1 := h.joined(node1C)
-	h.joined(node2C)
+	node2 := h.joined(node2C)
+	// The relay lets a pair signal only when each is in the other's netmap, so
+	// both must have arrived before the authorizer is the layer that refuses.
 	node1.waitNetmap("mesh", func(n proto.Netmap) bool { return len(n.Peers) == 2 })
+	node2.waitNetmap("mesh", func(n proto.Netmap) bool { return len(n.Peers) == 2 })
 
 	// node -> node: in each other's netmap, and still refused.
 	node1.offer(node2C.PeerID)

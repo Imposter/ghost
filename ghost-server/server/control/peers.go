@@ -209,10 +209,12 @@ func (s *Service) RevokePeer(ctx context.Context, id string) (store.Peer, error)
 		return p, mapStoreErr(err)
 	}
 	s.access.Forget(id)
-	s.disconnect(id, proto.ErrCodeRevoked, "peer revoked")
+	// Announced before the disconnect, whose peer.offline follows: a watcher
+	// sees why a peer went away before it sees that it did.
 	s.metrics.Revoked(ctx)
 	s.Audit(ctx, p.Network, "peer.revoked", id, nil)
 	s.publishPeer(events.PeerRevoked, p, nil)
+	s.disconnect(id, proto.ErrCodeRevoked, "peer revoked")
 	s.networkChanged(ctx, p.Network)
 	return p, nil
 }
@@ -234,9 +236,10 @@ func (s *Service) ExpirePeer(ctx context.Context, id string) (store.Peer, error)
 
 func (s *Service) expired(ctx context.Context, p store.Peer) {
 	s.access.Forget(p.ID)
-	s.disconnect(p.ID, proto.ErrCodeExpired, "peer credentials expired")
+	// Announced before the disconnect, as a revocation is.
 	s.Audit(ctx, p.Network, "peer.expired", p.ID, map[string]any{"expires_at": p.ExpiresAt})
 	s.publishPeer(events.PeerExpired, p, nil)
+	s.disconnect(p.ID, proto.ErrCodeExpired, "peer credentials expired")
 	s.networkChanged(ctx, p.Network)
 }
 

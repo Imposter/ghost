@@ -299,20 +299,27 @@ func (r *Relay) NetworkChanged(ctx context.Context, network string) {
 		r.mu.Unlock()
 
 		nm := buildNetmap(n, fresh, peers, online, override, now)
+		var send func()
 		if prev == nil {
 			s.seq++
 			nm.Seq = s.seq
-			s.send(proto.TypeNetmap, nm)
+			send = func() { s.send(proto.TypeNetmap, nm) }
 		} else if d, changed := diffNetmap(*prev, nm); changed {
 			s.seq++
 			d.Seq, nm.Seq = s.seq, s.seq
-			s.send(proto.TypeNetmapDelta, d)
+			send = func() { s.send(proto.TypeNetmapDelta, d) }
 		} else {
 			nm.Seq = prev.Seq
 		}
+		// Recorded before it is sent: a peer may signal the moment its netmap
+		// arrives, and handleSignal must judge that against this netmap, not
+		// the one it replaces.
 		r.mu.Lock()
 		s.netmap = &nm
 		r.mu.Unlock()
+		if send != nil {
+			send()
+		}
 	}
 	r.svc.Bus().Publish(events.Event{Type: events.NetmapUpdated, Network: network, Data: map[string]any{
 		"revision": n.PolicyRevision, "sessions": len(sessions),
