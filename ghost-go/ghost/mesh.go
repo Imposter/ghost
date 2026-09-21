@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,11 @@ type Status struct {
 	Roles []proto.Role
 	// NetmapPeers is the number of peers in the current netmap.
 	NetmapPeers int
+	// JoinDenied is why the control plane last refused this member's join
+	// ("node paused", say), while it is refusing it; empty once joined. The
+	// member keeps asking, with backoff, and is back without a restart once
+	// the control plane says yes.
+	JoinDenied string
 }
 
 // EventKind classifies a mesh Event.
@@ -63,6 +69,10 @@ const (
 	EventPeerConnected EventKind = "peer_connected"
 	// EventPeerDisconnected reports a tunnel peer going away.
 	EventPeerDisconnected EventKind = "peer_disconnected"
+	// EventJoinDenied reports that the control plane refused the network
+	// join (Event.Reason), once per distinct reason: the member retries with
+	// backoff, quietly, until it is let in.
+	EventJoinDenied EventKind = "join_denied"
 	// EventError reports a non-fatal error.
 	EventError EventKind = "error"
 )
@@ -75,7 +85,9 @@ type Event struct {
 	Address       string
 	CandidateType string
 	Policy        *proto.ExitPolicy
-	Err           error
+	// Reason is why a join was refused, on EventJoinDenied.
+	Reason string
+	Err    error
 }
 
 // healthInterval is how often a member reports tunnel health.
@@ -113,6 +125,7 @@ type mesh struct {
 	peerID  string
 	network string
 	joined  bool
+	denied  string // why the join was last refused; empty once joined
 	netmap  *proto.Netmap
 	links   map[string]*peerLink
 	epSeq   uint32
@@ -217,6 +230,7 @@ func (m *mesh) Status() Status {
 		Network:     m.network,
 		Peers:       connected,
 		Roles:       slices.Clone(m.wantRoles),
+		JoinDenied:  m.denied,
 	}
 	if m.netmap != nil {
 		st.Roles = slices.Clone(m.netmap.Self.Roles)
@@ -305,10 +319,14 @@ func (m *mesh) loop() {
 	retry := time.NewTimer(minDelay)
 	defer retry.Stop()
 	retry.Stop()
+	// pending is true while a join request is unanswered: a Forbidden error
+	// then is the control plane refusing the join, not a failure.
+	pending := false
 	attempt := func() {
 		if !m.tryJoin() {
 			return
 		}
+		pending = true
 		retry.Reset(delay)
 		if delay = delay * 2; delay > maxDelay {
 			delay = maxDelay
@@ -339,6 +357,7 @@ func (m *mesh) loop() {
 				case signal.StateDisconnected, signal.StateClosed:
 					retry.Stop()
 					delay = minDelay
+					pending = false
 					m.setJoined(false)
 				}
 			case ev.Welcome != nil:
@@ -348,6 +367,7 @@ func (m *mesh) loop() {
 			case ev.Joined != nil:
 				retry.Stop()
 				delay = minDelay
+				pending = false
 				m.handleJoined(*ev.Joined)
 			case ev.Netmap != nil:
 				m.handleNetmap(*ev.Netmap)
@@ -355,6 +375,9 @@ func (m *mesh) loop() {
 				m.handleDelta(*ev.Delta)
 			case ev.Signal != nil:
 				m.handleSignal(ev.Type, *ev.Signal)
+			case ev.Err != nil && pending && ev.Err.Code == proto.ErrCodeForbidden:
+				pending = false
+				m.joinDenied(strings.TrimPrefix(ev.Err.Message, "join denied: "))
 			case ev.Err != nil:
 				m.emit(Event{Kind: EventError, Err: fmt.Errorf("signal: %s", ev.Err.Message)})
 			}
@@ -376,6 +399,22 @@ func (m *mesh) tryJoin() bool {
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("join %q: %w", m.cfg.Network, err)})
 	}
 	return true
+}
+
+// joinDenied records a refused join. The first refusal for a reason is
+// reported; the retries that follow are not, so a paused node's log says it
+// is paused once rather than every thirty seconds.
+func (m *mesh) joinDenied(reason string) {
+	m.mu.Lock()
+	changed := m.denied != reason
+	m.denied = reason
+	m.mu.Unlock()
+	if !changed {
+		m.log.Debug("ghost: join still refused", "network", m.cfg.Network, "reason", reason)
+		return
+	}
+	m.log.Info("ghost: join refused; retrying", "network", m.cfg.Network, "reason", reason)
+	m.emit(Event{Kind: EventJoinDenied, Reason: reason})
 }
 
 // setJoined records whether the member is in its network. Losing the join
@@ -404,6 +443,7 @@ func (m *mesh) handleJoined(j proto.Joined) {
 	// The member is in the network only from here: it has an address and a
 	// tunnel to use it with.
 	m.joined = true
+	m.denied = ""
 	m.network = j.Network
 	var metricsErr error
 	if m.cfg.Metrics != nil && m.msrv == nil {
@@ -522,6 +562,10 @@ func (m *mesh) reconcile() {
 		return
 	}
 	self := m.netmap.Self
+	// Out of the network (the session dropped, or the join refused), a
+	// member keeps the links it has, but opens none: the control plane
+	// relays no signalling for it, so every offer would only be refused.
+	joined := m.joined
 	want := make(map[string]proto.PeerInfo, len(m.netmap.Peers))
 	for _, p := range m.netmap.Peers {
 		// A peer may be listed without a key when this member's ICE
@@ -548,7 +592,7 @@ func (m *mesh) reconcile() {
 	}
 	var connect []proto.PeerInfo
 	for id, p := range want {
-		if _, ok := m.links[id]; !ok {
+		if _, ok := m.links[id]; !ok && joined {
 			connect = append(connect, p)
 		}
 	}

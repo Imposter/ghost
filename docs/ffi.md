@@ -189,6 +189,7 @@ on the event stream.
   "connected": true,                 // usable: signalling up and joined
   "signal_state": "connected",       // disconnected | connecting | connected | closed
   "joined": true,                    // the control plane has the node in its network
+  "join_denied": "node paused",      // while the join is refused: why (absent once joined)
   "peer_id": "peer_…",
   "network": "lab",
   "address": "100.64.0.5/32",        // the tunnel address, CIDR form
@@ -232,8 +233,9 @@ on the event stream.
 
 A status never outlives what it describes. `signal_state` is the websocket
 alone: a node the control plane refused a join to stays `connected` and
-`"joined": false` while it keeps asking, and `connected` (the usable flag) is
-false meanwhile. `peers` is empty while the node is not joined, because the
+`"joined": false` while it keeps asking, with the control plane's reason in
+`join_denied`, and `connected` (the usable flag) is false meanwhile. It opens no
+tunnels while it is out: the control plane relays no signalling for it. `peers` is empty while the node is not joined, because the
 netmap it last received describes a session it no longer has. `linked`,
 `candidate_type` and the byte counters are dropped as soon as ICE reports the
 path to a peer disconnected or failed, so a window never shows a working
@@ -262,6 +264,7 @@ out.
 | ------ | ------------------------ |
 | `signal_state` | the signalling connection changed: `signal_state` |
 | `joined` | the network was joined: `address`, this node's tunnel address |
+| `join_denied` | the control plane refused the join: `reason` ("node paused", say). Once per reason: the node keeps asking, quietly, and `joined` follows when it is let in |
 | `netmap` | a new netmap snapshot or delta; read `ghost_status_json` for it |
 | `policy` | the control plane's exit policy changed: `policy` |
 | `peer_connected` | a tunnel peer is reachable: `peer_id`, `address`, `candidate_type` |

@@ -271,7 +271,7 @@
         },
         "kind": {
           "type": "string",
-          "description": "Kind is one of signal_state, joined, netmap, policy, peer_connected,\npeer_disconnected, error, stopped."
+          "description": "Kind is one of signal_state, joined, join_denied, netmap, policy,\npeer_connected, peer_disconnected, error, stopped."
         },
         "time": {
           "type": "string",
@@ -301,6 +301,10 @@
         "policy": {
           "$ref": "#/$defs/ExitPolicy",
           "description": "Policy is the control plane's new exit policy on policy."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason is why the control plane refused the join, on join_denied. It\nis reported once per reason; the node keeps asking, quietly."
         },
         "error": {
           "type": "string",
@@ -985,6 +989,10 @@
           "type": "boolean",
           "description": "Joined is whether the node is in its network. While it is false the\nnode carries no traffic and lists no peers."
         },
+        "join_denied": {
+          "type": "string",
+          "description": "JoinDenied is why the control plane is refusing the join (\"node\npaused\", say), while it is; absent once the node is in."
+        },
         "peer_id": {
           "type": "string",
           "description": "PeerID is the control plane's id for this peer."
@@ -1149,8 +1157,8 @@
   "$id": "https://github.com/Imposter/ghost/ghost-go/cmd/libghost/libghost.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The JSON documents of the libghost C API (docs/ffi.md). Generated from the Go types by TestSchemaIsCurrent: do not edit.",
-  "title": "libghost 0.2.0",
-  "x-libghost-abi": "0.2.0",
+  "title": "libghost 0.2.1",
+  "x-libghost-abi": "0.2.1",
   "x-libghost-documents": {
     "error": "#/$defs/Error",
     "ghost_enroll.request": "#/$defs/EnrollRequest",

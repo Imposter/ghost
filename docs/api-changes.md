@@ -3,6 +3,24 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## A refused join is reported once, and opens no tunnels
+
+A paused node's log filled with the same refusal every retry, and with
+"join a network before signalling" as its repair loop tried to relink from a
+netmap it no longer held.
+
+**Changed**
+
+- A join the control plane refuses is `EventJoinDenied` (libghost event
+  `join_denied`, with `reason`) instead of an `EventError`, once per distinct
+  reason; the retries after it are logged at debug. Hosts that watched errors
+  for "join denied" watch `join_denied` instead.
+- `Status.JoinDenied` (libghost status `join_denied`) holds the reason while
+  the join is refused.
+- A member out of its network opens no new links; it still tears down dead
+  ones.
+- libghost ABI 0.2.1 (additive: a new event kind and status field).
+
 ## libghost: a JSON Schema for the C API's documents
 
 Additive. `ghost-go/cmd/libghost/libghost.schema.json` describes every JSON

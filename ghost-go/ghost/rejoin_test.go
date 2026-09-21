@@ -3,12 +3,14 @@ package ghost
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Imposter/ghost/ghost-go/internal/ice"
 	"github.com/Imposter/ghost/ghost-go/signal"
+	"github.com/Imposter/ghost/ghost-go/signal/proto"
 )
 
 // TestNodeRejoinsAfterDeniedJoin: the control plane refuses a join (the node's
@@ -40,6 +42,19 @@ func TestNodeRejoinsAfterDeniedJoin(t *testing.T) {
 	if err := node.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	var denials, refusalErrors atomic.Int64
+	var reason atomic.Value
+	go func() {
+		for ev := range node.Events() {
+			switch {
+			case ev.Kind == EventJoinDenied:
+				denials.Add(1)
+				reason.Store(ev.Reason)
+			case ev.Kind == EventError && ev.Err != nil && strings.Contains(ev.Err.Error(), "join denied"):
+				refusalErrors.Add(1)
+			}
+		}
+	}()
 
 	// While the join is refused the node keeps asking, and says so: the
 	// session is up, the network is not joined, and there is no netmap to
@@ -58,6 +73,21 @@ func TestNodeRejoinsAfterDeniedJoin(t *testing.T) {
 	if _, ok := node.Netmap(); ok {
 		t.Error("a refused node must report no netmap")
 	}
+	// It says why, once: a paused node's log reads "paused", not a
+	// refusal every retry.
+	if st.JoinDenied != "node paused" {
+		t.Errorf("status says the join is refused for %q, want %q", st.JoinDenied, "node paused")
+	}
+	waitFor(t, 5*time.Second, func() bool { return denials.Load() > 0 })
+	if n := denials.Load(); n != 1 {
+		t.Errorf("%d join_denied events for %d refusals, want 1", n, asked.Load())
+	}
+	if r, _ := reason.Load().(string); r != "node paused" {
+		t.Errorf("join_denied says %q, want %q", r, "node paused")
+	}
+	if n := refusalErrors.Load(); n != 0 {
+		t.Errorf("a refusal was also reported as %d error events", n)
+	}
 
 	// The control plane changes its mind (the owner resumed the node, or the
 	// authorizer came back). No restart, no reconnect: the retry carries it.
@@ -72,6 +102,81 @@ func TestNodeRejoinsAfterDeniedJoin(t *testing.T) {
 	}
 	if _, ok := node.Netmap(); !ok {
 		t.Error("a joined node reports its netmap")
+	}
+	if st.JoinDenied != "" {
+		t.Errorf("a joined node still reports a refusal: %q", st.JoinDenied)
+	}
+}
+
+// linkCounter is a Signaller that lets the member straight into a network
+// with one hub in it, and counts the links the member tries to open. It
+// refuses every one, so no ICE runs.
+type linkCounter struct {
+	events chan signal.Event
+	links  atomic.Int64
+}
+
+func (c *linkCounter) Start(context.Context, SignalSelf) error {
+	c.events <- signal.Event{State: signal.StateConnected}
+	return nil
+}
+func (c *linkCounter) Events() <-chan signal.Event        { return c.events }
+func (c *linkCounter) State() signal.State                { return signal.StateConnected }
+func (c *linkCounter) ICEServers() []proto.ICEServer      { return nil }
+func (c *linkCounter) ReportHealth(context.Context) error { return nil }
+func (c *linkCounter) Close() error                       { return nil }
+func (c *linkCounter) Send(context.Context, proto.Type, proto.Signal) error {
+	return errors.New("no signalling here")
+}
+func (c *linkCounter) Link(_, _ proto.PeerInfo) (LinkPlan, error) {
+	c.links.Add(1)
+	return LinkPlan{}, errors.New("not linking in this test")
+}
+func (c *linkCounter) Join(_ context.Context, network string) error {
+	hub, err := GenerateKeys()
+	if err != nil {
+		return err
+	}
+	c.events <- signal.Event{Joined: &proto.Joined{Network: network, Address: "100.64.0.2/32", Pool: "100.64.0.0/10"}}
+	c.events <- signal.Event{Netmap: &proto.Netmap{
+		Network: network,
+		Self:    proto.PeerInfo{PeerID: "node", Address: "100.64.0.2/32", Roles: []proto.Role{proto.RoleNode}},
+		Peers: []proto.PeerInfo{{
+			PeerID: "hub", Address: "100.64.0.1/32", PublicKey: hub.PublicKey(),
+			Roles: []proto.Role{proto.RoleHub}, Online: true,
+		}},
+	}}
+	return nil
+}
+
+// TestNoLinksWhileUnjoined: out of the network (a paused node, whose joins the
+// control plane refuses) a member opens no links. The control plane relays no
+// signalling for it, so each attempt would only earn a "join a network
+// before signalling" error, every repair round, for as long as the pause.
+func TestNoLinksWhileUnjoined(t *testing.T) {
+	sig := &linkCounter{events: make(chan signal.Event, 16)}
+	node, err := NewNode(Config{Signaller: sig, Network: "pool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	if err := node.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return sig.links.Load() > 0 })
+
+	node.setJoined(false)
+	before := sig.links.Load()
+	node.reconcile()
+	node.reconcile()
+	if n := sig.links.Load() - before; n != 0 {
+		t.Errorf("an unjoined member tried %d links", n)
+	}
+
+	node.setJoined(true)
+	node.reconcile()
+	if sig.links.Load() == before {
+		t.Error("a joined member stopped linking to its hub")
 	}
 }
 

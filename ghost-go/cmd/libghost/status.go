@@ -28,6 +28,9 @@ type statusView struct {
 	// Joined is whether the node is in its network. While it is false the
 	// node carries no traffic and lists no peers.
 	Joined bool `json:"joined"`
+	// JoinDenied is why the control plane is refusing the join ("node
+	// paused", say), while it is; absent once the node is in.
+	JoinDenied string `json:"join_denied,omitempty"`
 	// PeerID is the control plane's id for this peer.
 	PeerID string `json:"peer_id"`
 	// Network is the joined network.
@@ -110,6 +113,7 @@ func (in *instance) status() statusView {
 		Connected:     st.Connected,
 		SignalState:   string(st.SignalState),
 		Joined:        st.Joined,
+		JoinDenied:    st.JoinDenied,
 		PeerID:        st.PeerID,
 		Network:       st.Network,
 		Address:       st.Address,

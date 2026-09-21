@@ -18,8 +18,8 @@ type eventJSON struct {
 	// Seq numbers events per node, from 1, and counts the dropped ones, so a
 	// gap in Seq is exactly what Dropped reports.
 	Seq uint64 `json:"seq"`
-	// Kind is one of signal_state, joined, netmap, policy, peer_connected,
-	// peer_disconnected, error, stopped.
+	// Kind is one of signal_state, joined, join_denied, netmap, policy,
+	// peer_connected, peer_disconnected, error, stopped.
 	Kind string `json:"kind"`
 	// Time is when the event was buffered (RFC 3339, UTC).
 	Time time.Time `json:"time"`
@@ -41,6 +41,9 @@ type eventJSON struct {
 	CandidateType string `json:"candidate_type,omitempty"`
 	// Policy is the control plane's new exit policy on policy.
 	Policy *proto.ExitPolicy `json:"policy,omitempty"`
+	// Reason is why the control plane refused the join, on join_denied. It
+	// is reported once per reason; the node keeps asking, quietly.
+	Reason string `json:"reason,omitempty"`
 	// Error is the message on error.
 	Error string `json:"error,omitempty"`
 }
@@ -178,6 +181,7 @@ func eventFrom(ev ghost.Event) eventJSON {
 		Address:       ev.Address,
 		CandidateType: ev.CandidateType,
 		Policy:        ev.Policy,
+		Reason:        ev.Reason,
 	}
 	if ev.Err != nil {
 		out.Error = ev.Err.Error()

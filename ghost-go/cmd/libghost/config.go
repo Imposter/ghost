@@ -22,7 +22,7 @@ import (
 
 // Version is the libghost ABI version, returned by ghost_version. It changes
 // with the C API or the JSON shapes, not with the library behind them.
-const Version = "0.2.0"
+const Version = "0.2.1"
 
 // defaultLogLevel is the slog level a node logs at when the start config does
 // not name one. A host application embedding the library normally wants its

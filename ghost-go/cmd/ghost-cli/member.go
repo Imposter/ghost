@@ -323,6 +323,8 @@ func runMember(ctx context.Context, m member, o runOptions) error {
 				if nm, ok := m.Netmap(); ok {
 					o.log.Debug("netmap", "seq", nm.Seq, "peers", len(nm.Peers))
 				}
+			case ghost.EventJoinDenied:
+				o.log.Warn("join refused; retrying", "reason", ev.Reason)
 			case ghost.EventError:
 				o.log.Warn("error", "peer", ev.PeerID, "error", ev.Err)
 			}
