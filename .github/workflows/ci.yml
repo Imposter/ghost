@@ -1,8 +1,13 @@
 name: CI
 
+# The Go checks for a pull request, for the modules it touches only: ghost-go when
+# ghost-go/ changed, ghost-server when ghost-server/ or ghost-go/ (which it compiles in)
+# changed. A change to this file checks both. Nothing is built here: the ghost-server
+# image is built for a release (publish.yml).
+
 on:
-  push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,13 +21,37 @@ env:
   GOLANGCI_LINT_VERSION: v2.13.2
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      modules: ${{ steps.filter.outputs.changes }}
+      ghost-go: ${{ steps.filter.outputs.ghost-go }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            ghost-go:
+              - 'ghost-go/**'
+              - '.github/workflows/ci.yml'
+            ghost-server:
+              - 'ghost-server/**'
+              - 'ghost-go/**'
+              - '.github/workflows/ci.yml'
+
   go:
     name: ${{ matrix.module }} (ubuntu)
+    needs: changes
+    if: needs.changes.outputs.modules != '[]' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        module: [ghost-go, ghost-server]
+        module: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ghost-go","ghost-server"]') || fromJSON(needs.changes.outputs.modules) }}
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -46,6 +75,8 @@ jobs:
 
   windows:
     name: ghost-go (windows)
+    needs: changes
+    if: needs.changes.outputs.ghost-go == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     defaults:
       run:
@@ -60,21 +91,3 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test ./...
-
-  docker:
-    name: ghost-server image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - name: docker build (no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ghost-server/Dockerfile
-          push: false
-          load: true
-          tags: ghost-server:ci
-          build-args: VERSION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
