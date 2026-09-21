@@ -36,6 +36,21 @@ func GenerateKeys() (*Keys, error) {
 	return &Keys{privateKey: priv, publicKey: pub}, nil
 }
 
+// KeysFromPrivateKey builds a key pair from a base64 WireGuard private key,
+// deriving the public half. It is for a host that keeps the private key in
+// its own secret store (an OS keychain) rather than in a key store file.
+func KeysFromPrivateKey(privateKey string) (*Keys, error) {
+	priv, err := wireguard.DecodeKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("decode private key: %w", err)
+	}
+	pub, err := wireguard.GetPublicKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("derive public key: %w", err)
+	}
+	return &Keys{privateKey: priv, publicKey: pub}, nil
+}
+
 // PublicKey returns the base64-encoded public key.
 func (k *Keys) PublicKey() string { return wireguard.EncodeKey(k.publicKey) }
 

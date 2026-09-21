@@ -166,7 +166,7 @@ func newMesh(cfg Config, extraRoles ...proto.Role) (*mesh, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, err := LoadOrCreateKeys(cfg.KeyStorePath)
+	keys, err := cfg.keys()
 	if err != nil {
 		return nil, fmt.Errorf("keys: %w", err)
 	}

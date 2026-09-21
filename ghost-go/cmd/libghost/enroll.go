@@ -36,6 +36,13 @@ type enrollRequestJSON struct {
 	// PublicKey registers a key the caller already holds, instead of
 	// KeyStorePath. Leaving both empty enrols without a key.
 	PublicKey string `json:"public_key,omitempty"`
+	// PrivateKey registers the public half of a private key the caller
+	// keeps in its own secret store; nothing is written to disk. When
+	// PublicKey is also given the two must be a pair.
+	PrivateKey string `json:"private_key,omitempty"`
+	// CACertPEM holds PEM certificate authorities trusted, on top of the
+	// system roots, for a control plane behind a private CA.
+	CACertPEM string `json:"ca_cert_pem,omitempty"`
 }
 
 // enrollBody is the wire body of POST /v1/enroll.
@@ -94,6 +101,19 @@ func enroll(ctx context.Context, req enrollRequestJSON) (enrollCreds, error) {
 		return creds, errors.New("enroll: auth_key is required")
 	}
 	body := enrollBody{AuthKey: req.AuthKey, Name: req.Name, Labels: req.Labels, PublicKey: req.PublicKey}
+	if req.PrivateKey != "" {
+		if req.KeyStorePath != "" {
+			return creds, errors.New("enroll: set private_key or key_store_path, not both")
+		}
+		k, err := ghost.KeysFromPrivateKey(req.PrivateKey)
+		if err != nil {
+			return creds, fmt.Errorf("enroll: %w", err)
+		}
+		if body.PublicKey != "" && body.PublicKey != k.PublicKey() {
+			return creds, errors.New("enroll: public_key is not the public half of private_key")
+		}
+		body.PublicKey = k.PublicKey()
+	}
 	if body.PublicKey == "" && req.KeyStorePath != "" {
 		k, err := ghost.LoadOrCreateKeys(req.KeyStorePath)
 		if err != nil {
@@ -117,7 +137,17 @@ func enroll(ctx context.Context, req enrollRequestJSON) (enrollCreds, error) {
 		return creds, fmt.Errorf("enroll: %w", err)
 	}
 	hreq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(hreq)
+	tlsCfg, err := tlsWithCA(req.CACertPEM)
+	if err != nil {
+		return creds, fmt.Errorf("enroll: %w", err)
+	}
+	client := http.DefaultClient
+	if tlsCfg != nil {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = tlsCfg
+		client = &http.Client{Transport: tr}
+	}
+	resp, err := client.Do(hreq)
 	if err != nil {
 		return creds, fmt.Errorf("enroll: %w", err)
 	}

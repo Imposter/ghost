@@ -3,6 +3,22 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## libghost: a private key and a private CA
+
+Additive; existing start and enrol documents behave as before.
+
+**New**
+
+- `ghost_enroll` and `ghost_start` take `private_key`, the WireGuard private
+  key itself, for a host that keeps it in an OS keychain. Nothing is read from
+  or written to disk; it excludes `key_store_path`. At enrolment a
+  `public_key` given alongside must be its public half.
+- Both take `ca_cert_pem`: certificate authorities trusted on top of the
+  system roots, for a control plane behind a private CA.
+- In Go: `ghost.Config.PrivateKey`, `ghost.Config.SignalTLS`,
+  `ghost.KeysFromPrivateKey` and `signal.Config.TLS`.
+- `ghost_version` reports `0.2.0`.
+
 ## The authorizer is told what the other side is
 
 A `connect_peer` request named the target but said nothing about it, so an

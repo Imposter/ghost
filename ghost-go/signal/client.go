@@ -7,10 +7,12 @@ package signal
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"sync"
 	"time"
 
@@ -35,6 +37,10 @@ type Config struct {
 	// Dialer, if set, is used to open the WebSocket instead of the default.
 	// It enables the in-memory fake server used in tests.
 	Dialer Dialer
+	// TLS, if set, configures the default dialer's TLS for wss:// URLs (a
+	// private CA's RootCAs, say). Nil uses the system roots. It has no effect
+	// when Dialer is set.
+	TLS *tls.Config
 	// Logger is optional (defaults to slog.Default()).
 	Logger *slog.Logger
 
@@ -218,7 +224,7 @@ func (c *Client) run() {
 func (c *Client) connectAndServe(ctx context.Context) error {
 	dialer := c.cfg.Dialer
 	if dialer == nil {
-		dialer = defaultDialer{}
+		dialer = defaultDialer{tls: c.cfg.TLS}
 	}
 
 	hsCtx, cancel := context.WithTimeout(ctx, c.cfg.HandshakeTimeout)
@@ -484,10 +490,21 @@ func (c *Client) Close() error {
 var ErrNotConnected = errors.New("signal: not connected")
 
 // defaultDialer opens a real WebSocket connection.
-type defaultDialer struct{}
+type defaultDialer struct {
+	tls *tls.Config
+}
 
-func (defaultDialer) Dial(ctx context.Context, url string) (Conn, error) {
-	ws, _, err := websocket.Dial(ctx, url, nil)
+func (d defaultDialer) Dial(ctx context.Context, url string) (Conn, error) {
+	var opts *websocket.DialOptions
+	if d.tls != nil {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = d.tls.Clone()
+		opts = &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr}}
+	}
+	ws, resp, err := websocket.Dial(ctx, url, opts)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, err
 	}

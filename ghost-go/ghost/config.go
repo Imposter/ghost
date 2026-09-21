@@ -1,6 +1,7 @@
 package ghost
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -86,6 +87,16 @@ type Config struct {
 	// created.
 	KeyStorePath string
 
+	// PrivateKey, when set, is the WireGuard private key (base64) and nothing
+	// is read from or written to disk. It is for a host that keeps the key in
+	// its own secret store. KeyStorePath must then be empty.
+	PrivateKey string
+
+	// SignalTLS, when set, is the TLS configuration for a wss:// SignalURL,
+	// for example a RootCAs pool holding a private certificate authority. Nil
+	// uses the system roots.
+	SignalTLS *tls.Config
+
 	// STUNServers and TURNServers configure ICE NAT traversal. TURN servers
 	// received from the signalling Welcome are merged with these.
 	STUNServers []STUNServer
@@ -158,6 +169,18 @@ func (c *Config) logger() *slog.Logger {
 
 // roles returns the configured roles plus extra, validated and deduplicated,
 // in the order first given.
+// keys is the member's WireGuard key pair: PrivateKey when set, else the key
+// store at KeyStorePath (created when missing), else an ephemeral pair.
+func (c *Config) keys() (*Keys, error) {
+	if c.PrivateKey != "" {
+		if c.KeyStorePath != "" {
+			return nil, fmt.Errorf("set PrivateKey or KeyStorePath, not both")
+		}
+		return KeysFromPrivateKey(c.PrivateKey)
+	}
+	return LoadOrCreateKeys(c.KeyStorePath)
+}
+
 func (c *Config) roles(extra ...proto.Role) ([]proto.Role, error) {
 	var out []proto.Role
 	for _, r := range append(slices.Clone(c.Roles), extra...) {

@@ -1,8 +1,11 @@
 package ghost
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Imposter/ghost/ghost-go/internal/wireguard"
 )
 
 func TestKeyPersistence(t *testing.T) {
@@ -53,5 +56,40 @@ func TestGenerateKeysUnique(t *testing.T) {
 func TestLoadKeysMissing(t *testing.T) {
 	if _, err := LoadKeys(filepath.Join(t.TempDir(), "nope.json")); err == nil {
 		t.Fatal("expected error for missing key file")
+	}
+}
+
+func TestKeysFromPrivateKey(t *testing.T) {
+	k, err := GenerateKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := wireguard.EncodeKey(k.privateKeyBytes())
+
+	got, err := KeysFromPrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PublicKey() != k.PublicKey() {
+		t.Errorf("public key %q, want %q", got.PublicKey(), k.PublicKey())
+	}
+	if _, err := KeysFromPrivateKey("not-a-key"); err == nil {
+		t.Error("a malformed key was accepted")
+	}
+
+	// Config.keys takes the private key over the store, writes nothing, and
+	// refuses to be given both.
+	dir := t.TempDir()
+	cfg := Config{PrivateKey: priv}
+	fromCfg, err := cfg.keys()
+	if err != nil || fromCfg.PublicKey() != k.PublicKey() {
+		t.Fatalf("config keys: %v", err)
+	}
+	cfg.KeyStorePath = filepath.Join(dir, "keys.json")
+	if _, err := cfg.keys(); err == nil {
+		t.Error("PrivateKey and KeyStorePath were both accepted")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("a key file was written: %v", entries)
 	}
 }

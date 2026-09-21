@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +22,7 @@ import (
 
 // Version is the libghost ABI version, returned by ghost_version. It changes
 // with the C API or the JSON shapes, not with the library behind them.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // defaultLogLevel is the slog level a node logs at when the start config does
 // not name one. A host application embedding the library normally wants its
@@ -41,6 +43,15 @@ type startConfig struct {
 	// means an ephemeral key, which enrols the peer's key afresh on every
 	// run; a host application should always pass a path in its own storage.
 	KeyStorePath string `json:"key_store_path,omitempty"`
+
+	// PrivateKey is the WireGuard private key (base64), for a host that keeps
+	// it in its own secret store: nothing is then read from or written to
+	// disk. It excludes KeyStorePath.
+	PrivateKey string `json:"private_key,omitempty"`
+
+	// CACertPEM holds PEM certificate authorities trusted, on top of the
+	// system roots, for a wss:// control plane behind a private CA.
+	CACertPEM string `json:"ca_cert_pem,omitempty"`
 
 	// Roles are the roles this member asks the control plane to grant it
 	// ("node", "exit", "hub", "relay"). Exit.Enabled adds "exit".
@@ -175,6 +186,13 @@ func (c *startConfig) parse() (ghost.Config, *slog.Logger, error) {
 	if c.Creds.PeerToken == "" {
 		return cfg, nil, errors.New("creds.peer_token is required")
 	}
+	if c.PrivateKey != "" && c.KeyStorePath != "" {
+		return cfg, nil, errors.New("set private_key or key_store_path, not both")
+	}
+	tlsCfg, err := tlsWithCA(c.CACertPEM)
+	if err != nil {
+		return cfg, nil, err
+	}
 	u, err := c.signalURL()
 	if err != nil {
 		return cfg, nil, err
@@ -217,6 +235,8 @@ func (c *startConfig) parse() (ghost.Config, *slog.Logger, error) {
 		Network:        network,
 		Roles:          roles,
 		KeyStorePath:   c.KeyStorePath,
+		PrivateKey:     c.PrivateKey,
+		SignalTLS:      tlsCfg,
 		PortMin:        c.PortMin,
 		PortMax:        c.PortMax,
 		MTU:            c.MTU,
@@ -236,6 +256,22 @@ func (c *startConfig) parse() (ghost.Config, *slog.Logger, error) {
 		})
 	}
 	return cfg, log, nil
+}
+
+// tlsWithCA is a TLS config trusting the system roots plus the authorities
+// in pem, or nil when pem is empty (the defaults apply).
+func tlsWithCA(pem string) (*tls.Config, error) {
+	if strings.TrimSpace(pem) == "" {
+		return nil, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM([]byte(pem)) {
+		return nil, errors.New("ca_cert_pem holds no PEM certificate")
+	}
+	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil
 }
 
 // signalURL is the signalling WebSocket URL the config asks for.

@@ -75,7 +75,9 @@ blocks for up to 30 seconds.
   "name": "phone-1",                       // optional, the peer's name in netmaps
   "labels": {"geo": "ca-on"},              // optional
   "key_store_path": "/data/ghost/keys.json", // the WireGuard key file; created if missing
-  "public_key": ""                         // instead of key_store_path, a key you already hold
+  "public_key": "",                        // instead of key_store_path, a key you already hold
+  "private_key": "",                       // or the private key itself: its public half is registered
+  "ca_cert_pem": ""                        // PEM authorities to trust beyond the system roots
 }
 ```
 
@@ -97,8 +99,16 @@ blocks for up to 30 seconds.
 On failure: `{"ok":false,"error":"enroll: 401 Unauthorized: invalid auth key"}`.
 
 The peer's WireGuard public key is registered **at enrolment**, so
-`key_store_path` should be the same path the start config later uses. Persist
-the whole `creds` object; it is exactly the `creds` member of a start config.
+`key_store_path` should be the same path the start config later uses (or
+`private_key` the same key). Persist the whole `creds` object; it is exactly
+the `creds` member of a start config.
+
+A host that keeps secrets in an OS keychain passes `private_key` (base64, as
+WireGuard writes it) to both calls instead of `key_store_path`, and libghost
+then never touches the disk for keys. The two are exclusive. `ca_cert_pem` is
+for a control plane whose certificate a private authority signed: it is
+trusted alongside the system roots for enrolment and for the signalling
+socket.
 
 ## ghost_start
 
@@ -113,6 +123,8 @@ the whole `creds` object; it is exactly the `creds` member of a start config.
   },
   "network": "",                     // overrides creds.network
   "key_store_path": "/data/ghost/keys.json", // empty = an ephemeral key each run
+  "private_key": "",                 // instead of key_store_path: the key itself, nothing on disk
+  "ca_cert_pem": "",                 // PEM authorities to trust for a wss:// control plane
   "roles": ["node"],                 // roles to ask for; exit.enabled adds "exit"
   "stun": ["stun:stun.l.google.com:19302"],
   "turn": [{"urls": ["turn:turn.example.com:3478"], "username": "u", "password": "p"}],
@@ -386,7 +398,8 @@ in this repository.
 ## Notes for the host application
 
 - Keep `key_store_path` in the app's private storage and back it up with the
-  credentials: the control plane knows the peer by that WireGuard key.
+  credentials: the control plane knows the peer by that WireGuard key. Or keep
+  the key in the platform's secret store and pass it as `private_key`.
 - Call `ghost_stop` before the process exits. It closes the tunnel, the ICE
   agents and the signalling socket; leaking a handle leaks all three.
 - One process can run several nodes at once; handles are independent.

@@ -83,6 +83,7 @@ func (p *controlPlane) Start(ctx context.Context, self SignalSelf) error {
 	p.c = signal.New(signal.Config{
 		URL:       p.cfg.SignalURL,
 		Dialer:    p.cfg.SignalDialer,
+		TLS:       p.cfg.SignalTLS,
 		PeerToken: p.cfg.PeerToken,
 		PeerID:    p.cfg.PeerID,
 		PublicKey: self.PublicKey,
