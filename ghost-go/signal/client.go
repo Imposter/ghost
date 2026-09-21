@@ -137,6 +137,9 @@ type Event struct {
 	Delta   *proto.NetmapDelta
 	Signal  *proto.Signal
 	Err     *proto.Error
+	// JoinAllowed is set when the control plane says a refused join is now
+	// allowed (TypeJoinAllowed).
+	JoinAllowed *proto.JoinAllowed
 	// State is set for connection-state change events (Type == "").
 	State State
 }
@@ -370,6 +373,10 @@ func (c *Client) dispatch(env proto.Envelope) {
 		if c.handlers.OnNetmapDelta != nil {
 			c.handlers.OnNetmapDelta(d)
 		}
+	case proto.TypeJoinAllowed:
+		var a proto.JoinAllowed
+		_ = env.Decode(&a)
+		c.emit(Event{Type: env.Type, JoinAllowed: &a})
 	case proto.TypeHeartbeat:
 		// Server keepalive; nothing to do.
 	case proto.TypeError:

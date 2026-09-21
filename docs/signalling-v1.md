@@ -87,6 +87,7 @@ A newer session for the same peer replaces the older one, which is closed.
 | `candidate`    | both      | `{network, from, to, candidate{type, address, port, protocol, priority, foundation, related_address?, related_port?}}` |
 | `heartbeat`    | both      | `{nonce?, health?}`. The server echoes the nonce, without health. |
 | `error`        | s→c       | `{code, message, fatal?}` |
+| `join_allowed` | s→c       | `{network}`: a refused join is allowed now; join at once |
 
 ### Join and addressing
 
@@ -104,6 +105,11 @@ A newer session for the same peer replaces the older one, which is closed.
   denied, therefore returns by itself when the answer changes, with no
   reconnect and no restart. A joined peer stops asking: a second
   `join_network` on a joined session is a `bad_request`.
+- The backoff can put the next ask half a minute out. When the control plane
+  learns the answer has changed (a `POST /control/peers/{id}/reauthorize` that
+  the authorizer now allows, after the peer's owner resumed it, say), it sends
+  the refused peer `join_allowed`, and `ghost-go` asks at once. A client that
+  does not know the message ignores it and asks on its own schedule.
 
 ### Netmap
 

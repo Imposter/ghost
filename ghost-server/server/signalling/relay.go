@@ -186,18 +186,32 @@ func (r *Relay) PolicyChanged(ctx context.Context, network string) {
 }
 
 // Reauthorize implements control.Sessions: PolicyChanged's re-check for one
-// peer's joined session.
+// peer's live session. A joined session the authorizer now denies is closed.
+// A session that is up but not joined (a paused node, retrying its join with
+// backoff) that the authorizer now allows is told so, join_allowed, and asks
+// to join at once rather than at its next retry, which may be half a minute
+// away. It reports false for a peer with no session.
 func (r *Relay) Reauthorize(ctx context.Context, peerID string) (access.Decision, bool) {
 	r.mu.RLock()
 	s := r.sessions[peerID]
-	joined := s != nil && s.joined
-	var network string
-	if joined {
-		network = s.peer.Network
+	var (
+		joined  bool
+		network string
+		peer    = store.Peer{}
+	)
+	if s != nil {
+		joined, network, peer = s.joined, s.peer.Network, s.peer
 	}
 	r.mu.RUnlock()
-	if !joined {
+	if s == nil {
 		return access.Decision{}, false
+	}
+	if !joined {
+		d := r.svc.Access().CheckFresh(ctx, connectRequest(peer))
+		if d.Allow {
+			s.send(proto.TypeJoinAllowed, proto.JoinAllowed{Network: peer.Network})
+		}
+		return d, true
 	}
 	d := r.recheck(ctx, s, "reauthorize")
 	r.NetworkChanged(ctx, network)

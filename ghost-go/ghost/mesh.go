@@ -369,6 +369,12 @@ func (m *mesh) loop() {
 				delay = minDelay
 				pending = false
 				m.handleJoined(*ev.Joined)
+			case ev.JoinAllowed != nil:
+				// The control plane lifted what refused the join: ask now, not
+				// at the next retry, which may be half a minute out.
+				retry.Stop()
+				delay = minDelay
+				attempt()
 			case ev.Netmap != nil:
 				m.handleNetmap(*ev.Netmap)
 			case ev.Delta != nil:

@@ -3,6 +3,22 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## `join_allowed`: a resumed peer rejoins at once
+
+Additive. A refused peer retries its join with backoff, up to
+`DefaultJoinRetryMax` (30 s) apart, so a resumed node could take half a minute
+to come back.
+
+**New**
+
+- Protocol: `join_allowed {network}`, server to client. `POST
+  /control/peers/{id}/reauthorize` on a peer that is connected but not joined
+  asks the authorizer afresh and, when it now allows the peer, sends it
+  `join_allowed`; the reauthorization reports `online: true`. It used to report
+  such a peer offline and do nothing.
+- ghost-go: `signal.Event.JoinAllowed`, and a member asks to join at once when
+  it arrives. `signal.FakeServer.AllowJoin` sends it in tests.
+
 ## A refused join is reported once, and opens no tunnels
 
 A paused node's log filled with the same refusal every retry, and with

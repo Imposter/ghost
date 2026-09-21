@@ -177,6 +177,18 @@ func (s *FakeServer) Deauthorize(peerID, reason string) {
 	sess.close()
 }
 
+// AllowJoin tells a peer whose join was refused that it may join now, the way
+// ghost-server does when its authorizer allows the peer again
+// (proto.TypeJoinAllowed). Whether the join then succeeds is JoinFunc's call.
+func (s *FakeServer) AllowJoin(peerID, network string) {
+	s.mu.Lock()
+	sess := s.sessions[peerID]
+	s.mu.Unlock()
+	if sess != nil {
+		sess.sendToClient(proto.TypeJoinAllowed, proto.JoinAllowed{Network: network})
+	}
+}
+
 // Dialer returns a Dialer that opens in-memory connections to this server.
 func (s *FakeServer) Dialer() Dialer { return fakeDialer{s: s} }
 

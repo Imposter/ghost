@@ -202,10 +202,17 @@ func TestReauthorize(t *testing.T) {
 		t.Fatal("network reauthorize not audited")
 	}
 
-	// Allowing again: reauthorizing the offline peer drops its cached denial,
-	// so its next join is asked afresh.
+	// Allowing again: a is connected but refused, retrying its join. The
+	// re-check allows it now, so a is told it may join (and a real member asks
+	// at once); nothing is disconnected.
 	pause(aC.PeerID, false)
 	h.ctl("POST", "/control/peers/"+aC.PeerID+"/reauthorize", nil, &res, http.StatusOK)
+	if !res.Online || !res.Allowed || res.Disconnected {
+		t.Fatalf("reauthorize a connected, refused peer: %+v", res)
+	}
+	a.next("join_allowed", 5*time.Second, func(e signal.Event) bool {
+		return e.JoinAllowed != nil && e.JoinAllowed.Network == "testnet"
+	})
 	if err := a.c.Join(t.Context(), "testnet"); err != nil {
 		t.Fatal(err)
 	}

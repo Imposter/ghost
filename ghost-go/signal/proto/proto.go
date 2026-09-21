@@ -48,6 +48,12 @@ const (
 	TypeHeartbeat Type = "heartbeat"
 	// TypeError reports a protocol or authorization error. Payload: Error.
 	TypeError Type = "error"
+	// TypeJoinAllowed tells a peer whose join was refused that the control
+	// plane now allows it (its owner resumed it, say), so it asks to join now
+	// rather than at its next retry. Server to client, only to a session that
+	// is up and not joined. A client that does not know it simply retries on
+	// its own schedule. Payload: JoinAllowed.
+	TypeJoinAllowed Type = "join_allowed"
 )
 
 // Envelope is the outer frame for every signalling message. Payload holds the
@@ -182,6 +188,12 @@ type JoinNetwork struct {
 }
 
 // Joined confirms a join. A netmap snapshot follows.
+// JoinAllowed is the payload of TypeJoinAllowed: the network the peer may
+// join now.
+type JoinAllowed struct {
+	Network string `json:"network"`
+}
+
 type Joined struct {
 	Network string `json:"network"`
 	// Address is the assigned tunnel address in CIDR form (e.g.

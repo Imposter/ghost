@@ -420,3 +420,38 @@ func TestARefusalTakesTheTunnelDownAtOnce(t *testing.T) {
 		t.Errorf("a refused node still reports %d live tunnels", st.Peers)
 	}
 }
+
+// TestJoinAllowedRejoinsAtOnce: a paused node retries its join with backoff, up
+// to half a minute apart. When it is resumed the control plane says so
+// (join_allowed), and the node asks at once instead of at its next retry.
+func TestJoinAllowedRejoinsAtOnce(t *testing.T) {
+	fake := signal.NewFakeServer("100.64.0.0/10")
+	var deny atomic.Bool
+	var asked atomic.Int64
+	deny.Store(true)
+	fake.JoinFunc = func(_, _ string) error {
+		asked.Add(1)
+		if deny.Load() {
+			return errors.New("node paused")
+		}
+		return nil
+	}
+	cfg := Config{SignalDialer: fake.Dialer(), PeerToken: "node-token", Network: "pool"}
+	cfg.joinRetryMin, cfg.joinRetryMax = 30*time.Second, 30*time.Second // as after a long pause
+	loopbackTuner(&cfg)
+	node, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	if err := node.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return node.Status().JoinDenied != "" })
+
+	deny.Store(false)
+	resumed := time.Now()
+	fake.AllowJoin(node.Status().PeerID, "pool")
+	waitFor(t, 2*time.Second, func() bool { return node.Status().Joined })
+	t.Logf("joined %s after join_allowed (the next retry was 30 s out)", time.Since(resumed).Round(time.Millisecond))
+}
