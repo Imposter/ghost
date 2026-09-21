@@ -3,6 +3,20 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## `client_ip` on presence, and `trusted_proxies`
+
+Additive. Behind a reverse proxy, a session's `remote` is the proxy, so the
+control plane could not say where a peer connects from.
+
+**New**
+
+- `trusted_proxies` / `GHOST_TRUSTED_PROXIES`: the addresses or CIDR prefixes
+  of the proxies in front of ghost-server. Empty (the default) changes
+  nothing.
+- `GET /control/presence`: each session carries `client_ip`, the address the
+  peer connected from, read from `X-Forwarded-For` only when the connection
+  comes through a trusted proxy. `remote` is unchanged.
+
 ## `join_allowed`: a resumed peer rejoins at once
 
 Additive. A refused peer retries its join with backoff, up to

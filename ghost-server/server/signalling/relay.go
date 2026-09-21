@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/netip"
 	"reflect"
 	"slices"
 	"sort"
@@ -49,13 +50,17 @@ type Options struct {
 	HeartbeatTimeout  time.Duration
 	// HelloTimeout bounds the wait for the first frame (default 10s).
 	HelloTimeout time.Duration
-	Logger       *slog.Logger
-	Metrics      *telemetry.Metrics
+	// TrustedProxies are the proxies in front of the server: a session's
+	// ClientIP is read from X-Forwarded-For only when it arrives through one.
+	TrustedProxies []netip.Prefix
+	Logger         *slog.Logger
+	Metrics        *telemetry.Metrics
 }
 
 // Relay is the signalling endpoint and live-session registry. It implements
 // control.Sessions.
 type Relay struct {
+	trusted  []netip.Prefix
 	svc      *control.Service
 	stunURLs []string
 	turnURLs []string
@@ -104,6 +109,7 @@ func New(opts Options) *Relay {
 		log:      opts.Logger,
 		metrics:  opts.Metrics,
 		sessions: map[string]*session{},
+		trusted:  opts.TrustedProxies,
 	}
 	opts.Service.SetSessions(r)
 	return r
@@ -111,16 +117,19 @@ func New(opts Options) *Relay {
 
 // Presence describes one live session.
 type Presence struct {
-	PeerID      string       `json:"peer_id"`
-	SessionID   string       `json:"session_id"`
-	Name        string       `json:"name,omitempty"`
-	Roles       []proto.Role `json:"roles"`
-	Network     string       `json:"network,omitempty"`
-	Address     string       `json:"address,omitempty"`
-	Joined      bool         `json:"joined"`
-	Remote      string       `json:"remote"`
-	ConnectedAt time.Time    `json:"connected_at"`
-	LastSeen    time.Time    `json:"last_seen"`
+	PeerID    string       `json:"peer_id"`
+	SessionID string       `json:"session_id"`
+	Name      string       `json:"name,omitempty"`
+	Roles     []proto.Role `json:"roles"`
+	Network   string       `json:"network,omitempty"`
+	Address   string       `json:"address,omitempty"`
+	Joined    bool         `json:"joined"`
+	Remote    string       `json:"remote"`
+	// ClientIP is the address the peer connected from: Remote, or the client
+	// a trusted proxy in front of the server named (see ClientIP).
+	ClientIP    string    `json:"client_ip,omitempty"`
+	ConnectedAt time.Time `json:"connected_at"`
+	LastSeen    time.Time `json:"last_seen"`
 	// NetmapPeers is how many peers this session's netmap lists.
 	NetmapPeers int `json:"netmap_peers"`
 	// PolicyRevision is the revision of the policy in its last netmap.
@@ -470,6 +479,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		peerID:      peer.ID,
 		peer:        peer,
 		remote:      req.RemoteAddr,
+		clientIP:    ClientIP(req, r.trusted),
 		connectedAt: now,
 		out:         make(chan outFrame, 256),
 		done:        make(chan struct{}),

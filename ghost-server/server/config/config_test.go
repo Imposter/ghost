@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,5 +54,20 @@ func TestValidate(t *testing.T) {
 	bad := map[string]string{"GHOST_HEARTBEAT_INTERVAL": "bogus"}
 	if _, err := Load("", func(k string) string { return bad[k] }); err == nil {
 		t.Fatal("a bad duration must fail")
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	env := map[string]string{"GHOST_TRUSTED_PROXIES": "172.16.0.0/12, 10.0.0.5"}
+	cfg, err := Load("", func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrustedProxies) != 2 || cfg.TrustedProxies[0] != "172.16.0.0/12" || cfg.TrustedProxies[1] != "10.0.0.5" {
+		t.Fatalf("trusted proxies %q", cfg.TrustedProxies)
+	}
+	bad := map[string]string{"GHOST_TRUSTED_PROXIES": "the-proxy"}
+	if _, err := Load("", func(k string) string { return bad[k] }); err == nil || !strings.Contains(err.Error(), "trusted_proxies") {
+		t.Fatalf("a bad trusted proxy: %v", err)
 	}
 }

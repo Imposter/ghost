@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -79,6 +80,10 @@ type Config struct {
 	DefaultPool string `json:"default_pool"`
 	// Networks are created at startup if missing.
 	Networks []Network `json:"networks"`
+	// TrustedProxies are the addresses or CIDR prefixes of the reverse proxies
+	// in front of the server. A peer's client address is read from
+	// X-Forwarded-For only when its connection arrives through one of them.
+	TrustedProxies []string `json:"trusted_proxies"`
 }
 
 // Database selects the storage backend.
@@ -248,6 +253,7 @@ func applyEnv(c *Config, getenv func(string) string) error {
 	str("GHOST_CONTROL_TOKEN", &c.Control.ServiceToken)
 	list("GHOST_STUN_URLS", &c.ICE.STUNURLs)
 	list("GHOST_TURN_URLS", &c.ICE.TURNURLs)
+	list("GHOST_TRUSTED_PROXIES", &c.TrustedProxies)
 	str("GHOST_TURN_SECRET", &c.ICE.TURNSecret)
 	dur("GHOST_TURN_TTL", &c.ICE.TURNTTL)
 	dur("GHOST_HEARTBEAT_INTERVAL", &c.Heartbeat.Interval)
@@ -288,6 +294,11 @@ func splitList(v string) []string {
 // Validate checks the configuration for contradictions.
 func (c Config) Validate() error {
 	var errs []error
+	for _, entry := range c.TrustedProxies {
+		if !validProxyEntry(entry) {
+			errs = append(errs, fmt.Errorf("trusted_proxies: %q is neither an address nor a CIDR prefix", entry))
+		}
+	}
 	switch c.Database.Driver {
 	case "sqlite", "postgres":
 	default:
@@ -329,4 +340,14 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validProxyEntry reports whether entry is an address or a CIDR prefix.
+func validProxyEntry(entry string) bool {
+	entry = strings.TrimSpace(entry)
+	if _, err := netip.ParsePrefix(entry); err == nil {
+		return true
+	}
+	_, err := netip.ParseAddr(entry)
+	return err == nil
 }

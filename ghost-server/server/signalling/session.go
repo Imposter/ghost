@@ -32,6 +32,7 @@ type session struct {
 	id          string
 	peerID      string // immutable copy of peer.ID, readable without the lock
 	remote      string
+	clientIP    string
 	connectedAt time.Time
 	lastSeen    atomic.Int64 // unix ms
 	replaced    atomic.Bool
@@ -64,6 +65,7 @@ func (s *session) presenceLocked() Presence {
 		Address:     s.peer.Address,
 		Joined:      s.joined,
 		Remote:      s.remote,
+		ClientIP:    s.clientIP,
 		ConnectedAt: s.connectedAt,
 		LastSeen:    time.UnixMilli(s.lastSeen.Load()).UTC(),
 	}

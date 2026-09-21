@@ -259,7 +259,7 @@ Every route is under `/control` and needs `Authorization: Bearer <token>`.
 | `POST /control/peers/{id}/reauthorize` | re-asks the authorizer about the peer's live session, disconnecting it on a denial → `Reauthorization`. `409` in `open` mode. |
 | `GET /control/peers/{id}/health` | `HealthView` |
 | `GET /control/health?network=` | `{peers: [HealthView], totals}` |
-| `GET /control/presence?network=` | `{sessions: [Presence]}` |
+| `GET /control/presence?network=` | `{sessions: [Presence]}`. A `Presence` carries `remote`, the connection's peer, and `client_ip`, the address the peer connected from: behind a proxy listed in `trusted_proxies`, the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (entries further left are the client's own claim and are never believed). |
 | `GET /control/stats` | `{networks, peers, revoked_peers, online, online_by_network}` |
 | `GET /control/audit?network=&since=&limit=` | `{events: [AuditEvent]}` |
 | `GET /control/watch?network=&types=&since=` | Server-Sent Events (below) |
@@ -389,6 +389,7 @@ Durations are Go duration strings (`"30s"`).
 | `peers.janitor_interval` | `GHOST_JANITOR_INTERVAL` | `30s` |
 | `default_pool` | `GHOST_DEFAULT_POOL` | `100.64.0.0/10` |
 | `networks` | `GHOST_NETWORKS` (`name`, `name=pool` or `name=pool=isolation`, comma-separated) | networks created at startup if missing |
+| `trusted_proxies` | `GHOST_TRUSTED_PROXIES` (addresses or CIDR prefixes, comma-separated) | none: a session's client is the connection's peer |
 
 The server logs JSON to stdout. Its metrics are listed in
 [architecture.md](architecture.md#instruments).

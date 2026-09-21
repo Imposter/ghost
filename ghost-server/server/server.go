@@ -105,10 +105,14 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	if cfg.ICE.TURNSecret != "" {
 		turnIssuer = turn.NewIssuer(cfg.ICE.TURNSecret, cfg.ICE.TURNTTL.Std())
 	}
+	trusted, err := signalling.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("server: %w", err)
+	}
 	relay := signalling.New(signalling.Options{
 		Service: svc, STUNURLs: cfg.ICE.STUNURLs, TURNURLs: cfg.ICE.TURNURLs, TURN: turnIssuer,
 		HeartbeatInterval: cfg.Heartbeat.Interval.Std(), HeartbeatTimeout: cfg.Heartbeat.Timeout.Std(),
-		Logger: log, Metrics: metrics,
+		TrustedProxies: trusted, Logger: log, Metrics: metrics,
 	})
 
 	mux := http.NewServeMux()
