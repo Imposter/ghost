@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -144,28 +145,23 @@ func buildSchema(t *testing.T) []byte {
 		Namer:                     schemaName,
 	}
 	// Field and type descriptions come from the Go doc comments, across the
-	// module (metrics and proto types appear in the outputs).
-	// AddGoComments names packages by the directory it walks, relative to the
-	// working directory, so it walks from the module root.
+	// module (metrics and proto types appear in the outputs). They are read
+	// here rather than with the reflector's AddGoComments, which names a
+	// package by its directory with the OS's separator (so on Windows a
+	// package below the module root, signal/proto say, lost its comments and
+	// the schema differed from Linux's) and skips unexported types, which
+	// every document type here is.
 	t.Chdir("../..")
-	if err := r.AddGoComments("github.com/Imposter/ghost/ghost-go", "./"); err != nil {
+	comments, err := moduleComments(module, reflect.TypeFor[startConfig]().PkgPath())
+	if err != nil {
 		t.Fatalf("read the Go comments: %v", err)
 	}
-	// It skips unexported types, and every document type here is one, so
-	// this package's comments are read here and looked up by name.
-	own := map[string]string{}
-	if err := addOwnComments(own, "cmd/libghost"); err != nil {
-		t.Fatalf("read this package's comments: %v", err)
-	}
-	self := reflect.TypeFor[startConfig]().PkgPath()
 	r.LookupComment = func(rt reflect.Type, field string) string {
-		if rt.PkgPath() != self {
-			return ""
+		key := rt.PkgPath() + "." + rt.Name()
+		if field != "" {
+			key += "." + field
 		}
-		if field == "" {
-			return own[rt.Name()]
-		}
-		return own[rt.Name()+"."+field]
+		return comments[key]
 	}
 
 	defs := jsonschema.Definitions{}
@@ -200,9 +196,48 @@ func buildSchema(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// addOwnComments files the doc comments of this package's types and their
+// module is the ghost-go module path.
+const module = "github.com/Imposter/ghost/ghost-go"
+
+// moduleComments reads the doc comments of every type and field in the module
+// below the working directory, keyed as reflect names them:
+// importpath.Type and importpath.Type.Field. Import paths are built with
+// forward slashes whatever the OS. This package's own types are also filed
+// under self, the package path reflect reports for them in a test binary.
+func moduleComments(module, self string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(".", func(dir string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if name := d.Name(); dir != "." && (strings.HasPrefix(name, ".") || name == "testdata") {
+			return filepath.SkipDir
+		}
+		pkg := module
+		if dir != "." {
+			pkg += "/" + filepath.ToSlash(dir)
+		}
+		comments := map[string]string{}
+		if err := addDirComments(comments, dir); err != nil {
+			return err
+		}
+		for key, text := range comments {
+			out[pkg+"."+key] = text
+			if pkg == module+"/cmd/libghost" {
+				out[self+"."+key] = text
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// addDirComments files the doc comments of one directory's types and their
 // fields by name (Type, Type.Field).
-func addOwnComments(into map[string]string, dir string) error {
+func addDirComments(into map[string]string, dir string) error {
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -299,9 +334,23 @@ func TestSchemaShape(t *testing.T) {
 			t.Errorf("%s (%s) allows unknown fields", d.name, name)
 		}
 	}
-	// A spot check that the descriptions came through from the comments.
+	// Spot checks that the descriptions came through from the comments: this
+	// package's, and one from a package below the module root (whose
+	// comments once went missing on Windows only, so the schema depended on
+	// the OS it was generated on).
 	if !strings.Contains(string(doc.Defs["StartConfig"]["description"]), "ghost_start") {
 		t.Errorf("StartConfig has no description from its Go comment: %s", doc.Defs["StartConfig"]["description"])
+	}
+	var policy struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(mustJSON(t, doc.Defs["ExitPolicy"]), &policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.Properties["allow"].Description == "" {
+		t.Error("ExitPolicy (signal/proto) has no field descriptions")
 	}
 }
 
@@ -333,4 +382,13 @@ func TestSchemaNullable(t *testing.T) {
 			t.Errorf("%s.%s nullable = %v, want %v", c.def, c.prop, got, c.want)
 		}
 	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

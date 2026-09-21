@@ -72,7 +72,7 @@
         "bytes_out",
         "duration_seconds"
       ],
-      "description": "Connection is one entry of the recent-connections ring buffer: the full per-connection record, including the requested host even when denied and the resolved IP, which never appear as metric labels."
+      "description": "Connection is one entry of the recent-connections ring buffer: the full\nper-connection record, including the requested host even when denied and\nthe resolved IP, which never appear as metric labels."
     },
     "Creds": {
       "properties": {
@@ -131,7 +131,7 @@
         "bytes_in",
         "bytes_out"
       ],
-      "description": "DestinationStat aggregates one destination."
+      "description": "DestinationStat aggregates one destination. Host is an allowlisted host, or\nexit.DeniedHost (with port 0) for everything the policy refused."
     },
     "EnrollCreds": {
       "properties": {
@@ -372,25 +372,31 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Allow is the host:port allowlist."
         },
         "daily_bytes": {
-          "type": "integer"
+          "type": "integer",
+          "description": "DailyBytes caps bytes per UTC day (0 = unlimited)."
         },
         "bytes_per_second": {
-          "type": "integer"
+          "type": "integer",
+          "description": "BytesPerSecond caps throughput (0 = unlimited)."
         },
         "paused": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Paused refuses new exit connections while true."
         },
         "labels": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object"
+          "type": "object",
+          "description": "Labels are free-form policy labels (e.g. from the authorizer)."
         },
         "revision": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Revision is the network policy revision this was derived from."
         }
       },
       "additionalProperties": false,
@@ -399,7 +405,8 @@
         "network",
         "allow",
         "revision"
-      ]
+      ],
+      "description": "ExitPolicy is the exit policy the control plane imposes on a peer. Allow\nentries use the exit.Allowlist syntax: \"host\", \"host:port\" or\n\"*.example.com:443\". An empty Allow denies every destination."
     },
     "ExitStatus": {
       "properties": {
@@ -727,7 +734,7 @@
         "bytes_in",
         "bytes_out"
       ],
-      "description": "ProtocolStat aggregates one proxy protocol (\"socks5\" or \"http_connect\") over one transport (\"tcp\")."
+      "description": "ProtocolStat aggregates one proxy protocol (\"socks5\" or \"http_connect\")\nover one transport (\"tcp\")."
     },
     "ResultStat": {
       "properties": {
@@ -853,7 +860,7 @@
         "denied_hosts",
         "tunnel"
       ],
-      "description": "Snapshot is a point-in-time view of a node's metrics."
+      "description": "Snapshot is a point-in-time view of a node's metrics. Every slice is sorted\ndeterministically (by traffic, then key) and never nil."
     },
     "SourceStat": {
       "properties": {
@@ -881,7 +888,7 @@
         "bytes_in",
         "bytes_out"
       ],
-      "description": "SourceStat aggregates one source: the requesting peer and the source part of the tag it sent (see exit.ParseSourceTag)."
+      "description": "SourceStat aggregates one source: the requesting peer and the source part\nof the tag it sent (see exit.ParseSourceTag). Jobs are never aggregated.\nNames that are not valid labels, and names beyond the collector's bound,\nfold into exit.OverflowSource."
     },
     "StartConfig": {
       "properties": {
