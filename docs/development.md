@@ -3,7 +3,7 @@
 ## Layout and toolchain
 
 The repository holds two Go modules, `ghost-go` and `ghost-server`, and both
-need Go 1.25. `ghost-server` pulls in `ghost-go` with
+need Go 1.26. `ghost-server` pulls in `ghost-go` with
 `replace ../ghost-go`, so a local change to the library is picked up
 immediately. For editor support across both modules, create a git-ignored
 workspace:
@@ -119,7 +119,7 @@ only (a change to the workflow itself checks both):
 | `ghost-go (windows)` | `ghost-go/` changed | windows-latest | `go vet ./...`, `go test ./...` |
 
 A manual run (*Actions → CI → Run workflow*) checks everything. Go comes from
-`actions/setup-go` (Go 1.25, with module and build caching). Dependabot
+`actions/setup-go` (Go 1.26, with module and build caching). Dependabot
 (`.github/dependabot.yml`) opens weekly updates for both Go modules, the GitHub
 Actions and the Docker base images.
 

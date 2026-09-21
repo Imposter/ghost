@@ -360,7 +360,7 @@ Both are empty when the node serves no exit.
 ```bash
 cd ghost-go/cmd/libghost
 python3 build.py                        # this machine, into ./dist
-python3 build.py --docker --os linux    # linux/amd64 in golang:1.25, no local toolchain
+python3 build.py --docker --os linux    # linux/amd64 in golang:1.26, no local toolchain
 python3 build.py --os linux --arch arm64 --cc aarch64-linux-gnu-gcc
 python3 build.py --out ../../../build/libghost
 ```

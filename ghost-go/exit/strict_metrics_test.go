@@ -139,7 +139,7 @@ func TestExitEachConnectionOneSeries(t *testing.T) {
 	for _, s := range spans {
 		m := map[attribute.Key]string{}
 		for _, a := range s.Attributes() {
-			m[a.Key] = a.Value.Emit()
+			m[a.Key] = a.Value.String()
 		}
 		if m["result"] == "denied" {
 			deniedHost = m["server.address"]

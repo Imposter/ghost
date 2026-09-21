@@ -98,7 +98,7 @@ func TestExitMetricsAndSpan(t *testing.T) {
 	}
 	spanAttrs := map[string]string{}
 	for _, a := range span.Attributes() {
-		spanAttrs[string(a.Key)] = a.Value.Emit()
+		spanAttrs[string(a.Key)] = a.Value.String()
 	}
 	if spanAttrs["result"] != "allowed" {
 		t.Errorf("span result=%q", spanAttrs["result"])
