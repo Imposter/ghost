@@ -160,6 +160,23 @@ func (s *FakeServer) SetPolicy(p proto.ExitPolicy) {
 	}
 }
 
+// Deauthorize ends a peer's session the way ghost-server does when its
+// authorizer withdraws the peer (a node paused or revoked while connected): a
+// fatal forbidden error naming the reason, then the connection closes. The
+// client reconnects; whether it may join again is JoinFunc's call.
+func (s *FakeServer) Deauthorize(peerID, reason string) {
+	s.mu.Lock()
+	sess := s.sessions[peerID]
+	s.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	sess.sendToClient(proto.TypeError, proto.Error{
+		Code: proto.ErrCodeForbidden, Message: "connection no longer authorized: " + reason, Fatal: true,
+	})
+	sess.close()
+}
+
 // Dialer returns a Dialer that opens in-memory connections to this server.
 func (s *FakeServer) Dialer() Dialer { return fakeDialer{s: s} }
 

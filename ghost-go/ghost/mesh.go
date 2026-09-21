@@ -375,9 +375,12 @@ func (m *mesh) loop() {
 				m.handleDelta(*ev.Delta)
 			case ev.Signal != nil:
 				m.handleSignal(ev.Type, *ev.Signal)
-			case ev.Err != nil && pending && ev.Err.Code == proto.ErrCodeForbidden:
+			case ev.Err != nil && ev.Err.Code == proto.ErrCodeForbidden && (pending || ev.Err.Fatal):
+				// A refused join, or the control plane withdrawing a joined
+				// member (it was paused or revoked while connected): either
+				// way the member is out until it is let back in.
 				pending = false
-				m.joinDenied(strings.TrimPrefix(ev.Err.Message, "join denied: "))
+				m.joinDenied(refusalReason(ev.Err.Message))
 			case ev.Err != nil:
 				m.emit(Event{Kind: EventError, Err: fmt.Errorf("signal: %s", ev.Err.Message)})
 			}
@@ -399,6 +402,18 @@ func (m *mesh) tryJoin() bool {
 		m.emit(Event{Kind: EventError, Err: fmt.Errorf("join %q: %w", m.cfg.Network, err)})
 	}
 	return true
+}
+
+// refusalReason is the control plane's reason in a refusal: "node paused"
+// from "join denied: node paused" or "connection no longer authorized: node
+// paused", so the two report as one.
+func refusalReason(message string) string {
+	for _, prefix := range []string{"join denied: ", "connection no longer authorized: "} {
+		if r, ok := strings.CutPrefix(message, prefix); ok {
+			return r
+		}
+	}
+	return message
 }
 
 // joinDenied records a refused join. The first refusal for a reason is

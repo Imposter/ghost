@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -292,5 +293,74 @@ func TestNetmapIsOnlyReportedWhileJoined(t *testing.T) {
 	}
 	if st := node.Status(); st.Connected || st.NetmapPeers != 0 {
 		t.Errorf("an unjoined member reports itself connected: %+v", st)
+	}
+}
+
+// TestPausedWhileJoinedIsOneRefusal: the node's owner pauses it while it is in
+// the network. The control plane withdraws the session ("connection no
+// longer authorized"), then refuses every join the node retries. All of that
+// is one fact, the node is paused, and is reported as one join_denied: no
+// errors, however long the pause. Resuming lets the node back in by itself.
+func TestPausedWhileJoinedIsOneRefusal(t *testing.T) {
+	fake := signal.NewFakeServer("100.64.0.0/10")
+	var deny atomic.Bool
+	var asked atomic.Int64
+	fake.JoinFunc = func(_, _ string) error {
+		asked.Add(1)
+		if deny.Load() {
+			return errors.New("node paused")
+		}
+		return nil
+	}
+	cfg := Config{SignalDialer: fake.Dialer(), PeerToken: "node-token", Network: "pool"}
+	cfg.joinRetryMin, cfg.joinRetryMax = 20*time.Millisecond, 40*time.Millisecond
+	loopbackTuner(&cfg)
+	node, err := NewNode(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	var denials, errs atomic.Int64
+	var mu sync.Mutex
+	var errText []string
+	go func() {
+		for ev := range node.Events() {
+			switch ev.Kind {
+			case EventJoinDenied:
+				denials.Add(1)
+			case EventError:
+				errs.Add(1)
+				mu.Lock()
+				errText = append(errText, ev.Err.Error())
+				mu.Unlock()
+			}
+		}
+	}()
+	if err := node.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return node.Status().Joined })
+
+	deny.Store(true)
+	before := asked.Load()
+	fake.Deauthorize(node.Status().PeerID, "node paused")
+	waitFor(t, 5*time.Second, func() bool { return asked.Load() >= before+5 })
+
+	if n := denials.Load(); n != 1 {
+		t.Errorf("%d join_denied events for one pause, want 1", n)
+	}
+	if n := errs.Load(); n != 0 {
+		mu.Lock()
+		t.Errorf("a pause was reported as %d errors: %q", n, errText)
+		mu.Unlock()
+	}
+	if st := node.Status(); st.Joined || st.JoinDenied != "node paused" {
+		t.Errorf("paused: joined=%t join_denied=%q", st.Joined, st.JoinDenied)
+	}
+
+	deny.Store(false)
+	waitFor(t, 10*time.Second, func() bool { return node.Status().Joined })
+	if st := node.Status(); st.JoinDenied != "" {
+		t.Errorf("a resumed node still reports a refusal: %q", st.JoinDenied)
 	}
 }

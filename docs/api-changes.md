@@ -13,8 +13,11 @@ netmap it no longer held.
 
 - A join the control plane refuses is `EventJoinDenied` (libghost event
   `join_denied`, with `reason`) instead of an `EventError`, once per distinct
-  reason; the retries after it are logged at debug. Hosts that watched errors
+  reason; the retries after it are logged at debug. The control plane
+  withdrawing a joined member ("connection no longer authorized", a node paused
+  while connected) is the same refusal, not an error. Hosts that watched errors
   for "join denied" watch `join_denied` instead.
+- `signal.FakeServer.Deauthorize` ends a session the way ghost-server does.
 - `Status.JoinDenied` (libghost status `join_denied`) holds the reason while
   the join is refused.
 - A member out of its network opens no new links; it still tears down dead
