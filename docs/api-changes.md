@@ -3,6 +3,13 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## libghost: a JSON Schema for the C API's documents
+
+Additive. `ghost-go/cmd/libghost/libghost.schema.json` describes every JSON
+document the C API takes or returns, generated from the Go types, and
+`go test ./cmd/libghost` fails when it is stale. The documents themselves are
+unchanged.
+
 ## libghost: a private key and a private CA
 
 Additive; existing start and enrol documents behave as before.

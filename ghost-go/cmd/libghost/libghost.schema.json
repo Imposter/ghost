@@ -1,0 +1,1164 @@
+{
+  "$defs": {
+    "Connection": {
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_peer": {
+          "type": "string"
+        },
+        "source_tag": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "job": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "sni": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "policy_allowed": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "bytes_in": {
+          "type": "integer"
+        },
+        "bytes_out": {
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "type": "number"
+        },
+        "ttfb_seconds": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "start",
+        "protocol",
+        "transport",
+        "host",
+        "port",
+        "policy_allowed",
+        "result",
+        "bytes_in",
+        "bytes_out",
+        "duration_seconds"
+      ],
+      "description": "Connection is one entry of the recent-connections ring buffer: the full per-connection record, including the requested host even when denied and the resolved IP, which never appear as metric labels."
+    },
+    "Creds": {
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "Server is the control plane's base URL (http(s)://host[:port][/prefix])."
+        },
+        "signal_url": {
+          "type": "string",
+          "description": "SignalURL is the signalling WebSocket URL, when it is not the\nconventional {server}/v1/signal."
+        },
+        "peer_id": {
+          "type": "string",
+          "description": "PeerID is this peer's id, when already known."
+        },
+        "peer_token": {
+          "type": "string",
+          "description": "PeerToken authenticates the peer (gpt_…). Required."
+        },
+        "network": {
+          "type": "string",
+          "description": "Network is the network to join."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "peer_token"
+      ],
+      "description": "credsConfig is a peer's control-plane credentials: the creds object\nghost_enroll returns, plus the server it came from."
+    },
+    "DestinationStat": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "connections": {
+          "type": "integer"
+        },
+        "bytes_in": {
+          "type": "integer"
+        },
+        "bytes_out": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "connections",
+        "bytes_in",
+        "bytes_out"
+      ],
+      "description": "DestinationStat aggregates one destination."
+    },
+    "EnrollCreds": {
+      "properties": {
+        "peer_id": {
+          "type": "string"
+        },
+        "peer_token": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "server": {
+          "type": "string",
+          "description": "Server is the control plane's base URL. The server does not return it;\nghost_enroll records it so the creds are usable on their own."
+        },
+        "public_key": {
+          "type": "string",
+          "description": "PublicKey is the WireGuard key registered for the peer, when one was."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "peer_id",
+        "peer_token",
+        "network"
+      ],
+      "description": "enrollCreds is what the control plane returns, plus the server it came\nfrom. It is exactly the creds object a start config takes."
+    },
+    "EnrollRequest": {
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "Server is the control plane's base URL, e.g. \"https://ghost.example.com\"."
+        },
+        "auth_key": {
+          "type": "string",
+          "description": "AuthKey is a pre-auth key (gak_…)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name is the peer's display name in netmaps."
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Labels are free-form key/value labels the control plane records."
+        },
+        "key_store_path": {
+          "type": "string",
+          "description": "KeyStorePath is where the WireGuard key pair lives. The public key is\nregistered at enrolment, so this should be the same path the start\nconfig later uses; the file is created when it is missing."
+        },
+        "public_key": {
+          "type": "string",
+          "description": "PublicKey registers a key the caller already holds, instead of\nKeyStorePath. Leaving both empty enrols without a key."
+        },
+        "private_key": {
+          "type": "string",
+          "description": "PrivateKey registers the public half of a private key the caller\nkeeps in its own secret store; nothing is written to disk. When\nPublicKey is also given the two must be a pair."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "CACertPEM holds PEM certificate authorities trusted, on top of the\nsystem roots, for a control plane behind a private CA."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "server",
+        "auth_key"
+      ],
+      "description": "enrollRequestJSON is the JSON body of ghost_enroll."
+    },
+    "EnrollResponse": {
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "creds": {
+          "$ref": "#/$defs/EnrollCreds"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "description": "enrollResponse is the JSON ghost_enroll returns."
+    },
+    "Error": {
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ok",
+        "error"
+      ],
+      "description": "errorResponse is what a call that returns JSON reports a failure with."
+    },
+    "Event": {
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Seq numbers events per node, from 1, and counts the dropped ones, so a\ngap in Seq is exactly what Dropped reports."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Kind is one of signal_state, joined, netmap, policy, peer_connected,\npeer_disconnected, error, stopped."
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time is when the event was buffered (RFC 3339, UTC)."
+        },
+        "dropped": {
+          "type": "integer",
+          "description": "Dropped is how many events were dropped, oldest first, between the\nprevious delivered event and this one. It is 0 in the normal case."
+        },
+        "signal_state": {
+          "type": "string",
+          "description": "SignalState is set on signal_state: disconnected, connecting,\nconnected or closed."
+        },
+        "peer_id": {
+          "type": "string",
+          "description": "PeerID is the peer an event concerns (peer_connected,\npeer_disconnected, and some errors)."
+        },
+        "address": {
+          "type": "string",
+          "description": "Address is a tunnel address in CIDR form: this node's on joined, the\npeer's on peer_connected."
+        },
+        "candidate_type": {
+          "type": "string",
+          "description": "CandidateType is the selected local ICE candidate type on\npeer_connected: host, srflx, prflx or relay."
+        },
+        "policy": {
+          "$ref": "#/$defs/ExitPolicy",
+          "description": "Policy is the control plane's new exit policy on policy."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error is the message on error."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "seq",
+        "kind",
+        "time",
+        "dropped"
+      ],
+      "description": "eventJSON is one entry of the event stream, the JSON ghost_next_event_json\nreturns. Fields that do not apply to a kind are omitted."
+    },
+    "ExitConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port is the tunnel-side TCP port (0 = exit.DefaultPort)."
+        },
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Allow is the local allowlist (\"host\", \"host:port\", \"*.example.com:443\").\nAbsent leaves the control plane's allowlist alone; an empty array denies\neverything."
+        },
+        "daily_bytes": {
+          "type": "integer",
+          "description": "DailyBytes and BytesPerSecond are local caps (0 = no local cap)."
+        },
+        "bytes_per_second": {
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean",
+          "description": "Paused refuses new exit connections while true."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "description": "exitConfig configures a node's exit. Allow, DailyBytes, BytesPerSecond and\nPaused are the local policy: they narrow the control plane's, they never\nwiden it, and ghost_set_policy replaces them later."
+    },
+    "ExitPolicy": {
+      "properties": {
+        "network": {
+          "type": "string"
+        },
+        "allow": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "daily_bytes": {
+          "type": "integer"
+        },
+        "bytes_per_second": {
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "revision": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "network",
+        "allow",
+        "revision"
+      ]
+    },
+    "ExitStatus": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "listen": {
+          "type": "string",
+          "description": "Listen is the tunnel-side address the exit serves on, empty until the\nnode has joined; Port is the port it will use."
+        },
+        "port": {
+          "type": "integer"
+        },
+        "allow": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Allow is the control plane's allowlist, LocalAllow the one\nghost_set_policy sets (null when the host has set none)."
+        },
+        "local_allow": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "local": {
+          "$ref": "#/$defs/LocalPolicy",
+          "description": "Local is the host application's policy, Effective the combination of it\nand the control plane's that the exit enforces."
+        },
+        "effective": {
+          "$ref": "#/$defs/LocalPolicy"
+        },
+        "used_bytes": {
+          "type": "integer",
+          "description": "UsedBytes and LimitBytes are today's usage against the effective daily\ncap (a limit of 0 means unlimited)."
+        },
+        "limit_bytes": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "integer",
+          "description": "Active is the number of live proxied connections."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "listen",
+        "port",
+        "allow",
+        "local_allow",
+        "local",
+        "effective",
+        "used_bytes",
+        "limit_bytes",
+        "active"
+      ],
+      "description": "exitView is the node's exit in a status snapshot."
+    },
+    "HostCount": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "count"
+      ],
+      "description": "HostCount is one entry of the capped top-N denied hosts."
+    },
+    "LocalPolicy": {
+      "properties": {
+        "daily_bytes": {
+          "type": "integer"
+        },
+        "bytes_per_second": {
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "daily_bytes",
+        "bytes_per_second",
+        "paused"
+      ],
+      "description": "localPolicy is the caps and pause flag the host application owns."
+    },
+    "Metrics": {
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "handle": {
+          "type": "integer"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "connections": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Connection"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Connections holds up to metrics.DefaultConnections records."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ok",
+        "handle",
+        "snapshot",
+        "connections"
+      ],
+      "description": "metricsView is the JSON ghost_metrics_json returns: the node's metrics\nsnapshot and its recent exit connections, newest first."
+    },
+    "MetricsConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port is the tunnel-side TCP port (0 = metrics.DefaultPort)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "description": "metricsConfig turns the in-tunnel metrics endpoint on. It listens inside the\nnetstack on the node's tunnel IP, so only the netmap's hubs can reach it."
+    },
+    "Peer": {
+      "properties": {
+        "peer_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string"
+        },
+        "roles": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "online": {
+          "type": "boolean",
+          "description": "Online is what the control plane says; Linked is whether this node has\na live WireGuard tunnel to the peer."
+        },
+        "linked": {
+          "type": "boolean"
+        },
+        "candidate_type": {
+          "type": "string",
+          "description": "CandidateType is the selected local ICE candidate type: host, srflx,\nprflx or relay. It is empty until the link is up."
+        },
+        "rtt_seconds": {
+          "type": "number"
+        },
+        "rx_bytes": {
+          "type": "integer"
+        },
+        "tx_bytes": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "peer_id",
+        "address",
+        "roles",
+        "online",
+        "linked",
+        "rtt_seconds",
+        "rx_bytes",
+        "tx_bytes"
+      ],
+      "description": "peerView is one netmap peer and the tunnel to it."
+    },
+    "PeerStat": {
+      "properties": {
+        "peer_id": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string",
+          "description": "Address is the peer's tunnel address (CIDR)."
+        },
+        "candidate_type": {
+          "type": "string",
+          "description": "CandidateType is the selected local ICE candidate type (host, srflx,\nprflx or relay)."
+        },
+        "rtt_seconds": {
+          "type": "number",
+          "description": "RTTSeconds is the ICE round-trip time (0 when not yet measured)."
+        },
+        "last_handshake": {
+          "type": "string",
+          "format": "date-time",
+          "description": "LastHandshake is the last WireGuard handshake (zero when none yet), and\nHandshakeAgeSeconds its age at snapshot time."
+        },
+        "handshake_age_seconds": {
+          "type": "number"
+        },
+        "rx_bytes": {
+          "type": "integer",
+          "description": "RxBytes and TxBytes are transport bytes received from / sent to the peer."
+        },
+        "tx_bytes": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "peer_id",
+        "rtt_seconds",
+        "rx_bytes",
+        "tx_bytes"
+      ],
+      "description": "PeerStat is the tunnel state of one peer."
+    },
+    "Policy": {
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Allow replaces the local allowlist (\"host\", \"host:port\",\n\"*.example.com:443\"). An empty array denies every destination; null\nleaves the current list in place."
+        },
+        "daily_bytes": {
+          "type": "integer",
+          "description": "DailyBytes is the local per-UTC-day byte budget (0 = no local cap)."
+        },
+        "bytes_per_second": {
+          "type": "integer",
+          "description": "BytesPerSecond is the local throughput cap (0 = no local cap)."
+        },
+        "paused": {
+          "type": "boolean",
+          "description": "Paused refuses new exit connections while true."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "policyRequest is the JSON body of ghost_set_policy. Every field is\noptional: an absent field leaves that part of the local policy alone, so\n{\"paused\":true} pauses and changes nothing else.\n\nThe local policy never widens the control plane's: a destination must pass\nboth allowlists, the effective cap is the smaller non-zero of the two, and\nthe exit is paused when either side pauses it."
+    },
+    "ProtocolStat": {
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "connections": {
+          "type": "integer"
+        },
+        "bytes_in": {
+          "type": "integer"
+        },
+        "bytes_out": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "protocol",
+        "transport",
+        "connections",
+        "bytes_in",
+        "bytes_out"
+      ],
+      "description": "ProtocolStat aggregates one proxy protocol (\"socks5\" or \"http_connect\") over one transport (\"tcp\")."
+    },
+    "ResultStat": {
+      "properties": {
+        "result": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "result",
+        "count"
+      ],
+      "description": "ResultStat counts connections with one result."
+    },
+    "Snapshot": {
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "peer_id": {
+          "type": "string",
+          "description": "PeerID and Address identify the node and its tunnel address, when\nknown."
+        },
+        "address": {
+          "type": "string"
+        },
+        "totals": {
+          "$ref": "#/$defs/Totals"
+        },
+        "destinations": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/DestinationStat"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SourceStat"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocols": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ProtocolStat"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "results": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ResultStat"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "denied_hosts": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/HostCount"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tunnel": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PeerStat"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "time",
+        "totals",
+        "destinations",
+        "sources",
+        "protocols",
+        "results",
+        "denied_hosts",
+        "tunnel"
+      ],
+      "description": "Snapshot is a point-in-time view of a node's metrics."
+    },
+    "SourceStat": {
+      "properties": {
+        "peer": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "connections": {
+          "type": "integer"
+        },
+        "bytes_in": {
+          "type": "integer"
+        },
+        "bytes_out": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "peer",
+        "connections",
+        "bytes_in",
+        "bytes_out"
+      ],
+      "description": "SourceStat aggregates one source: the requesting peer and the source part of the tag it sent (see exit.ParseSourceTag)."
+    },
+    "StartConfig": {
+      "properties": {
+        "creds": {
+          "$ref": "#/$defs/Creds",
+          "description": "Creds are the control-plane credentials, as written by ghost_enroll."
+        },
+        "network": {
+          "type": "string",
+          "description": "Network overrides Creds.Network."
+        },
+        "key_store_path": {
+          "type": "string",
+          "description": "KeyStorePath is the file the WireGuard key pair is persisted in. Empty\nmeans an ephemeral key, which enrols the peer's key afresh on every\nrun; a host application should always pass a path in its own storage."
+        },
+        "private_key": {
+          "type": "string",
+          "description": "PrivateKey is the WireGuard private key (base64), for a host that keeps\nit in its own secret store: nothing is then read from or written to\ndisk. It excludes KeyStorePath."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "CACertPEM holds PEM certificate authorities trusted, on top of the\nsystem roots, for a wss:// control plane behind a private CA."
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Roles are the roles this member asks the control plane to grant it\n(\"node\", \"exit\", \"hub\", \"relay\"). Exit.Enabled adds \"exit\"."
+        },
+        "stun": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "STUN are STUN URLs, TURN are TURN servers with credentials. Both are\nmerged with whatever the control plane advertises."
+        },
+        "turn": {
+          "items": {
+            "$ref": "#/$defs/TurnServer"
+          },
+          "type": "array"
+        },
+        "port_min": {
+          "type": "integer",
+          "description": "PortMin and PortMax bound the local UDP port range ICE binds (0 = any)."
+        },
+        "port_max": {
+          "type": "integer"
+        },
+        "mtu": {
+          "type": "integer",
+          "description": "MTU is the tunnel MTU (0 = ghost.DefaultMTU)."
+        },
+        "dns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "DNS are DNS servers for the tunnel netstack."
+        },
+        "connect_timeout_ms": {
+          "type": "integer",
+          "description": "ConnectTimeoutMS bounds ICE connection establishment per peer\n(0 = the library default)."
+        },
+        "log_level": {
+          "type": "string",
+          "description": "LogLevel is \"debug\", \"info\", \"warn\" or \"error\" (default \"warn\"). Logs\ngo to the process's standard error."
+        },
+        "exit": {
+          "$ref": "#/$defs/ExitConfig",
+          "description": "Exit configures the SOCKS5 / HTTP-CONNECT exit on the tunnel IP."
+        },
+        "metrics": {
+          "$ref": "#/$defs/MetricsConfig",
+          "description": "Metrics configures the in-tunnel metrics endpoint. ghost_metrics_json\nworks whether or not it is enabled."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "creds"
+      ],
+      "description": "startConfig is the JSON body of ghost_start. Unknown fields are refused:\na misspelt key_store_path would otherwise silently make the WireGuard key\nephemeral."
+    },
+    "Status": {
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "OK is false only on the error form, which carries Error instead."
+        },
+        "handle": {
+          "type": "integer",
+          "description": "Handle is the node's handle, echoed back."
+        },
+        "connected": {
+          "type": "boolean",
+          "description": "Connected is true while the node is usable: the signalling session is\nup and the control plane has the node in its network."
+        },
+        "signal_state": {
+          "type": "string",
+          "description": "SignalState is disconnected, connecting, connected or closed. It says\nnothing about the join: a node whose join the control plane refused\n(because its owner paused it, say) stays connected and unjoined while\nit keeps asking."
+        },
+        "joined": {
+          "type": "boolean",
+          "description": "Joined is whether the node is in its network. While it is false the\nnode carries no traffic and lists no peers."
+        },
+        "peer_id": {
+          "type": "string",
+          "description": "PeerID is the control plane's id for this peer."
+        },
+        "network": {
+          "type": "string",
+          "description": "Network is the joined network."
+        },
+        "address": {
+          "type": "string",
+          "description": "Address is this node's tunnel address in CIDR form\n(\"100.64.0.5/32\"); TunnelAddress is the bare IP (\"100.64.0.5\")."
+        },
+        "tunnel_address": {
+          "type": "string"
+        },
+        "roles": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Roles are this peer's roles, as the netmap reports them (the requested\nroles until the first netmap arrives)."
+        },
+        "isolation": {
+          "type": "string",
+          "description": "Isolation is the network's isolation mode (\"none\" or \"hub-only\")."
+        },
+        "peer_count": {
+          "type": "integer",
+          "description": "PeerCount is the number of linked tunnel peers, NetmapPeers the number\nthe netmap lists."
+        },
+        "netmap_peers": {
+          "type": "integer"
+        },
+        "peers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Peer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Peers is every netmap peer, sorted by peer id."
+        },
+        "exit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExitStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exit is the node's exit, or null when it serves none."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ok",
+        "handle",
+        "connected",
+        "signal_state",
+        "joined",
+        "peer_id",
+        "network",
+        "address",
+        "tunnel_address",
+        "roles",
+        "peer_count",
+        "netmap_peers",
+        "peers",
+        "exit"
+      ],
+      "description": "statusView is the JSON ghost_status_json returns: what the node's Status\nreports, its tunnel address, every peer in the netmap with the state of the\ntunnel to it, and the exit."
+    },
+    "Totals": {
+      "properties": {
+        "connections": {
+          "type": "integer"
+        },
+        "bytes_in": {
+          "type": "integer"
+        },
+        "bytes_out": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "integer",
+          "description": "Active is the number of live proxied connections."
+        },
+        "denied": {
+          "type": "integer",
+          "description": "Denied counts connections refused by policy or the safety guard."
+        },
+        "cap_used_bytes": {
+          "type": "integer",
+          "description": "CapUsedBytes and CapLimitBytes are today's usage against the daily cap\n(a limit of 0 means unlimited)."
+        },
+        "cap_limit_bytes": {
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean",
+          "description": "Paused is true while the owner has paused the exit."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "connections",
+        "bytes_in",
+        "bytes_out",
+        "active",
+        "denied",
+        "cap_used_bytes",
+        "cap_limit_bytes",
+        "paused"
+      ],
+      "description": "Totals are node-wide figures."
+    },
+    "TurnServer": {
+      "properties": {
+        "urls": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "urls"
+      ],
+      "description": "turnConfig is one TURN server."
+    }
+  },
+  "$id": "https://github.com/Imposter/ghost/ghost-go/cmd/libghost/libghost.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The JSON documents of the libghost C API (docs/ffi.md). Generated from the Go types by TestSchemaIsCurrent: do not edit.",
+  "title": "libghost 0.2.0",
+  "x-libghost-abi": "0.2.0",
+  "x-libghost-documents": {
+    "error": "#/$defs/Error",
+    "ghost_enroll.request": "#/$defs/EnrollRequest",
+    "ghost_enroll.response": "#/$defs/EnrollResponse",
+    "ghost_metrics_json": "#/$defs/Metrics",
+    "ghost_next_event_json": "#/$defs/Event",
+    "ghost_set_policy.policy": "#/$defs/Policy",
+    "ghost_start.config": "#/$defs/StartConfig",
+    "ghost_status_json": "#/$defs/Status"
+  }
+}

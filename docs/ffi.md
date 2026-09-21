@@ -31,6 +31,27 @@ char* ghost_metrics_json(ghost_handle h);
 void  ghost_free(char* p);
 ```
 
+## The JSON schema
+
+Every JSON document the C API takes or returns is described by
+[`ghost-go/cmd/libghost/libghost.schema.json`](../ghost-go/cmd/libghost/libghost.schema.json),
+a JSON Schema (draft 2020-12) generated from the Go types that encode and decode
+them, with their doc comments as descriptions. `x-libghost-documents` names the
+definition each entry point speaks (`ghost_start.config` is `StartConfig`, and so
+on), and `x-libghost-abi` the ABI version it describes.
+
+Generate a host application's types from it rather than writing them by hand: the
+inputs refuse unknown fields (`additionalProperties: false`), and a field that
+libghost can write as `null` is typed so. The schema is regenerated from the Go
+types with
+
+```sh
+cd ghost-go && go test ./cmd/libghost -run TestSchemaIsCurrent -update
+```
+
+and `go test` fails while the committed file is stale, so it cannot drift from what
+the library actually sends.
+
 ## Ownership and threading
 
 - Every `char*` a function returns, including one written through an `err`
