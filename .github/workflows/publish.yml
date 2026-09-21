@@ -80,7 +80,7 @@ jobs:
             echo "latest=$latest"
           } >> "$GITHUB_OUTPUT"
           echo "ghost-server $TAG: ${why:-unchanged since $previous, reused}" >> "$GITHUB_STEP_SUMMARY"
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         if: steps.plan.outputs.build == 'true'
       - id: meta
         if: steps.plan.outputs.build == 'true'
