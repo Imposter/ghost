@@ -2,7 +2,7 @@
 # Build from the repository root so the ghost-go module (a replace target) is
 # in the context:
 #   docker build -f ghost-server/Dockerfile -t ghost-server .
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY ghost-go/go.mod ghost-go/go.sum ./ghost-go/
 COPY ghost-server/go.mod ghost-server/go.sum ./ghost-server/
