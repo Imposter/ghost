@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/ghost-server ./cmd/ghost-server
 
 # Alpine rather than distroless so the healthcheck has a shell and wget.
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates \
  && addgroup -S -g 65532 ghost \
  && adduser -S -D -H -u 65532 -G ghost ghost \
