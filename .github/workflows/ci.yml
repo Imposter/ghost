@@ -30,7 +30,7 @@ jobs:
       modules: ${{ steps.filter.outputs.changes }}
       ghost-go: ${{ steps.filter.outputs.ghost-go }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: filter
         uses: dorny/paths-filter@v3
         with:
@@ -56,7 +56,7 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -82,7 +82,7 @@ jobs:
       run:
         working-directory: ghost-go
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
