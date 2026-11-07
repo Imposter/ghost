@@ -132,12 +132,14 @@ func (c *capController) UsageToday() (used, limit int64) {
 }
 
 // capReader wraps a reader to count bytes, apply the rate limit, and stop when
-// the daily budget is exhausted.
+// the daily budget is exhausted. onBytes, when set, is told of every read as
+// it happens.
 type capReader struct {
 	r       io.Reader
 	cap     *capController
 	ctx     context.Context
 	counter *int64
+	onBytes func(n int64)
 	onFirst func()
 	first   bool
 }
@@ -153,6 +155,9 @@ func (cr *capReader) Read(p []byte) (int, error) {
 			cr.onFirst()
 		}
 		*cr.counter += int64(n)
+		if cr.onBytes != nil {
+			cr.onBytes(int64(n))
+		}
 		if cr.cap.add(int64(n)) {
 			// Budget exhausted; deliver what we have then signal EOF-like stop.
 			return n, errCapExhausted

@@ -349,8 +349,11 @@ the allowlist says.
 
 `snapshot` is `metrics.Snapshot`, the single contract every ghost metrics
 consumer shares (see [architecture.md](architecture.md)); every slice is
-sorted deterministically and never `null`. `connections` holds up to 100
-recent exit connections, newest first, from the node's bounded ring buffer.
+sorted deterministically and never `null`. Totals and splits count a
+connection when its tunnel opens and its bytes as they move, so they only
+grow; `results` counts it when it closes. `connections` holds up to 100
+recent exit connections, newest first, from the node's bounded ring buffer; a
+connection still open has `result` `"open"` and its bytes so far.
 Both are empty when the node serves no exit.
 
 ## Building

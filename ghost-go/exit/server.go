@@ -40,7 +40,8 @@ type Dialer interface {
 type Config struct {
 	// Policy decides which destinations are allowed. Defaults to DenyAll.
 	Policy Policy
-	// Accountant receives a record for each finished connection. Defaults to a
+	// Accountant receives a record for each finished connection; a
+	// LiveAccountant also follows each tunnel while it is open. Defaults to a
 	// no-op.
 	Accountant Accountant
 	// Dialer dials targets through the host network. Defaults to net.Dialer.
@@ -341,7 +342,9 @@ func (s *Server) handleRequest(client net.Conn, br *bufio.Reader, req proxyReque
 		return
 	}
 
-	s.pipe(client, br, upstream, info, dialStart)
+	sniffSNI(br, info)
+	t.open()
+	s.pipe(client, br, upstream, t, dialStart)
 	finish(ResultAllowed, "")
 }
 
@@ -352,6 +355,7 @@ type connTrack struct {
 	ctx  context.Context
 	span trace.Span
 	info ConnInfo
+	live LiveConn // set by open when the Accountant is a LiveAccountant
 }
 
 // begin opens the span, marks the connection active and returns its tracker.
@@ -379,8 +383,23 @@ func (s *Server) begin(client net.Conn, req proxyRequest) *connTrack {
 	return t
 }
 
-// finish records the outcome exactly once: the Accountant record, the
-// metrics, and the span.
+// open hands an established tunnel to a LiveAccountant, so its count and
+// bytes show while it is open rather than only once it finishes.
+func (t *connTrack) open() {
+	if la, ok := t.s.cfg.Accountant.(LiveAccountant); ok {
+		t.live = la.Open(t.info)
+	}
+}
+
+// addBytes reports bytes to the live accountant, if any, as they move.
+func (t *connTrack) addBytes(in, out int64) {
+	if t.live != nil {
+		t.live.AddBytes(in, out)
+	}
+}
+
+// finish records the outcome exactly once: the Accountant record (or the
+// live connection's close), the metrics, and the span.
 func (t *connTrack) finish(res Result, errMsg string) {
 	s := t.s
 	t.info.Result = res
@@ -396,6 +415,10 @@ func (t *connTrack) finish(res Result, errMsg string) {
 		t.span.End()
 	}
 	// The Accountant goes last so a reader it signals sees the metrics too.
+	if t.live != nil {
+		t.live.Close(t.info)
+		return
+	}
 	s.cfg.Accountant.Record(t.info)
 }
 
@@ -429,16 +452,11 @@ func (s *Server) resolve(host string, port int) (target, ip string, res Result, 
 	return "", "", ResultDenied, "all resolved addresses are forbidden"
 }
 
-// pipe copies bytes in both directions, sniffing SNI from the first client
-// bytes and measuring TTFB and byte counts.
-func (s *Server) pipe(client net.Conn, br *bufio.Reader, upstream net.Conn, info *ConnInfo, dialStart time.Time) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Sniff SNI from the client's first segment. Peek(1) blocks only until the
-	// first byte arrives (the client always speaks first on a CONNECT tunnel),
-	// then Buffered() is whatever came in that read — typically the whole
-	// ClientHello. We never block waiting for a fixed length.
+// sniffSNI reads the TLS server name from the client's first segment. Peek(1)
+// blocks only until the first byte arrives (the client always speaks first on
+// a CONNECT tunnel), then Buffered() is whatever came in that read — typically
+// the whole ClientHello. We never block waiting for a fixed length.
+func sniffSNI(br *bufio.Reader, info *ConnInfo) {
 	if _, err := br.Peek(1); err == nil {
 		if peek, err := br.Peek(br.Buffered()); err == nil && len(peek) > 0 {
 			if sni, ok := sniffClientHelloSNI(peek); ok {
@@ -446,6 +464,14 @@ func (s *Server) pipe(client net.Conn, br *bufio.Reader, upstream net.Conn, info
 			}
 		}
 	}
+}
+
+// pipe copies bytes in both directions, measuring TTFB and byte counts and
+// reporting bytes to t's live accountant as they move.
+func (s *Server) pipe(client net.Conn, br *bufio.Reader, upstream net.Conn, t *connTrack, dialStart time.Time) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	info := &t.info
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -453,7 +479,8 @@ func (s *Server) pipe(client net.Conn, br *bufio.Reader, upstream net.Conn, info
 	// client -> upstream (bytes out), rate-limited and capped.
 	go func() {
 		defer wg.Done()
-		cr := &capReader{r: br, cap: s.cap, ctx: ctx, counter: &info.BytesOut}
+		cr := &capReader{r: br, cap: s.cap, ctx: ctx, counter: &info.BytesOut,
+			onBytes: func(n int64) { t.addBytes(0, n) }}
 		_, _ = io.Copy(upstream, cr)
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
@@ -466,10 +493,12 @@ func (s *Server) pipe(client net.Conn, br *bufio.Reader, upstream net.Conn, info
 	go func() {
 		defer wg.Done()
 		firstByteAt := dialStart
-		cr := &capReader{r: upstream, cap: s.cap, ctx: ctx, counter: &info.BytesIn, onFirst: func() {
-			firstByteAt = time.Now()
-			info.TTFB = firstByteAt.Sub(dialStart)
-		}}
+		cr := &capReader{r: upstream, cap: s.cap, ctx: ctx, counter: &info.BytesIn,
+			onBytes: func(n int64) { t.addBytes(n, 0) },
+			onFirst: func() {
+				firstByteAt = time.Now()
+				info.TTFB = firstByteAt.Sub(dialStart)
+			}}
 		_, _ = io.Copy(client, cr)
 		if cw, ok := client.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
