@@ -29,11 +29,16 @@ const (
 	ResultTimeout Result = "timeout"
 	// ResultCapped means a bandwidth cap refused or cut the connection.
 	ResultCapped Result = "capped"
+	// ResultOpen marks a connection that is still carrying bytes. The exit
+	// never finishes a connection with it; a LiveAccountant shows it on the
+	// records of the connections it holds open.
+	ResultOpen Result = "open"
 )
 
 // ConnInfo is the full record for one exit connection. It is passed to an
-// Accountant when the connection finishes. A3b implements Accountant to
-// export these as metrics; the exit package itself only produces the record.
+// Accountant when the connection finishes (and to a LiveAccountant when its
+// tunnel opens). metrics.Collector implements Accountant to export these as
+// metrics; the exit package itself only produces the record.
 type ConnInfo struct {
 	// SourcePeer is the tunnel peer that opened the connection: its peer id
 	// when the server's PeerResolver knows it, else its tunnel IP (never the
@@ -82,6 +87,30 @@ type ConnInfo struct {
 // safe for concurrent use. The default is a no-op.
 type Accountant interface {
 	Record(ConnInfo)
+}
+
+// LiveAccountant is an Accountant that also follows connections while they
+// are open. Once a tunnel is established the exit calls Open, reports bytes on
+// the returned LiveConn as they move, and ends it with LiveConn.Close instead
+// of Record. Connections that never open a tunnel (refused, failed dials) are
+// still reported with Record alone.
+type LiveAccountant interface {
+	Accountant
+	// Open starts following a connection whose tunnel is established. The
+	// record has no Result, bytes or Duration yet.
+	Open(ConnInfo) LiveConn
+}
+
+// LiveConn is one open connection followed by a LiveAccountant. AddBytes is
+// called concurrently from the connection's two copy directions.
+type LiveConn interface {
+	// AddBytes counts bytes just read from the target (in) and from the
+	// client (out).
+	AddBytes(in, out int64)
+	// Close ends the connection with its final record, exactly once, after
+	// the last AddBytes. The record's BytesIn and BytesOut equal the sums
+	// passed to AddBytes.
+	Close(ConnInfo)
 }
 
 // NopAccountant discards all records.

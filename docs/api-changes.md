@@ -3,6 +3,32 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## Exit metrics count open connections
+
+Additive; the snapshot JSON keeps its shape. A node's totals, its
+destination, source and protocol splits and its recent connections only took
+in a connection when it closed, so a long-lived CONNECT or SOCKS tunnel moved
+bytes (and charged the cap) for minutes while `connections`, `bytes_in` and
+`bytes_out` stayed still.
+
+**Changed**
+
+- `metrics.Collector` counts a connection in `connections` when its tunnel
+  opens and adds its bytes as they move; `results` and `denied` still count it
+  once, when it closes. Every count only grows, and closing a connection adds
+  only what was not yet counted. Connections refused before a tunnel opens are
+  counted when they finish, as before.
+- The recent connections list a connection when its tunnel opens, with
+  `result` `"open"` and its bytes and duration so far; the same entry becomes
+  its final record when it closes.
+
+**New**
+
+- ghost-go: `exit.LiveAccountant` (`Open`) and `exit.LiveConn` (`AddBytes`,
+  `Close`), which `metrics.Collector` implements, and `exit.ResultOpen`. An
+  `exit.Accountant` that is not a `LiveAccountant` still gets one `Record` per
+  finished connection.
+
 ## `client_ip` on presence, and `trusted_proxies`
 
 Additive. Behind a reverse proxy, a session's `remote` is the proxy, so the

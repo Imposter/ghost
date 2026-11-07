@@ -39,12 +39,6 @@ type Counts struct {
 	BytesOut    int64 `json:"bytes_out"`
 }
 
-func (c *Counts) add(ci exit.ConnInfo) {
-	c.Connections++
-	c.BytesIn += ci.BytesIn
-	c.BytesOut += ci.BytesOut
-}
-
 // Totals are node-wide figures.
 type Totals struct {
 	Counts
@@ -151,7 +145,9 @@ func EmptySnapshot() Snapshot {
 
 // Connection is one entry of the recent-connections ring buffer: the full
 // per-connection record, including the requested host even when denied and
-// the resolved IP, which never appear as metric labels.
+// the resolved IP, which never appear as metric labels. While its tunnel is
+// still open, Result is exit.ResultOpen ("open") and the bytes and duration
+// are so far.
 type Connection struct {
 	Start           time.Time `json:"start"`
 	SourcePeer      string    `json:"source_peer,omitempty"`

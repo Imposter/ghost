@@ -72,7 +72,7 @@
         "bytes_out",
         "duration_seconds"
       ],
-      "description": "Connection is one entry of the recent-connections ring buffer: the full\nper-connection record, including the requested host even when denied and\nthe resolved IP, which never appear as metric labels."
+      "description": "Connection is one entry of the recent-connections ring buffer: the full\nper-connection record, including the requested host even when denied and\nthe resolved IP, which never appear as metric labels. While its tunnel is\nstill open, Result is exit.ResultOpen (\"open\") and the bytes and duration\nare so far."
     },
     "Creds": {
       "properties": {
