@@ -10,8 +10,8 @@ package main
 import "C"
 
 import (
-	"bytes"
 	"io"
+	"log/slog"
 	"runtime/debug"
 	"unsafe"
 )
@@ -30,27 +30,32 @@ var logTagC = C.CString(logTag)
 // logOutput is where node logs go: logcat.
 var logOutput io.Writer = logcatWriter{}
 
-// logcatWriter writes each slog text record as one logcat entry, at the
-// priority its level= field names.
+// logcatWriter writes each slog text record to logcat at the priority of its
+// level, as one entry, or as consecutive entries at that priority when it is
+// longer than logcat keeps (see logcatChunks).
 type logcatWriter struct{}
 
 func (logcatWriter) Write(p []byte) (int, error) {
-	msg := C.CString(string(bytes.TrimRight(p, "\n")))
-	defer C.free(unsafe.Pointer(msg))
-	C.__android_log_write(logcatPriority(p), logTagC, msg)
+	prio := logcatPriority(recordLevel(p))
+	for _, chunk := range logcatChunks(p, logcatMaxEntry) {
+		msg := C.CString(string(chunk))
+		C.__android_log_write(prio, logTagC, msg)
+		C.free(unsafe.Pointer(msg))
+	}
 	return len(p), nil
 }
 
-// logcatPriority maps a text record's level to a logcat priority.
-func logcatPriority(record []byte) C.int {
+// logcatPriority maps a slog level to a logcat priority; a level between two
+// of slog's (DEBUG+2, say) takes the lower one's.
+func logcatPriority(l slog.Level) C.int {
 	switch {
-	case bytes.Contains(record, []byte(" level=ERROR")):
+	case l >= slog.LevelError:
 		return C.ANDROID_LOG_ERROR
-	case bytes.Contains(record, []byte(" level=WARN")):
+	case l >= slog.LevelWarn:
 		return C.ANDROID_LOG_WARN
-	case bytes.Contains(record, []byte(" level=DEBUG")):
-		return C.ANDROID_LOG_DEBUG
-	default:
+	case l >= slog.LevelInfo:
 		return C.ANDROID_LOG_INFO
+	default:
+		return C.ANDROID_LOG_DEBUG
 	}
 }

@@ -64,6 +64,52 @@ func TestAndroidLogsGoToLogcat(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "no warning %q in logcat", marker)
 }
 
+func TestAndroidLogcatTakesTheRecordsLevelOnly(t *testing.T) {
+	marker := fmt.Sprintf("libghost-android-level-%d", time.Now().UnixNano())
+	log, err := newLogger(logOutput, "info")
+	require.NoError(t, err)
+	log.Info(marker, "detail", "peer said level=ERROR")
+
+	require.Eventually(t, func() bool {
+		for line := range strings.Lines(logcat(t, logTag)) {
+			if strings.Contains(line, marker) {
+				return strings.Contains(line, " I "+logTag)
+			}
+		}
+		return false
+	}, 5*time.Second, 100*time.Millisecond, "no info %q in logcat", marker)
+}
+
+func TestAndroidLogcatKeepsALongRecord(t *testing.T) {
+	marker := fmt.Sprintf("libghost-android-long-%d", time.Now().UnixNano())
+	var blob strings.Builder
+	for i := range 1000 {
+		fmt.Fprintf(&blob, "%04d-", i)
+	}
+	log, err := newLogger(logOutput, "info")
+	require.NoError(t, err)
+	log.Warn(marker, "blob", blob.String(), "end", marker+"-end")
+
+	require.Eventually(t, func() bool {
+		var got strings.Builder
+		entries := 0
+		for line := range strings.Lines(logcat(t, logTag)) {
+			_, msg, ok := strings.Cut(line, " W "+logTag)
+			if !ok {
+				continue
+			}
+			_, msg, _ = strings.Cut(msg, ": ")
+			msg = strings.TrimRight(msg, "\r\n")
+			if strings.Contains(msg, marker) || got.Len() > 0 && !strings.Contains(got.String(), marker+"-end") {
+				got.WriteString(msg)
+				entries++
+			}
+		}
+		s := got.String()
+		return entries > 1 && strings.Contains(s, "blob="+blob.String()) && strings.Contains(s, "end="+marker+"-end")
+	}, 5*time.Second, 100*time.Millisecond, "the long record %q is not whole in logcat", marker)
+}
+
 // androidPanicBystander is a goroutine that is not the one panicking, so a
 // traceback that names it shows every goroutine.
 func androidPanicBystander(block chan struct{}) { <-block }

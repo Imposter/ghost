@@ -260,6 +260,8 @@ def main() -> int:
     if args.goos == "android":
         if args.docker:
             return fail("--docker builds linux only")
+        if args.cc:
+            return fail("--cc does not apply to android: the NDK's clang builds each ABI (see --ndk)")
         arches = ANDROID_ALL if args.goarch == "all" else (args.goarch,)
         if unknown := [a for a in arches if a not in ANDROID_ABIS]:
             return fail(f"unknown android arch {unknown[0]!r} (want {', '.join(ANDROID_ABIS)} or all)")

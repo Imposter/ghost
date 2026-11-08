@@ -486,7 +486,9 @@ may not ask the kernel for its links and `net.Interfaces` fails with
 
 An Android app's standard error goes nowhere, so on Android node logs go to
 **logcat** under the tag `ghost`, each record at the priority its level
-names (`adb logcat -s ghost`). A Go panic or fatal error is written to
+names (`adb logcat -s ghost`); a record longer than a logcat entry keeps (4000
+bytes) goes as consecutive entries at that priority, split at a newline when
+one fits, else between characters. A Go panic or fatal error is written to
 logcat under the tag `Go` by the Go runtime, and the library sets the
 traceback level to `all`, so the report shows every goroutine rather than
 only the one that panicked. A crash in the library aborts the process, as
@@ -512,8 +514,9 @@ in this repository.
 ### Testing on Android
 
 The Android-only tests (build tag `android`) need a device or an emulator:
-`cmd/libghost/android_test.go` checks that logs reach logcat, that a panic
-leaves a full traceback there, and, with `GHOST_TEST_ONLINE=1`, that a name
+`cmd/libghost/android_test.go` checks that logs reach logcat at their
+record's level, that a record longer than a logcat entry arrives whole across
+consecutive entries, that a panic leaves a full traceback there, and, with `GHOST_TEST_ONLINE=1`, that a name
 resolves and that enrolment and the signalling socket verify a public
 certificate; `internal/ice/android_test.go` gathers host candidates the way a
 node lists interfaces. `cmd/libghost/testdata/dlopen.c` loads the built
