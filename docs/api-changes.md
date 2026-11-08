@@ -3,6 +3,22 @@
 This file lists breaking changes and removals, newest first. No
 compatibility shims or deprecated aliases were kept at any step.
 
+## libghost for Android
+
+Additive; the C API and its JSON are unchanged.
+
+**New**
+
+- `build.py --os android --arch arm64|arm|amd64|386|all` builds
+  `<out>/android-<arch>/libghost.so` with the NDK (`--ndk`, `--android-api`,
+  default 24), linked for 16 KB pages and checked for it; `--jnilibs DIR`
+  copies each to `DIR/<abi>/`. See [ffi.md](ffi.md#android).
+
+**Changed**
+
+- On Android, node logs go to logcat (tag `ghost`) instead of standard error,
+  which an app discards, and a crash prints every goroutine's stack.
+
 ## Exit metrics count open connections
 
 Additive; the snapshot JSON keeps its shape. A node's totals, its

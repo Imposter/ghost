@@ -956,7 +956,7 @@
         },
         "log_level": {
           "type": "string",
-          "description": "LogLevel is \"debug\", \"info\", \"warn\" or \"error\" (default \"warn\"). Logs\ngo to the process's standard error."
+          "description": "LogLevel is \"debug\", \"info\", \"warn\" or \"error\" (default \"warn\"). Logs\ngo to the process's standard error, or to logcat (tag \"ghost\") on Android."
         },
         "exit": {
           "$ref": "#/$defs/ExitConfig",

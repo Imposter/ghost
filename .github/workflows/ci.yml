@@ -2,8 +2,9 @@ name: CI
 
 # The Go checks for a pull request, for the modules it touches only: ghost-go when
 # ghost-go/ changed, ghost-server when ghost-server/ or ghost-go/ (which it compiles in)
-# changed. A change to this file checks both. Nothing is built here: the ghost-server
-# image is built for a release (publish.yml).
+# changed. A change to this file checks both. The ghost-server image is built for a
+# release (publish.yml); only libghost's Android libraries are built here, since a
+# change can break them (cgo, the NDK, the linker flags) where no host build looks.
 
 on:
   pull_request:
@@ -19,6 +20,7 @@ concurrency:
 env:
   GO_VERSION: "1.26"
   GOLANGCI_LINT_VERSION: v2.13.2
+  ANDROID_NDK_VERSION: r28c
 
 jobs:
   changes:
@@ -72,6 +74,47 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           working-directory: ${{ matrix.module }}
+
+  android:
+    # libghost for every Android ABI an app ships, with the NDK. build.py fails
+    # unless each library's LOAD segments are aligned for 16 KB pages. The
+    # tests themselves need a device; docs/ffi.md says how to run them on one.
+    name: libghost (android)
+    needs: changes
+    if: needs.changes.outputs.ghost-go == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ghost-go
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ghost-go/go.sum
+      - id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.ANDROID_NDK_VERSION }}
+          add-to-path: false
+      - name: go vet (android)
+        env:
+          CGO_ENABLED: "1"
+          GOOS: android
+          GOARCH: arm64
+          CC: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=aarch64-linux-android24
+        run: go vet ./...
+      - name: Build every ABI and check 16 KB alignment
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: python3 cmd/libghost/build.py --os android --arch all --out dist/android --jnilibs dist/android/jniLibs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libghost-android
+          path: |
+            ghost-go/dist/android/jniLibs
+            ghost-go/dist/android/include
+          if-no-files-found: error
 
   windows:
     name: ghost-go (windows)

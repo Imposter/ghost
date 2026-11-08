@@ -153,7 +153,7 @@ socket.
   "mtu": 0,                          // 0 = 1280
   "dns": [],                         // DNS servers for the tunnel netstack
   "connect_timeout_ms": 30000,       // ICE connect timeout per peer
-  "log_level": "warn",               // debug, info, warn, error; logs go to stderr
+  "log_level": "warn",               // debug, info, warn, error; logs go to stderr (logcat on Android)
 
   "exit": {
     "enabled": true,
@@ -365,6 +365,7 @@ cd ghost-go/cmd/libghost
 python3 build.py                        # this machine, into ./dist
 python3 build.py --docker --os linux    # linux/amd64 in golang:1.26, no local toolchain
 python3 build.py --os linux --arch arm64 --cc aarch64-linux-gnu-gcc
+python3 build.py --os android --arch all  # arm64, arm and amd64 with the NDK
 python3 build.py --out ../../../build/libghost
 ```
 
@@ -375,6 +376,7 @@ Output layout, which is what the host application packages:
 <out>/<os>-<arch>/libghost.so      linux
 <out>/<os>-<arch>/libghost.dylib   darwin
 <out>/<os>-<arch>/ghost.dll        windows
+<out>/android-<arch>/libghost.so   android
 <out>/<os>-<arch>/libghost.h       the header cgo generated for that build
 ```
 
@@ -395,7 +397,7 @@ cgo needs a C compiler **for the target**, which is the only awkward part:
 | ------ | -------- |
 | linux/amd64, linux/arm64 | the host gcc, a `*-linux-gnu-gcc` cross compiler, or `--docker` |
 | darwin | the Xcode command line tools (`clang`) |
-| android | the NDK's `*-linux-android<api>-clang`, with `GOOS=android` |
+| android | the NDK; `build.py` finds it and picks its clang (see [Android](#android)) |
 | windows/amd64 | **mingw-w64** (`--cc x86_64-w64-mingw32-gcc`) or the MSVC build tools |
 
 `build.py` checks for the compiler before it starts and says which one is
@@ -407,6 +409,90 @@ import libraries from a Visual Studio installation, so without one `CC=clang`
 fails at `#include <stdlib.h>`. Install mingw-w64 (MSYS2, or the winget
 `mingw` package) and pass `--cc x86_64-w64-mingw32-gcc`, or install the
 Visual Studio Build Tools and build from a developer command prompt.
+
+### Android
+
+```bash
+python3 build.py --os android --arch all --jnilibs ../my_app/android/app/src/main/jniLibs
+python3 build.py --os android --arch arm64 --android-api 26 --ndk ~/Android/Sdk/ndk/28.2.13676358
+```
+
+`--arch` is `arm64`, `arm`, `amd64`, `386`, or `all`: the first three, the
+ABIs Flutter ships (it has no 32-bit x86 engine). Each library lands in
+`<out>/android-<arch>/libghost.so`, and `--jnilibs DIR` also copies it to the
+ABI folder an app's `jniLibs` wants:
+
+| `--arch` | ABI folder | clang target |
+| -------- | ---------- | ------------ |
+| `arm64` | `arm64-v8a` | `aarch64-linux-android` |
+| `arm` | `armeabi-v7a` | `armv7a-linux-androideabi` (`GOARM=7`) |
+| `amd64` | `x86_64` | `x86_64-linux-android` |
+| `386` | `x86` | `i686-linux-android` |
+
+The NDK is `--ndk`, else `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`, else the
+newest `ndk/<version>` in the SDK (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the
+default SDK location: `%LOCALAPPDATA%\Android\Sdk`, `~/Library/Android/sdk`,
+`~/Android/Sdk`). Its LLVM toolchain for the host (Windows, Linux or macOS)
+is called as `clang --target=<triple><api>`. NDK r27 and r28 are known to
+work.
+
+**Minimum API level: 24** (Android 7.0), `--android-api` to raise it. The NDK
+still reaches back to 21, but Flutter's own minimum is 24, so nothing below
+it would ever load the library. The app's `minSdk` must be at least the level
+the library was built for.
+
+**16 KB pages.** Android 15 devices may run with 16 KB memory pages, and
+Google Play requires native libraries built for them. Every Android library
+is linked with `-Wl,-z,max-page-size=16384`, and `build.py` fails unless
+`llvm-readelf -lW` reports every `LOAD` segment aligned to `0x4000`. To check
+a library by hand:
+
+```bash
+$NDK/toolchains/llvm/prebuilt/<host>-x86_64/bin/llvm-readelf -lW libghost.so | grep LOAD
+```
+
+The Android build also links with `-s -w` (no symbol table or DWARF; a panic
+still names every function) and `-checklinkname=0`: pion lists network
+interfaces through `github.com/wlynxg/anet`, because from Android 11 an app
+may not ask the kernel for its links and `net.Interfaces` fails with
+`netlinkrib: permission denied`; anet reaches `net.zoneCache` through
+`go:linkname`, which Go 1.23 and later refuse to link without the flag.
+
+#### What the app must provide
+
+- **Nothing on disk by default.** Pass the WireGuard key as `private_key`
+  (from the Android Keystore or another secret store) and libghost writes no
+  file at all. If you use `key_store_path` instead, it must be an absolute
+  path in the app's own storage (`Context.getFilesDir()`, `path_provider`'s
+  `getApplicationSupportDirectory()`): an app's working directory is `/`,
+  and the library never picks a directory of its own. Nothing else in the
+  node reads `HOME`, `TMPDIR` or a default path.
+- **The `INTERNET` permission** in the manifest. Without it every socket,
+  DNS lookup included, fails.
+- **A foreground service, while the app is in the background.** Android
+  blocks networking for an app in the background (the emulator's
+  `dumpsys netpolicy` shows `blocked=APP_BACKGROUND`), and DNS lookups then
+  fail with `no such host`. A node that must stay up runs in a foreground
+  service (`dataSync`, or `specialUse` from Android 14).
+- **Nothing for DNS or TLS.** Android has no `/etc/resolv.conf`, so the
+  library resolves names through bionic (Go picks its cgo resolver on
+  Android, and libghost is always built with cgo), and verifies certificates
+  against the system roots in `/system/etc/security/cacerts` plus the
+  user-added ones. `ca_cert_pem` adds authorities to those, as elsewhere.
+- **No TUN device and no `VpnService`.** The tunnel is a userspace netstack;
+  the exit dials sites from the app's own sockets.
+
+#### Logs and crashes
+
+An Android app's standard error goes nowhere, so on Android node logs go to
+**logcat** under the tag `ghost`, each record at the priority its level
+names (`adb logcat -s ghost`); a record longer than a logcat entry keeps (4000
+bytes) goes as consecutive entries at that priority, split at a newline when
+one fits, else between characters. A Go panic or fatal error is written to
+logcat under the tag `Go` by the Go runtime, and the library sets the
+traceback level to `all`, so the report shows every goroutine rather than
+only the one that panicked. A crash in the library aborts the process, as
+any native crash does.
 
 ## Testing
 
@@ -424,6 +510,51 @@ cd ghost-go && go test ./cmd/libghost/
 
 `go test -race` needs cgo, and so a C toolchain, like any race-detector run
 in this repository.
+
+### Testing on Android
+
+The Android-only tests (build tag `android`) need a device or an emulator:
+`cmd/libghost/android_test.go` checks that logs reach logcat at their
+record's level, that a record longer than a logcat entry arrives whole across
+consecutive entries, that a panic leaves a full traceback there, and, with `GHOST_TEST_ONLINE=1`, that a name
+resolves and that enrolment and the signalling socket verify a public
+certificate; `internal/ice/android_test.go` gathers host candidates the way a
+node lists interfaces. `cmd/libghost/testdata/dlopen.c` loads the built
+library with `dlopen` and calls `ghost_version`, as a host app does. The rest
+of the suite runs there unchanged.
+
+Cross-compile with the NDK (the `-checklinkname=0` is the one the library
+needs, above), for an x86_64 emulator:
+
+```bash
+export CGO_ENABLED=1 GOOS=android GOARCH=amd64
+export CC="$NDK/toolchains/llvm/prebuilt/<host>-x86_64/bin/clang --target=x86_64-linux-android24"
+for p in cmd/libghost internal/ice exit metrics ghost signal; do
+  go test -c -ldflags=-checklinkname=0 -o out/libpkg_${p//\//_}_test.so ./$p
+done
+$CC -o out/libdlopen.so cmd/libghost/testdata/dlopen.c
+python3 cmd/libghost/build.py --os android --arch amd64 --out out
+```
+
+Run under `adb shell`, the tests pass but prove less than they seem: the
+shell may still list links and is never blocked from the network. To run
+them as an app, package the binaries as an app's native libraries (named
+`lib*.so`, so the installer extracts them, in an APK with `hasCode="false"`,
+`debuggable="true"`, `extractNativeLibs="true"` and the `INTERNET`
+permission), install it, and run them with `run-as`:
+
+```bash
+adb shell cmd deviceidle whitelist +<package>   # let it use the network in the background
+adb shell "run-as <package> sh -c 'cd files/ghost-go/cmd/libghost && \
+  TMPDIR=\$PWD GHOST_TEST_ONLINE=1 <nativeLibraryDir>/libpkg_cmd_libghost_test.so -test.v'"
+```
+
+`<nativeLibraryDir>` is `legacyNativeLibraryDir` from
+`adb shell pm dump <package>`, plus the ABI. The schema tests read the Go
+sources, so run `cmd/libghost`'s binary from a copy of `ghost-go` in the
+app's directory. In the app's sandbox `net.Interfaces` fails with
+`netlinkrib: permission denied` while the ICE test still gathers its host
+candidates.
 
 ## Notes for the host application
 
