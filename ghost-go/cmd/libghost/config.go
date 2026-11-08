@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -77,7 +76,7 @@ type startConfig struct {
 	ConnectTimeoutMS int `json:"connect_timeout_ms,omitempty"`
 
 	// LogLevel is "debug", "info", "warn" or "error" (default "warn"). Logs
-	// go to the process's standard error.
+	// go to the process's standard error, or to logcat (tag "ghost") on Android.
 	LogLevel string `json:"log_level,omitempty"`
 
 	// Exit configures the SOCKS5 / HTTP-CONNECT exit on the tunnel IP.
@@ -223,7 +222,7 @@ func (c *startConfig) parse() (ghost.Config, *slog.Logger, error) {
 	if level == "" {
 		level = defaultLogLevel
 	}
-	log, err := newLogger(os.Stderr, level)
+	log, err := newLogger(logOutput, level)
 	if err != nil {
 		return cfg, nil, err
 	}
