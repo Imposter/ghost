@@ -129,10 +129,12 @@ ghost_stop(h);
 
 ```bash
 cd ghost-go/cmd/libghost && python3 build.py --docker --os linux
+cd ghost-go/cmd/libghost && python3 build.py --os android --arch all   # with the NDK
 ```
 
 See [docs/ffi.md](docs/ffi.md) for the header, the JSON shapes, the ownership
-and threading rules, and the toolchains each target needs.
+and threading rules, the toolchains each target needs, and what an Android
+app has to set up.
 
 ## Glossary
 
